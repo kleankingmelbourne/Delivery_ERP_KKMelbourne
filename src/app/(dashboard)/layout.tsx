@@ -3,7 +3,7 @@ import Sidebar from "@/components/Sidebar";
 import DriverLayout from "@/components/layout/DriverLayout";
 import { Toaster } from "@/components/ui/toaster";
 import { Bell, LogOut } from "lucide-react"; 
-import { signout } from '../(auth)/login/actions' 
+import { signout } from '../login/actions' 
 import { Button } from "@/components/ui/button"
 import { createClient } from "@/utils/supabase/server"; 
 import UserProfile from "@/components/UserProfile"; 

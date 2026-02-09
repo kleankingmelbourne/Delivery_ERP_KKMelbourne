@@ -1,7 +1,7 @@
 "use client" // 이 줄이 반드시 맨 위에 있어야 합니다!
 
 import { useState, useEffect } from 'react'  //1
-import { updateFullProfile } from '@/app/(auth)/login/actions'
+import { updateFullProfile } from '@/app/login/actions'
 //import { updateProfile } from '@/app/(auth)/login/actions'
 import { 
   Dialog, 

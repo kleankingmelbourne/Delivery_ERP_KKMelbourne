@@ -5,7 +5,7 @@ import { createClient } from "@/utils/supabase/client";
 import { useRouter, useSearchParams } from "next/navigation";
 import { 
   ArrowLeft, User, Calendar, CreditCard, 
-  Save, DollarSign, Wallet, FileText, Check, ChevronDown, Search, Loader2,
+  DollarSign, Wallet, FileText, Check, ChevronDown, Loader2,
   AlertCircle, RefreshCw 
 } from "lucide-react";
 import Link from "next/link";
@@ -235,7 +235,6 @@ function PaymentFormContent() {
 
     if (currentRemaining <= 0) {
         // 남은 돈이 없으면 0원 할당 (체크는 되지만 금액은 0)
-        // 필요하다면 alert("No remaining funds to allocate."); 를 띄울 수도 있음
         setAllocations(prev => ({ ...prev, [invoiceId]: 0 }));
         return;
     }
@@ -346,6 +345,7 @@ function PaymentFormContent() {
         const inv = unpaidInvoices.find(i => i.id === invoiceId);
         if (inv) {
           const newPaid = roundAmount(inv.paid_amount + allocatedAmt);
+          // 0.01 미만 차이는 오차로 보고 완전 결제로 처리
           const isFullyPaid = Math.abs(inv.total_amount - newPaid) < 0.01;
           const newStatus = isFullyPaid ? 'Paid' : 'Partial';
           
@@ -353,6 +353,35 @@ function PaymentFormContent() {
             paid_amount: newPaid,
             status: newStatus
           }).eq('id', invoiceId);
+
+          // [NEW] 만약 완납(Fully Paid)되었다면, 증거 사진 삭제 (bucket: delivery_proofs)
+          if (isFullyPaid) {
+            try {
+              // 1. 해당 인보이스 ID가 포함된 파일 찾기 (확장자를 모르므로 search 사용)
+              // 보통 파일명에 invoiceId가 포함되어 저장됨
+              const { data: files } = await supabase
+                .storage
+                .from('delivery_proofs')
+                .list('', { search: invoiceId });
+
+              if (files && files.length > 0) {
+                const filesToRemove = files.map(f => f.name);
+                // 2. 파일 삭제 실행
+                const { error: removeError } = await supabase
+                  .storage
+                  .from('delivery_proofs')
+                  .remove(filesToRemove);
+                
+                if (removeError) {
+                  console.error("Failed to delete proof for invoice:", invoiceId, removeError);
+                } else {
+                  console.log("Proof deleted for paid invoice:", invoiceId);
+                }
+              }
+            } catch (err) {
+              console.error("Error during proof deletion:", err);
+            }
+          }
         }
       }
 

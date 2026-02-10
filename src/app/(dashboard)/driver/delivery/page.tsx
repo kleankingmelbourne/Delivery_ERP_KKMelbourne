@@ -4,8 +4,8 @@ import { useEffect, useState, useRef } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { 
   Phone, MapPin, Check, Navigation, Package, Camera, X, Loader2, 
-  ArrowUpDown, Play, Unlock, Save, Map as MapIcon, Home, 
-  Sparkles, Truck, Building2, User, MousePointerClick, Archive
+  ArrowUpDown, Play, Unlock, Save, Home, 
+  Sparkles, Building2, User, MousePointerClick
 } from "lucide-react";
 import {
   DndContext, 
@@ -35,6 +35,7 @@ import {
   DialogDescription 
 } from "@/components/ui/dialog";
 import { GoogleMap, useJsApiLoader, DirectionsRenderer, Marker } from '@react-google-maps/api';
+import imageCompression from "browser-image-compression"; 
 
 declare var google: any;
 
@@ -47,10 +48,9 @@ interface DeliveryItem {
   is_completed: boolean;
   memo?: string;
   delivery_run: number;
-  delivery_order: number; // 0: New, >0: Saved Order
+  delivery_order: number; 
 }
 
-// Run별 상태 관리
 interface RunState {
     isStarted: boolean;
     isEditing: boolean;
@@ -75,14 +75,11 @@ export default function DriverDeliveryPage() {
   
   const [currentUserName, setCurrentUserName] = useState("Driver");
 
-  // Run별 독립 상태
   const [runStates, setRunStates] = useState<{ [key: number]: RunState }>({
       1: { isStarted: false, isEditing: false },
       2: { isStarted: false, isEditing: false }
   });
 
-  // ✅ 알람 상태 (delivery_order === 0 인 항목이 있는지 여부)
-  // Delivery Run이 0인 경우 1로 취급하여 알람 표시
   const hasNewInRun1 = deliveries.some(d => (d.delivery_run === 0 ? 1 : d.delivery_run) === 1 && d.delivery_order === 0);
   const hasNewInRun2 = deliveries.some(d => d.delivery_run === 2 && d.delivery_order === 0);
 
@@ -111,7 +108,6 @@ export default function DriverDeliveryPage() {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
 
-  // 현재 Run의 상태
   const currentRunState = runStates[activeRun];
   const isStarted = currentRunState.isStarted;
   const isEditing = currentRunState.isEditing;
@@ -124,7 +120,6 @@ export default function DriverDeliveryPage() {
     fetchInitialData();
   }, []);
 
-  // ✅ Realtime Logic (DB 기준)
   useEffect(() => {
     if (!currentUserId) return;
 
@@ -141,44 +136,32 @@ export default function DriverDeliveryPage() {
         const wasAssignedToMe = oldRecord?.driver_id === currentUserId;
         let shouldRefresh = false;
 
-        // 1. [INSERT] 나에게 배정됨
         if (eventType === 'INSERT' && isAssignedToMe) {
             shouldRefresh = true;
         }
 
-        // 2. [UPDATE]
         if (eventType === 'UPDATE') {
             const isRunChanged = oldRecord?.delivery_run !== newRecord.delivery_run;
             const isDriverChanged = oldRecord?.driver_id !== newRecord.driver_id;
-            // Admin(Set Delivery)에서 순서를 0으로 리셋했거나 새로 할당한 경우
             const isOrderReset = oldRecord?.delivery_order !== 0 && newRecord.delivery_order === 0;
 
             if (isAssignedToMe && (isDriverChanged || isRunChanged || isOrderReset)) {
                 shouldRefresh = true;
-                
-                // 만약 Order가 0인 상태(New)로 들어왔다면, 해당 Run을 편집 모드로 전환 (알람 역할)
                 if (newRecord.delivery_order === 0) {
                     const targetRun = newRecord.delivery_run === 0 ? 1 : newRecord.delivery_run;
                     updateRunState(targetRun, { isEditing: true });
                 }
             }
-            
-            // 내껀데 내용만 바뀐 경우 (주소 등) -> 리스트 업데이트 (정렬 유지)
             if (isAssignedToMe && wasAssignedToMe && !isRunChanged && !isOrderReset) {
-                 // 여기서는 전체 fetch 대신 로컬 업데이트를 할 수도 있지만, 
-                 // 정렬 로직 일관성을 위해 fetchDeliveries를 호출하는 것이 안전함.
-                 // 다만 UX를 위해 shouldRefresh = true로 처리.
                  shouldRefresh = true;
             }
         }
 
-        // 3. [DELETE] 또는 [UPDATE로 내것이 아니게 됨]
         if (eventType === 'DELETE' || (eventType === 'UPDATE' && wasAssignedToMe && !isAssignedToMe)) {
             shouldRefresh = true;
         }
 
         if (shouldRefresh) { 
-            console.log("🔄 Realtime Update Detected!");
             fetchDeliveries(currentUserId); 
         }
     }).subscribe();
@@ -216,15 +199,10 @@ export default function DriverDeliveryPage() {
       fetchDeliveries(user.id, true);
   };
 
-  // ✅ [핵심] 정렬 로직: order=0 인 것(New)을 최상단으로, 나머지는 번호 순
   const sortDeliveries = (items: DeliveryItem[]) => {
       const newItems = items.filter(d => d.delivery_order === 0);
       const savedItems = items.filter(d => d.delivery_order > 0);
-      
-      // 저장된 아이템은 번호순 정렬
       savedItems.sort((a, b) => a.delivery_order - b.delivery_order);
-      
-      // 합치기 (New가 위로)
       return [...newItems, ...savedItems];
   };
 
@@ -254,9 +232,7 @@ export default function DriverDeliveryPage() {
                 : "주소 정보 없음";
             const cleanAddress = fullAddress === ",   " ? "주소 정보 없음" : fullAddress.replace(/^, /, "");
 
-            // 0번 Run은 1번으로 취급
             const run = (item.delivery_run === 0 || item.delivery_run === null) ? 1 : item.delivery_run;
-            // order가 null이면 0(New)으로 취급
             const order = item.delivery_order === null ? 0 : item.delivery_order;
 
             return {
@@ -272,17 +248,14 @@ export default function DriverDeliveryPage() {
             } as DeliveryItem;
           });
           
-          // 정렬 적용
           const sortedItems = sortDeliveries(rawItems);
 
           setDeliveries(sortedItems);
           setOriginalDeliveries(sortedItems);
           
-          // Run별 상태 동기화
           const isRun1Started = sortedItems.some((d: any) => d.delivery_run === 1 && d.is_completed);
           const isRun2Started = sortedItems.some((d: any) => d.delivery_run === 2 && d.is_completed);
           
-          // New 아이템이 있으면 Editing 모드 ON
           const hasNew1 = sortedItems.some((d: any) => d.delivery_run === 1 && d.delivery_order === 0);
           const hasNew2 = sortedItems.some((d: any) => d.delivery_run === 2 && d.delivery_order === 0);
 
@@ -307,7 +280,6 @@ export default function DriverDeliveryPage() {
   const currentList = deliveries.filter(d => (d.delivery_run === 0 ? 1 : d.delivery_run) === activeRun);
   const activeItem = currentList.find(d => !d.is_completed);
 
-  // --- Handlers ---
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     if (over && active.id !== over.id) {
@@ -319,11 +291,9 @@ export default function DriverDeliveryPage() {
     }
   };
 
-  // ✅ [Save] 버튼: DB 저장 시 1, 2, 3... 순으로 저장 (0을 없애서 New 상태 해제)
   const handleSaveOrder = async () => {
     setIsSavingOrder(true);
     try {
-        // [중요] index + 1을 하여 0(New) 상태를 제거하고 확정된 순서(>0) 부여
         const updates = currentList.map((item, index) => ({ 
             id: item.id, 
             delivery_order: index + 1 
@@ -333,19 +303,16 @@ export default function DriverDeliveryPage() {
             supabase.from('invoices').update({ delivery_order: update.delivery_order }).eq('id', update.id)
         ));
         
-        // 로컬 상태 업데이트 (화면 깜빡임 방지)
         const updatedDeliveries = deliveries.map(d => {
             const update = updates.find(u => u.id === d.id);
             return update ? { ...d, delivery_order: update.delivery_order } : d;
         });
         
-        // 다시 정렬해서 저장 (이 시점엔 모두 >0 이므로 순서대로 정렬됨)
         const sorted = sortDeliveries(updatedDeliveries);
         
         setDeliveries(sorted);
         setOriginalDeliveries(sorted); 
         
-        // 상태 초기화 (Save -> Start 모드로 전환)
         updateRunState(activeRun, { isEditing: false, isStarted: false }); 
 
     } catch (error) { console.error("Save Error:", error); } finally { setIsSavingOrder(false); }
@@ -391,7 +358,6 @@ export default function DriverDeliveryPage() {
               const otherRunItems = deliveries.filter(d => (d.delivery_run === 0 ? 1 : d.delivery_run) !== activeRun);
               const merged = [...otherRunItems, ...optimizedList];
               setDeliveries(merged);
-              // [수정] Auto Route 성공 시에도 Editing 모드 유지 (Save 버튼 활성화)
               updateRunState(activeRun, { isEditing: true });
           } else { alert("Route calculation failed."); }
       });
@@ -419,14 +385,27 @@ export default function DriverDeliveryPage() {
   };
   const handleStartComplete = (id: string) => { setTargetId(id); fileInputRef.current?.click(); };
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (file) { setSelectedFile(file); setPreviewUrl(URL.createObjectURL(file)); } };
+  
   const handleConfirmUpload = async () => {
     if (!selectedFile || !targetId) return;
     setIsUploading(true);
     try {
+        const options = {
+            maxSizeMB: 1, 
+            maxWidthOrHeight: 1280, 
+            useWebWorker: true,
+            initialQuality: 0.7 
+        };
+
+        const compressedFile = await imageCompression(selectedFile, options);
+        console.log(`Resize: ${(selectedFile.size/1024).toFixed(2)}kb -> ${(compressedFile.size/1024).toFixed(2)}kb`);
+
         const fileExt = selectedFile.name.split('.').pop();
         const fileName = `${targetId}_${Date.now()}.${fileExt}`;
-        const { error: uploadError } = await supabase.storage.from('delivery-proofs').upload(fileName, selectedFile);
+        
+        const { error: uploadError } = await supabase.storage.from('delivery-proofs').upload(fileName, compressedFile);
         if (uploadError) throw uploadError;
+        
         const { data: { publicUrl } } = supabase.storage.from('delivery-proofs').getPublicUrl(fileName);
         await supabase.from('invoices').update({ is_completed: true, proof_url: publicUrl }).eq('id', targetId);
         setDeliveries(prev => prev.map(d => d.id === targetId ? { ...d, is_completed: true } : d));
@@ -437,7 +416,8 @@ export default function DriverDeliveryPage() {
 
 
   return (
-    <div className="max-w-md mx-auto min-h-screen bg-slate-50 flex flex-col pb-24 relative">
+    <div className="max-w-md mx-auto h-screen bg-slate-50 flex flex-col relative overflow-hidden">
+      
       <input type="file" accept="image/*" capture="environment" ref={fileInputRef} className="hidden" onChange={handleFileChange} />
       
       {/* Photo Modal */}
@@ -527,8 +507,8 @@ export default function DriverDeliveryPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Main Header */}
-      <div className="sticky top-0 bg-white z-10 border-b border-slate-100 shadow-sm">
+      {/* Main Header (Sticky) */}
+      <div className="shrink-0 bg-white z-10 border-b border-slate-100 shadow-sm">
         <div className="flex items-center justify-between p-4 pb-2">
             <div className="flex flex-col">
                 <span className="text-xs text-slate-500 font-medium">Welcome back,</span>
@@ -543,7 +523,6 @@ export default function DriverDeliveryPage() {
                     className={`relative flex-1 py-2 rounded-xl text-sm font-bold transition-all ${activeRun === run ? "bg-slate-900 text-white shadow-md transform scale-[1.02]" : "bg-slate-100 text-slate-400"}`}
                 >
                     {run === 1 ? "1st Run" : "2nd Run"} 
-                    {/* ✅ 탭 알림: delivery_order가 0인 항목이 있으면 뜸 */}
                     {(run === 1 ? hasNewInRun1 : hasNewInRun2) && (
                         <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white animate-pulse shadow-sm" />
                     )}
@@ -552,10 +531,9 @@ export default function DriverDeliveryPage() {
         </div>
       </div>
 
-      {/* Action Bar */}
-      <div className="p-4 flex items-center justify-between bg-slate-50">
+      {/* Action Bar (Sticky) */}
+      <div className="shrink-0 p-4 flex items-center justify-between bg-slate-50">
          <div className="flex items-center gap-2">
-             {/* ✅ [수정] Auto Route 버튼은 isEditing 모드에서만 활성화됨 */}
              {isEditing && (
                  <Button variant="outline" size="sm" onClick={handleAutoRoute} disabled={isAutoRouting} className="bg-white text-blue-600 border-blue-200 hover:bg-blue-50 text-xs font-bold h-9">
                      {isAutoRouting ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 mr-1" />}
@@ -592,8 +570,8 @@ export default function DriverDeliveryPage() {
          </div>
       </div>
 
-      {/* List Area */}
-      <div className="flex-1 px-4 space-y-3 pb-20">
+      {/* List Area (Scrollable with custom scrollbar) */}
+      <div className="flex-1 min-h-0 px-4 space-y-3 pb-20 overflow-y-auto custom-scrollbar">
         {currentList.length === 0 && (
             <div className="flex flex-col items-center justify-center py-20 text-slate-400 border-2 border-dashed border-slate-200 rounded-2xl">
                 <Package className="w-12 h-12 mb-2 opacity-20" />
@@ -612,7 +590,7 @@ export default function DriverDeliveryPage() {
                         <SortableItem 
                             key={item.id} id={item.id} item={item} index={index}
                             isActive={isActive} isLocked={isLocked} isDone={isDone} isEditing={isEditing} 
-                            isNew={item.delivery_order === 0} // ✅ 0이면 New 뱃지
+                            isNew={item.delivery_order === 0} 
                             onComplete={() => handleStartComplete(item.id)}
                             onNavigate={() => handleNavigate(item.delivery_address)}
                             onCall={() => window.location.href = `tel:${item.phone}`}
@@ -645,8 +623,10 @@ export default function DriverDeliveryPage() {
   );
 }
 
+// ✅ [수정] SortableItem: 드래그 핸들 분리하여 스크롤 가능하게 수정
 function SortableItem({ id, item, index, isActive, isLocked, isDone, isEditing, isNew, onComplete, onNavigate, onCall }: any) {
-    const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id });
+    // 1. setActivatorNodeRef 추가 (핸들용 Ref)
+    const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition } = useSortable({ id });
     const style = { transform: CSS.Transform.toString(transform), transition };
 
     if (isDone) {
@@ -669,7 +649,10 @@ function SortableItem({ id, item, index, isActive, isLocked, isDone, isEditing, 
                     {isNew && <Badge className="bg-white text-blue-600 border border-blue-200 text-[9px] h-4 px-1">NEW</Badge>}
                 </div>
                 <div className="mt-4 mb-4">
-                    <h3 className="text-2xl font-black text-slate-900">{item.invoice_to}</h3>
+                    <h3 className="text-2xl font-black text-slate-900">
+                        <span className="text-blue-600 mr-2">{index + 1}.</span>
+                        {item.invoice_to}
+                    </h3>
                     <p className="text-slate-600 text-sm mt-1 flex items-start gap-1"><MapPin className="w-4 h-4 shrink-0 mt-0.5" /> {item.delivery_address}</p>
                     {item.memo && <div className="mt-2 text-xs bg-amber-50 text-amber-800 p-2 rounded-lg border border-amber-100">📝 {item.memo}</div>}
                 </div>
@@ -683,8 +666,9 @@ function SortableItem({ id, item, index, isActive, isLocked, isDone, isEditing, 
     }
 
     return (
-        <div ref={setNodeRef} style={style} {...(isEditing ? attributes : {})} {...(isEditing ? listeners : {})} className={`bg-white p-4 rounded-xl border flex items-center justify-between touch-none ${isEditing ? "border-blue-200 shadow-sm cursor-move" : "border-slate-100 opacity-70"}`}>
-            <div className="flex items-center gap-3">
+        // 2. 메인 div에서 listener 제거 및 touch-none 제거 (스크롤 가능하게)
+        <div ref={setNodeRef} style={style} className={`bg-white p-4 rounded-xl border flex items-center justify-between ${isEditing ? "border-blue-200 shadow-sm" : "border-slate-100 opacity-70"}`}>
+            <div className="flex items-center gap-3 flex-1 min-w-0">
                 <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${isEditing ? "bg-blue-100 text-blue-600" : "bg-slate-100 text-slate-400"}`}>{index + 1}</div>
                 <div>
                     <div className="font-bold text-slate-800 flex items-center gap-2">
@@ -694,7 +678,20 @@ function SortableItem({ id, item, index, isActive, isLocked, isDone, isEditing, 
                     <div className="text-xs text-slate-500 truncate max-w-[200px] mb-1">{item.delivery_address}</div>
                 </div>
             </div>
-            {isEditing ? <ArrowUpDown className="w-5 h-5 text-slate-300" /> : <div className="text-xs font-bold text-slate-300 px-2 py-1 rounded bg-slate-50">Next</div>}
+            
+            {/* 3. 드래그 핸들 (아이콘)에만 listener 적용 (여기를 잡고 끌어야 순서 변경됨) */}
+            {isEditing ? (
+                <div 
+                    ref={setActivatorNodeRef} 
+                    {...attributes} 
+                    {...listeners} 
+                    className="p-2 touch-none cursor-grab active:cursor-grabbing"
+                >
+                    <ArrowUpDown className="w-5 h-5 text-blue-400" />
+                </div>
+            ) : (
+                <div className="text-xs font-bold text-slate-300 px-2 py-1 rounded bg-slate-50">Next</div>
+            )}
         </div>
     );
 }

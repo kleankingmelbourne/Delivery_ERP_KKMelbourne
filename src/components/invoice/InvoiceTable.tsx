@@ -8,7 +8,7 @@ import {
   ChevronLeft, ChevronRight, X, CheckSquare, Box,
   Download, FileDown, ChevronDown, ChevronUp, Mail,
   AlertCircle, Truck, CheckCircle2, Circle, Package, DollarSign,
-  Calculator, Receipt, FileStack 
+  Calculator, Receipt, FileStack, Image as ImageIcon 
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -35,8 +35,8 @@ interface Invoice {
   due_date: string;
   total_amount: number;
   paid_amount: number; 
-  subtotal?: number;   
-  gst_total?: number;  
+  subtotal?: number;    
+  gst_total?: number;   
   memo?: string;       
   status: "Paid" | "Unpaid" | "Partial" | "Credit"; 
   created_who?: string;
@@ -46,6 +46,7 @@ interface Invoice {
   driver_id?: string | null; 
   is_completed?: boolean;
   is_pickup?: boolean; 
+  proof_url?: string; // [NEW] 배송 증거 사진 URL
 
   [key: string]: any;
 }
@@ -59,7 +60,7 @@ interface InvoiceItem {
   unit?: string;
   base_price?: number;
   discount?: number;
-  product_id?: string; // [NEW] 재고 복구용
+  product_id?: string; 
 }
 
 interface InvoiceTableProps {
@@ -104,6 +105,9 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     customerEmail: string;
     docNumber: string;
   } | null>(null);
+
+  // [NEW] 배송 증명 사진 모달 상태
+  const [viewProofUrl, setViewProofUrl] = useState<string | null>(null);
 
   useEffect(() => {
     const now = new Date();
@@ -336,7 +340,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     setLoading(false); 
   };
   
-  // ✅ [수정됨] 단일 삭제: 재고 원복 로직 추가
+  // 단일 삭제: 재고 원복 로직 추가
   const handleDelete = async (id: string) => { 
     if(!confirm("Are you sure you want to delete this? This will restore stock.")) return; 
     setLoading(true); 
@@ -347,8 +351,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
           await supabase.from("payments").delete().eq("id", id);
       }
 
-      // 2. [NEW] 재고 원복 로직
-      // 삭제할 아이템 정보 조회 (product_id 필요)
+      // 2. 재고 원복 로직
       const { data: itemsToDelete } = await supabase
           .from("invoice_items")
           .select("product_id, quantity, unit")
@@ -368,7 +371,6 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
                   let currentCtn = product.current_stock_level || 0;
                   let currentPack = product.current_stock_level_pack || 0;
 
-                  // 삭제 시에는 수량을 다시 더해줌 (+)
                   if (item.unit === "CTN") {
                       currentCtn += item.quantity;
                   } else {
@@ -401,7 +403,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     } 
   };
 
-  // ✅ [수정됨] 일괄 삭제: 재고 원복 로직 추가
+  // 일괄 삭제: 재고 원복 로직 추가
   const handleBulkDelete = async () => { 
     if (!confirm(`Delete ${selectedIds.size} invoices? This will restore stock.`)) return; 
     setLoading(true);
@@ -414,14 +416,12 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
             await supabase.from("payments").delete().in("id", creditIds);
         }
 
-        // [NEW] 일괄 재고 원복
         const { data: allItemsToDelete } = await supabase
             .from("invoice_items")
             .select("product_id, quantity, unit")
             .in("invoice_id", ids);
 
         if (allItemsToDelete && allItemsToDelete.length > 0) {
-            // 제품별로 수량 합산 (DB 호출 최소화)
             const stockUpdates: Record<string, { ctn: number, pack: number }> = {};
 
             for (const item of allItemsToDelete) {
@@ -436,7 +436,6 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
                 }
             }
 
-            // 각 제품별로 업데이트 실행
             for (const [prodId, adjustment] of Object.entries(stockUpdates)) {
                 const { data: product } = await supabase
                     .from("products")
@@ -696,11 +695,24 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
                           )}
                         </td>
 
+                        {/* [MODIFIED] Delivered? Column */}
                         <td className="px-6 py-4 text-center">
                           {inv.is_completed || inv.is_pickup ? (
-                             <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-700 text-[10px] font-bold rounded-full border border-green-200">
-                                 <CheckCircle2 className="w-3 h-3" /> Done
-                             </span>
+                             // proof_url이 있으면 클릭 가능한 버튼으로 렌더링
+                             inv.proof_url ? (
+                               <button 
+                                 onClick={(e) => { e.stopPropagation(); setViewProofUrl(inv.proof_url!); }}
+                                 className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-700 text-[10px] font-bold rounded-full border border-green-200 hover:bg-green-200 hover:border-green-300 transition-colors cursor-pointer"
+                                 title="View Delivery Proof"
+                               >
+                                   <CheckCircle2 className="w-3 h-3" /> Done
+                                   <ImageIcon className="w-3 h-3 ml-1 opacity-50"/>
+                               </button>
+                             ) : (
+                               <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-700 text-[10px] font-bold rounded-full border border-green-200 cursor-default">
+                                   <CheckCircle2 className="w-3 h-3" /> Done
+                               </span>
+                             )
                           ) : (
                              <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-100 text-slate-500 text-[10px] font-bold rounded-full border border-slate-200">
                                  <Circle className="w-3 h-3" /> Pending
@@ -825,6 +837,21 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
          onOpenChange={(open) => !open && setEmailTarget(null)}
          data={emailTarget as any}
        />
+
+      {/* [NEW] Proof Image Modal */}
+      {viewProofUrl && (
+        <div className="fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={() => setViewProofUrl(null)}>
+          <div className="relative max-w-4xl w-full max-h-[90vh] flex flex-col items-center" onClick={e => e.stopPropagation()}>
+             <img src={viewProofUrl} alt="Delivery Proof" className="rounded-lg shadow-2xl max-w-full max-h-[85vh] object-contain bg-white" />
+             <button 
+               onClick={() => setViewProofUrl(null)}
+               className="mt-4 bg-white/10 text-white px-6 py-2 rounded-full hover:bg-white/20 backdrop-blur-sm transition-colors border border-white/20 font-medium"
+             >
+               Close
+             </button>
+          </div>
+        </div>
+      )}
 
     </div> 
   );

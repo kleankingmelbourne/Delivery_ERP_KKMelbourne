@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/utils/supabase/client";
-import { X, Search, Save, Package, Loader2, ArrowRight, User, Plus, Globe } from "lucide-react";
+import { X, Search, Save, Package, Loader2, User, Plus, Globe, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -19,7 +19,8 @@ interface Product {
   product_barcode: string; 
   sell_price_ctn: number;  
   sell_price_pack: number; 
-  buy_price: number; 
+  buy_price: number;
+  unit_name?: string; // [NEW] 단위 확인을 위해 추가
 }
 
 interface ProductItem extends Product {
@@ -69,9 +70,15 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
     }
 
     const productIds = customData.map(c => c.product_id);
+    
+    // [MODIFIED] product_units (unit_name) 추가 조회
     const { data: productsData } = await supabase
       .from("products")
-      .select("id, product_name, product_barcode, sell_price_ctn, sell_price_pack, buy_price")
+      .select(`
+        id, product_name, product_barcode, 
+        sell_price_ctn, sell_price_pack, buy_price,
+        product_units (unit_name)
+      `)
       .in("id", productIds)
       .order("product_name");
 
@@ -80,6 +87,8 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
         const custom = customData.find((c: any) => c.product_id === prod.id);
         return {
           ...prod,
+          // Unit Name Flattening
+          unit_name: prod.product_units?.unit_name || "",
           table_id: custom?.id,
           custom_price_ctn: custom?.custom_price_ctn ?? "", 
           custom_price_pack: custom?.custom_price_pack ?? "",
@@ -99,16 +108,26 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
     }
 
     setSearchingGlobal(true);
+    // [MODIFIED] product_units (unit_name) 추가 조회
     const { data: searchResults } = await supabase
       .from("products")
-      .select("id, product_name, product_barcode, sell_price_ctn, sell_price_pack, buy_price")
+      .select(`
+        id, product_name, product_barcode, 
+        sell_price_ctn, sell_price_pack, buy_price,
+        product_units (unit_name)
+      `)
       .or(`product_name.ilike.%${term}%,product_barcode.ilike.%${term}%`)
-      .limit(10); // 너무 많이 뜨지 않게 제한
+      .limit(10);
 
     if (searchResults) {
         // 이미 내 리스트에 있는 상품은 제외하고 보여줌
         const existingIds = new Set(items.map(i => i.id));
-        const filtered = searchResults.filter((p: any) => !existingIds.has(p.id));
+        const filtered = searchResults
+            .filter((p: any) => !existingIds.has(p.id))
+            .map((p: any) => ({
+                ...p,
+                unit_name: p.product_units?.unit_name || ""
+            }));
         setGlobalSearchResults(filtered);
     }
     setSearchingGlobal(false);
@@ -128,6 +147,30 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
     setGlobalSearchResults([]); // 결과창 닫기
   };
 
+  // 4. [삭제 기능]
+  const handleDeleteItem = async (index: number, tableId?: string) => {
+    if (!confirm("Are you sure you want to remove this item?")) return;
+
+    // 1. 이미 저장된 데이터라면 DB에서 삭제
+    if (tableId) {
+        setLoading(true); // 잠시 로딩 표시 (선택사항)
+        const { error } = await supabase
+            .from("customer_products")
+            .delete()
+            .eq("id", tableId);
+        
+        setLoading(false);
+
+        if (error) {
+            alert("Failed to delete: " + error.message);
+            return;
+        }
+    }
+
+    // 2. State에서 제거 (저장 안 된 아이템은 여기서만 제거됨)
+    setItems(prev => prev.filter((_, i) => i !== index));
+  };
+
   const handleRateChange = (id: string, type: 'ctn' | 'pack', value: string) => {
     const numValue = parseFloat(value);
     setItems(prev => prev.map(item => {
@@ -145,15 +188,12 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
     }));
   };
 
-const handleSave = async () => {
+  const handleSave = async () => {
     setSaving(true);
     const upsertData = items
       .filter(item => item.custom_price_ctn !== "" || item.custom_price_pack !== "")
       .map(item => ({
-        // [수정] ID가 없으면(새 항목이면) 브라우저에서 강제로 새 UUID를 생성합니다.
-        // 이렇게 하면 DB 설정과 관계없이 무조건 ID가 들어가므로 에러가 나지 않습니다.
         id: item.table_id || crypto.randomUUID(), 
-        
         customer_id: customerId,
         product_id: item.id,
         custom_price_ctn: item.custom_price_ctn === "" ? 0 : item.custom_price_ctn,
@@ -167,7 +207,7 @@ const handleSave = async () => {
         .upsert(upsertData, { onConflict: "customer_id, product_id" });
 
       if (error) {
-        console.error(error); // 콘솔에 에러 자세히 출력
+        console.error(error);
         alert("Error saving: " + error.message);
       } else {
         alert("Saved successfully!");
@@ -178,6 +218,7 @@ const handleSave = async () => {
     }
     setSaving(false);
   };
+
   const calculateFinalPrice = (basePrice: number, discountRate: number | "") => {
     if (!basePrice || discountRate === "" || discountRate === 0) return basePrice;
     return basePrice * (1 - (Number(discountRate) / 100));
@@ -234,7 +275,7 @@ const handleSave = async () => {
             />
           </div>
 
-          {/* 2. Global Add Search (전체 상품 추가) - 항상 노출 */}
+          {/* 2. Global Add Search (전체 상품 추가) */}
           <div className="relative w-full">
             <div className="relative">
                 <Globe className="absolute left-3 top-3 w-4 h-4 text-blue-500"/>
@@ -262,7 +303,13 @@ const handleSave = async () => {
                             {globalSearchResults.map(prod => (
                                 <div key={prod.id} className="flex items-center justify-between p-3 hover:bg-blue-50 transition-colors group">
                                     <div className="flex flex-col">
-                                        <span className="font-bold text-slate-700 text-sm">{prod.product_name}</span>
+                                        <div className="flex items-center gap-2">
+                                            <span className="font-bold text-slate-700 text-sm">{prod.product_name}</span>
+                                            {/* 단위 표시 */}
+                                            <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded border border-slate-200">
+                                                {prod.unit_name || "UNIT"}
+                                            </span>
+                                        </div>
                                         <div className="flex items-center gap-2 text-xs text-slate-400">
                                             <span className="font-mono bg-slate-100 px-1 rounded">{prod.product_barcode}</span>
                                             <span>•</span>
@@ -295,7 +342,7 @@ const handleSave = async () => {
                 <th className="px-4 py-4 w-[8%] border-b text-right bg-slate-50/50 text-slate-600 border-r border-slate-100">Cost</th>
                 
                 {/* CTN Group */}
-                <th className="px-2 py-3 w-[31%] bg-blue-50/30 text-center border-r border-b border-blue-100">
+                <th className="px-2 py-3 w-[25%] bg-blue-50/30 text-center border-r border-b border-blue-100">
                   <span className="text-blue-700">CARTON (CTN)</span>
                   <div className="flex justify-center gap-6 mt-1.5 px-2 text-[10px] text-slate-400 font-normal tracking-wide">
                     <span className="w-16 text-right">Base</span>
@@ -305,7 +352,7 @@ const handleSave = async () => {
                 </th>
 
                 {/* PACK Group */}
-                <th className="px-2 py-3 w-[31%] bg-amber-50/30 text-center border-b border-amber-100">
+                <th className="px-2 py-3 w-[25%] bg-amber-50/30 text-center border-b border-amber-100">
                   <span className="text-amber-700">PACK (PK)</span>
                   <div className="flex justify-center gap-6 mt-1.5 px-2 text-[10px] text-slate-400 font-normal tracking-wide">
                     <span className="w-16 text-right">Base</span>
@@ -313,14 +360,17 @@ const handleSave = async () => {
                     <span className="w-16 text-right">Your Price</span>
                   </div>
                 </th>
+                <th className="px-2 py-3 w-[5%] text-center border-b">
+                    Action
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 bg-white">
               {loading && items.length === 0 ? (
-                <tr><td colSpan={5} className="p-20 text-center"><Loader2 className="w-10 h-10 animate-spin mx-auto text-slate-300"/></td></tr>
+                <tr><td colSpan={6} className="p-20 text-center"><Loader2 className="w-10 h-10 animate-spin mx-auto text-slate-300"/></td></tr>
               ) : displayItems.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="p-24 text-center text-slate-400">
+                  <td colSpan={6} className="p-24 text-center text-slate-400">
                     <div className="flex flex-col items-center">
                       <Package className="w-16 h-16 mb-4 opacity-10" />
                       <p className="text-lg font-medium text-slate-500">No items found.</p>
@@ -328,8 +378,12 @@ const handleSave = async () => {
                     </div>
                   </td>
                 </tr>
-              ) : displayItems.map((item) => {
+              ) : displayItems.map((item, index) => {
                 
+                // [MODIFIED] Unit Check
+                const unitName = item.unit_name?.toLowerCase() || "";
+                const isCarton = unitName.includes('ctn') || unitName.includes('carton');
+
                 const hasCtnRate = item.custom_price_ctn !== "" && Number(item.custom_price_ctn) > 0;
                 const hasPackRate = item.custom_price_pack !== "" && Number(item.custom_price_pack) > 0;
 
@@ -347,6 +401,9 @@ const handleSave = async () => {
                     {/* Product Name & Cost */}
                     <td className="px-6 py-4 border-b border-slate-50">
                         <div className="font-bold text-slate-700 text-sm">{item.product_name}</div>
+                        <div className="text-xs text-slate-400 mt-1 flex items-center gap-1">
+                            Unit: <span className="font-semibold bg-slate-100 px-1 rounded">{item.unit_name || "N/A"}</span>
+                        </div>
                     </td>
 
                     {/* Cost Column */}
@@ -357,24 +414,32 @@ const handleSave = async () => {
                     </td>
                     
                     {/* CTN Inputs */}
-                    <td className={`px-2 py-4 border-r border-b border-slate-50 ${hasCtnRate ? "bg-blue-50/10" : ""}`}>
+                    <td className={`px-2 py-4 border-r border-b border-slate-50 ${!isCarton ? 'bg-slate-50 opacity-60' : hasCtnRate ? "bg-blue-50/10" : ""}`}>
                       <div className="flex items-center gap-3 justify-center">
                         <span className="text-xs text-slate-400 w-16 text-right font-mono">
                           ${item.sell_price_ctn?.toFixed(2) || "0.00"}
                         </span>
                         
                         <div className="relative w-20">
+                          {/* [MODIFIED] Disable if not carton */}
                           <Input 
                             type="number" 
-                            className={`h-9 text-center pr-6 font-bold transition-all ${hasCtnRate ? "border-blue-300 text-blue-700 bg-blue-50 ring-2 ring-blue-100" : "bg-white text-slate-600 border-slate-200"}`}
+                            disabled={!isCarton}
+                            className={`h-9 text-center pr-6 font-bold transition-all 
+                                ${!isCarton 
+                                    ? "bg-slate-100 text-slate-300 border-slate-200 cursor-not-allowed" 
+                                    : hasCtnRate 
+                                        ? "border-blue-300 text-blue-700 bg-blue-50 ring-2 ring-blue-100" 
+                                        : "bg-white text-slate-600 border-slate-200"
+                                }`}
                             value={item.custom_price_ctn}
                             onChange={(e) => handleRateChange(item.id, 'ctn', e.target.value)}
-                            placeholder="0"
+                            placeholder={isCarton ? "0" : "-"}
                           />
-                          <span className="absolute right-2 top-2.5 text-xs text-slate-400 font-bold">%</span>
+                          <span className={`absolute right-2 top-2.5 text-xs font-bold ${!isCarton ? "text-slate-300" : "text-slate-400"}`}>%</span>
                         </div>
                         
-                        <div className={`w-16 text-right font-bold text-sm ${hasCtnRate ? "text-blue-600" : "text-slate-300"}`}>
+                        <div className={`w-16 text-right font-bold text-sm ${!isCarton ? "text-slate-300 decoration-slate-300 line-through" : hasCtnRate ? "text-blue-600" : "text-slate-300"}`}>
                           ${resultCtn.toFixed(2)}
                         </div>
                       </div>
@@ -402,6 +467,19 @@ const handleSave = async () => {
                           ${resultPack.toFixed(2)}
                         </div>
                       </div>
+                    </td>
+
+                    {/* [MODIFIED] Delete Action */}
+                    <td className="px-2 py-4 border-b border-slate-50 text-center">
+                        <Button 
+                            size="icon" 
+                            variant="ghost" 
+                            className="text-slate-300 hover:text-red-500 hover:bg-red-50 w-8 h-8 rounded-full"
+                            onClick={() => handleDeleteItem(index, item.table_id)}
+                            title="Remove Item"
+                        >
+                            <Trash2 className="w-4 h-4" />
+                        </Button>
                     </td>
                   </tr>
                 );

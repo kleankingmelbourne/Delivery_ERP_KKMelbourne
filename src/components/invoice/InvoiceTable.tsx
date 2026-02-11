@@ -46,7 +46,7 @@ interface Invoice {
   driver_id?: string | null; 
   is_completed?: boolean;
   is_pickup?: boolean; 
-  proof_url?: string; // [NEW] 배송 증거 사진 URL
+  proof_url?: string; 
 
   [key: string]: any;
 }
@@ -340,18 +340,55 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     setLoading(false); 
   };
   
-  // 단일 삭제: 재고 원복 로직 추가
+  // 단일 삭제: 재고 원복 + Credit Revert 로직
   const handleDelete = async (id: string) => { 
     if(!confirm("Are you sure you want to delete this? This will restore stock.")) return; 
     setLoading(true); 
     try { 
-      // 1. Credit Note 관련 삭제
+      // 1. Credit Note 관련 삭제 및 연결된 인보이스 원상복귀
       if (id.startsWith("CR-")) {
+          // 1-1. 이 Credit이 어디에 쓰였는지 조회
+          const { data: allocations } = await supabase
+              .from("payment_allocations")
+              .select("invoice_id, amount")
+              .eq("payment_id", id); // Credit Note의 ID가 payment_id로 저장됨
+
+          if (allocations && allocations.length > 0) {
+              for (const alloc of allocations) {
+                  // 1-2. 대상 인보이스 정보 조회
+                  const { data: targetInv } = await supabase
+                      .from("invoices")
+                      .select("id, total_amount, paid_amount")
+                      .eq("id", alloc.invoice_id)
+                      .single();
+
+                  if (targetInv) {
+                      // 1-3. paid_amount 차감 (음수 방지)
+                      const newPaid = Math.max(0, (targetInv.paid_amount || 0) - alloc.amount);
+                      
+                      // 1-4. 상태 재계산
+                      let newStatus = "Unpaid";
+                      if (newPaid >= targetInv.total_amount && targetInv.total_amount > 0) {
+                          newStatus = "Paid";
+                      } else if (newPaid > 0) {
+                          newStatus = "Partial";
+                      }
+
+                      // 1-5. 대상 인보이스 업데이트
+                      await supabase
+                          .from("invoices")
+                          .update({ paid_amount: newPaid, status: newStatus })
+                          .eq("id", targetInv.id);
+                  }
+              }
+          }
+
+          // 1-6. 할당 내역 및 Payment(Credit) 기록 삭제
           await supabase.from("payment_allocations").delete().eq("payment_id", id);
           await supabase.from("payments").delete().eq("id", id);
       }
 
-      // 2. 재고 원복 로직
+      // 2. 재고 원복 로직 (기존 유지)
       const { data: itemsToDelete } = await supabase
           .from("invoice_items")
           .select("product_id, quantity, unit")
@@ -393,7 +430,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
       await supabase.from("invoices").delete().eq("id", id); 
       
       fetchInvoices(); 
-      alert("Deleted successfully and stock restored.");
+      alert("Deleted successfully and stock/status restored.");
     } catch (e: any) { 
       console.error(e);
       alert("Error: " + e.message); 
@@ -403,7 +440,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     } 
   };
 
-  // 일괄 삭제: 재고 원복 로직 추가
+  // 일괄 삭제: 재고 원복 + Credit Revert 로직
   const handleBulkDelete = async () => { 
     if (!confirm(`Delete ${selectedIds.size} invoices? This will restore stock.`)) return; 
     setLoading(true);
@@ -411,11 +448,43 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
         const ids = Array.from(selectedIds);
         const creditIds = ids.filter(id => id.startsWith("CR-"));
         
+        // 1. Credit Note 처리
         if (creditIds.length > 0) {
+            // 1-1. 할당 내역 조회
+            const { data: allocations } = await supabase
+                .from("payment_allocations")
+                .select("invoice_id, amount, payment_id")
+                .in("payment_id", creditIds);
+
+            if (allocations && allocations.length > 0) {
+                // 1-2. 각 할당 내역에 대해 인보이스 원상복귀
+                for (const alloc of allocations) {
+                    const { data: targetInv } = await supabase
+                        .from("invoices")
+                        .select("id, total_amount, paid_amount")
+                        .eq("id", alloc.invoice_id)
+                        .single();
+
+                    if (targetInv) {
+                        const newPaid = Math.max(0, (targetInv.paid_amount || 0) - alloc.amount);
+                        let newStatus = "Unpaid";
+                        if (newPaid >= targetInv.total_amount && targetInv.total_amount > 0) newStatus = "Paid";
+                        else if (newPaid > 0) newStatus = "Partial";
+
+                        await supabase
+                            .from("invoices")
+                            .update({ paid_amount: newPaid, status: newStatus })
+                            .eq("id", targetInv.id);
+                    }
+                }
+            }
+
+            // 1-3. 할당 및 Payment 삭제
             await supabase.from("payment_allocations").delete().in("payment_id", creditIds);
             await supabase.from("payments").delete().in("id", creditIds);
         }
 
+        // 2. 재고 원복 로직
         const { data: allItemsToDelete } = await supabase
             .from("invoice_items")
             .select("product_id, quantity, unit")
@@ -455,12 +524,13 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
             }
         }
 
+        // 3. 데이터 삭제
         await supabase.from("invoice_items").delete().in("invoice_id", ids);
         const { error } = await supabase.from("invoices").delete().in("id", ids); 
         
         if (error) throw error;
         
-        alert("Deleted and stock restored."); 
+        alert("Deleted and stock/status restored."); 
         setSelectedIds(new Set()); 
         fetchInvoices(); 
     } catch (e: any) {
@@ -734,10 +804,10 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
                                   {/* Receive Payment 버튼 (Credit 아닐 때만) */}
                                   {!isCredit && (
                                      <button 
-                                         onClick={() => handlePaymentRedirect(inv.customer_id || "")} 
-                                         className="w-full px-4 py-2 text-sm text-emerald-700 font-bold bg-emerald-50 hover:bg-emerald-100 flex gap-2 border-b border-slate-100 mb-1"
+                                       onClick={() => handlePaymentRedirect(inv.customer_id || "")} 
+                                       className="w-full px-4 py-2 text-sm text-emerald-700 font-bold bg-emerald-50 hover:bg-emerald-100 flex gap-2 border-b border-slate-100 mb-1"
                                      >
-                                         <DollarSign className="w-4 h-4"/> Receive Payment
+                                       <DollarSign className="w-4 h-4"/> Receive Payment
                                      </button>
                                   )}
 
@@ -779,10 +849,10 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
                                   <p className="mt-1">Total (inc GST): <span className={`font-bold ${isCredit ? "text-blue-700" : "text-slate-800"}`}>{formatCurrency(inv.total_amount)}</span></p>
                                   {!isCredit && (
                                      <>
-                                         <p className="text-emerald-600 font-medium">Received: - {formatCurrency(inv.paid_amount || 0)}</p>
-                                         <div className="mt-2 pt-1 border-t border-slate-200">
-                                             <p className="text-sm font-black text-slate-900 uppercase">Balance Due: {formatCurrency(balanceDue)}</p>
-                                         </div>
+                                       <p className="text-emerald-600 font-medium">Received: - {formatCurrency(inv.paid_amount || 0)}</p>
+                                       <div className="mt-2 pt-1 border-t border-slate-200">
+                                           <p className="text-sm font-black text-slate-900 uppercase">Balance Due: {formatCurrency(balanceDue)}</p>
+                                       </div>
                                      </>
                                   )}
                                 </div>

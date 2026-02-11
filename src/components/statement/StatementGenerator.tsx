@@ -227,7 +227,7 @@ export default function StatementGenerator({
                     invoices.map(inv => (
                         <tr key={inv.id}>
                             <td className="px-4 py-3">{inv.invoice_date}</td>
-                            <td className="px-4 py-3">{inv.id.slice(0,8).toUpperCase()}</td>
+                            <td className="px-4 py-3">{inv.id.slice(0,13).toUpperCase()}</td>
                             <td className="px-4 py-3">{inv.status}</td>
                             <td className="px-4 py-3 text-right">${inv.total_amount.toFixed(2)}</td>
                             <td className="px-4 py-3 text-right font-bold">${(inv.total_amount - inv.paid_amount).toFixed(2)}</td>

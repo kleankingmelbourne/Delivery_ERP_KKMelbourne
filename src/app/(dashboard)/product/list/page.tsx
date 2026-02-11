@@ -6,7 +6,7 @@ import {
   Plus, Package, AlertTriangle, DollarSign, Search, 
   MoreHorizontal, Edit, Trash2, Loader2,
   ChevronLeft, ChevronRight, ArrowUpDown, Users, Save, X, Calculator,
-  Filter, Download, Upload, ImageIcon, BarChart3, Eye 
+  Filter, Download, Upload, ImageIcon, BarChart3, Eye, CheckCircle2, XCircle
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -38,6 +38,7 @@ import { Switch } from "@/components/ui/switch"
 
 import { PRODUCT_SCHEMA } from "@/constants/schemas"
 import Papa from "papaparse"; 
+import imageCompression from "browser-image-compression"; 
 
 const toFixed2 = (num: number | string) => {
   const parsed = Number(num);
@@ -57,7 +58,9 @@ export default function ProductPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
 
-  // 실제 업로드할 파일 객체 저장용
+  // Status Filter Tab State
+  const [statusFilter, setStatusFilter] = useState<'active' | 'inactive' | 'all'>('active');
+
   const [imageFile, setImageFile] = useState<File | null>(null);
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -98,6 +101,7 @@ export default function ProductPage() {
     sell_price_pack: 0,
     margin_pack: 0,
     gst: true,
+    is_active: true, 
     product_name: "",
     product_barcode: "", 
     vendor_product_id: "", 
@@ -116,7 +120,6 @@ export default function ProductPage() {
   const fetchProduct = async () => {
     setLoading(true);
     
-    // [MODIFIED] product_units 조인 추가 (Unit 이름 가져오기 위함)
     const { data, error } = await supabase
       .from("products")
       .select(`
@@ -132,23 +135,28 @@ export default function ProductPage() {
     } else {
       const calculatedData = (data || []).map((item: any) => {
         const price = Number(item.buy_price) || 0;
-        
-        // Stock Value 계산 (CTN 기준 혹은 Pack 기준 - 여기서는 단순하게 CTN 재고 * 매입가로 가정하거나, 비즈니스 로직에 따라 수정 가능)
-        // 일단 기존 로직 유지 (current_stock_level * buy_price)
-        // 만약 Pack 단위 상품이라면 pack 재고 * pack 매입가로 계산해야 할 수도 있음.
-        const stock = Number(item.current_stock_level) || 0;
+        const ctnStock = Number(item.current_stock_level) || 0;
+        const packStock = Number(item.current_stock_level_pack) || 0;
+        const packsPerCtn = Number(item.total_pack_ctn) || 1; 
+
+        // Stock Value Calculation (Ctn + Pack)
+        const packPrice = packsPerCtn > 0 ? (price / packsPerCtn) : 0;
+        const totalValue = (ctnStock * price) + (packStock * packPrice);
         
         return {
           ...item,
-          stock_value: price * stock 
+          stock_value: totalValue 
         };
       });
 
       const lowStockList = calculatedData.filter((item: any) => {
-        // Low Stock 판단 기준 (여기서도 Unit에 따라 다르게 할 수 있음)
-        const current = Number(item.current_stock_level) || 0;
+        const uName = item.product_units?.unit_name || "CTN";
+        const isItemCtn = uName.toLowerCase().includes('ctn') || uName.toLowerCase().includes('carton');
+        
+        const current = isItemCtn ? Number(item.current_stock_level) : Number(item.current_stock_level_pack);
         const min = Number(item.min_stock_level) || 5; 
-        return current < min;
+        
+        return item.is_active && (current < min);
       });
       setLowStockItems(lowStockList);
 
@@ -211,9 +219,10 @@ export default function ProductPage() {
   const handleExport = async () => {
     const exportData = products.map(p => ({
         id: p.id, 
+        is_active: p.is_active ? "TRUE" : "FALSE",
+        product_name: p.product_name || "",
         product_barcode: p.product_barcode || "",
         vendor_product_id: p.vendor_product_id || "",
-        product_name: p.product_name || "",
         location: p.location || "",
         gst: p.gst ? "TRUE" : "FALSE", 
         category_id: p.category_id || "",
@@ -275,6 +284,7 @@ export default function ProductPage() {
                 return {
                     ...(row.id && row.id.trim() !== "" ? { id: row.id } : {}),
                     product_name: row.product_name,
+                    is_active: String(row.is_active).toUpperCase() === 'TRUE', 
                     product_barcode: row.product_barcode || null,
                     vendor_product_id: row.vendor_product_id || null,
                     location: row.location || null,
@@ -318,7 +328,7 @@ export default function ProductPage() {
     });
   };
 
-  // --- 3. 폼 핸들링 ---
+  // --- 3. Form Handling ---
   useEffect(() => {
     if (isModalOpen) {
         if (editingProduct) {
@@ -331,7 +341,6 @@ export default function ProductPage() {
     }
   }, [isModalOpen, editingProduct]);
 
-  // 폼 유효성 검사 함수 (Product Name만 필수)
   const validateForm = () => {
     if (!formData.product_name || String(formData.product_name).trim() === "") {
         alert("Please enter the Product Name.");
@@ -395,7 +404,6 @@ export default function ProductPage() {
     handleFormChange('product_barcode', finalBarcode);
   };
 
-  // 이미지 업로드 핸들러
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -416,13 +424,20 @@ export default function ProductPage() {
       let imageUrl = formData.product_image;
 
       if (imageFile) {
+        const options = {
+            maxSizeMB: 1,
+            maxWidthOrHeight: 1024,
+            useWebWorker: true,
+        };
+        const compressedFile = await imageCompression(imageFile, options);
+
         const fileExt = imageFile.name.split('.').pop();
         const fileName = `${Date.now()}_${Math.floor(Math.random() * 1000)}.${fileExt}`;
         const filePath = `${fileName}`;
 
         const { error: uploadError } = await supabase.storage
             .from('product_image') 
-            .upload(filePath, imageFile);
+            .upload(filePath, compressedFile);
 
         if (uploadError) throw uploadError;
 
@@ -433,7 +448,28 @@ export default function ProductPage() {
         imageUrl = publicUrl;
       }
 
+      if (editingProduct && editingProduct.product_image) {
+        const isImageRemoved = !imageUrl; 
+        const isImageReplaced = imageUrl !== editingProduct.product_image; 
+
+        if (isImageRemoved || isImageReplaced) {
+            try {
+                const oldUrl = editingProduct.product_image;
+                const pathParts = oldUrl.split('/product_image/');
+                if (pathParts.length > 1) {
+                    const oldFileName = pathParts[1];
+                    await supabase.storage
+                        .from('product_image')
+                        .remove([oldFileName]);
+                }
+            } catch (err) {
+                console.error("Failed to delete old image:", err);
+            }
+        }
+      }
+
       const dbPayload = {
+        is_active: formData.is_active, 
         product_name: formData.product_name,
         product_barcode: formData.product_barcode || null,
         vendor_product_id: formData.vendor_product_id || null,
@@ -453,7 +489,7 @@ export default function ProductPage() {
         current_stock_level: Number(formData.current_stock_level) || 0,
         current_stock_level_pack: Number(formData.current_stock_level_pack) || 0, 
         min_stock_level: Number(formData.min_stock_level) || 0,
-        product_image: imageUrl, 
+        product_image: imageUrl || null, 
       };
 
       if (editingProduct) {
@@ -598,6 +634,13 @@ export default function ProductPage() {
 
   const processedProducts = useMemo(() => {
     let result = products;
+    
+    if (statusFilter === 'active') {
+        result = result.filter(p => p.is_active);
+    } else if (statusFilter === 'inactive') {
+        result = result.filter(p => !p.is_active);
+    }
+
     if (searchTerm) {
         const lowerTerm = searchTerm.toLowerCase();
         result = result.filter(p => 
@@ -621,7 +664,7 @@ export default function ProductPage() {
       });
     }
     return result;
-  }, [products, searchTerm, selectedCategory, selectedVendor, sortConfig]);
+  }, [products, searchTerm, selectedCategory, selectedVendor, sortConfig, statusFilter]);
 
   const itemsPerPageToUse = itemsPerPage; 
   const totalPages = Math.ceil(processedProducts.length / itemsPerPageToUse);
@@ -696,14 +739,16 @@ export default function ProductPage() {
                         ))}
                     </SelectContent>
                 </Select>
-            ) : (field.type === "checkbox" || field.type === "boolean" || key === 'gst') ? (
+            ) : (field.type === "checkbox" || field.type === "boolean" || key === 'gst' || key === 'is_active') ? (
                 <div className={`flex items-center space-x-2 h-9 border rounded-md px-3 ${disabled ? "bg-slate-50" : "bg-white"}`}>
                     <Switch 
                         checked={!!value} 
                         onCheckedChange={(checked) => handleFormChange(key, checked)} 
                         disabled={disabled || field.readOnly}
                     />
-                    <span className={`text-sm font-medium ${disabled ? "text-slate-300" : "text-slate-700"}`}>{value ? "Yes" : "No"}</span>
+                    <span className={`text-sm font-medium ${disabled ? "text-slate-300" : "text-slate-700"}`}>
+                        {key === 'is_active' ? (value ? "Active" : "Inactive") : (value ? "Yes" : "No")}
+                    </span>
                 </div>
             ) : (
                 <Input 
@@ -729,10 +774,15 @@ export default function ProductPage() {
   // Carton 활성화 여부 체크 (이름에 Carton 또는 CTN이 없으면 비활성화)
   const isCarton = selectedUnitName.toLowerCase().includes('carton') || selectedUnitName.toLowerCase().includes('ctn');
 
+  // [NEW] Dynamic Pricing Labels
+  const priceLabelCtn = isCarton ? "Carton Price (CTN)" : "Price (Ctn)";
+  const priceLabelPack = isCarton ? "Pack Price" : `Price (${selectedUnitName})`;
+  // [NEW] Dynamic Label for "Packs in Ctn" -> "Pack" if not carton
+  const packsInCtnLabel = isCarton ? "Packs in Ctn" : "Pack";
+
   return (
     <div className="p-6 space-y-6 max-w-[1600px] mx-auto min-h-screen pb-20">
       
-      {/* Header, Stats, Table Sections ... (위와 동일) */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Product Management</h1>
@@ -768,7 +818,28 @@ export default function ProductPage() {
         </div>
       </div>
 
-      {/* ... (Stats Cards, Table Section 생략 - 기존 코드와 동일) ... */}
+      {/* [NEW] Status Tabs */}
+      <div className="flex gap-1 bg-slate-100 p-1 rounded-lg w-fit">
+        <button 
+            onClick={() => setStatusFilter('active')}
+            className={`px-4 py-1.5 text-sm font-bold rounded-md transition-all ${statusFilter === 'active' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+        >
+            Active
+        </button>
+        <button 
+            onClick={() => setStatusFilter('inactive')}
+            className={`px-4 py-1.5 text-sm font-bold rounded-md transition-all ${statusFilter === 'inactive' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+        >
+            Inactive
+        </button>
+        <button 
+            onClick={() => setStatusFilter('all')}
+            className={`px-4 py-1.5 text-sm font-bold rounded-md transition-all ${statusFilter === 'all' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+        >
+            All
+        </button>
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card>
           <CardContent className="pt-6 flex items-center gap-4">
@@ -891,18 +962,21 @@ export default function ProductPage() {
                     ) : (
                         paginatedData.map((product) => {
                             const isSelected = selectedIds.has(product.id);
-                            const isLowStock = product.current_stock_level < (product.min_stock_level || 5);
                             
-                            // [MODIFIED] Unit 이름 찾기 (Join된 데이터 활용)
+                            // Low Stock Logic for List View
                             // @ts-ignore
                             const unitName = product.product_units?.unit_name || "CTN";
                             const isCtn = unitName.toLowerCase().includes("ctn") || unitName.toLowerCase().includes("carton");
                             
-                            // [MODIFIED] Stock 표시 값 결정
+                            // 2. Unit에 따라 다른 재고를 기준으로 비교
+                            const currentStockForAlert = isCtn ? product.current_stock_level : product.current_stock_level_pack;
+                            const isLowStock = currentStockForAlert < (product.min_stock_level || 5);
+                            
+                            // Display logic
                             const displayStock = isCtn ? product.current_stock_level : product.current_stock_level_pack;
 
                             return (
-                                <tr key={product.id} className={`hover:bg-slate-50 transition-colors ${isSelected ? "bg-blue-50/50" : ""}`}>
+                                <tr key={product.id} className={`hover:bg-slate-50 transition-colors ${isSelected ? "bg-blue-50/50" : (!product.is_active ? "bg-slate-100/50 grayscale" : "")}`}>
                                     <td className="px-4 py-3 text-center">
                                         <Checkbox 
                                             checked={isSelected}
@@ -913,7 +987,11 @@ export default function ProductPage() {
                                         <div className="flex items-center gap-3">
                                             {/* [MODIFIED] List에서 이미지 제거 */}
                                             <div>
-                                                {product.product_name}
+                                                <div className="flex items-center gap-2">
+                                                    {product.product_name}
+                                                    {/* [MODIFIED] High Contrast Inactive Badge */}
+                                                    {!product.is_active && <span className="text-[9px] bg-red-600 text-white px-2 py-0.5 rounded font-bold uppercase shadow-sm">Inactive</span>}
+                                                </div>
                                                 <div className="flex gap-2 mt-0.5">
                                                     {product.product_barcode && <span className="text-[10px] text-slate-400">{product.product_barcode}</span>}
                                                 </div>
@@ -932,7 +1010,7 @@ export default function ProductPage() {
                                     
                                     <td className="px-4 py-3 text-center">
                                         <div className="flex flex-col items-center">
-                                            <span className={`px-2 py-1 rounded-full text-xs font-bold ${isLowStock ? "bg-red-100 text-red-600" : "bg-slate-100 text-slate-700"}`}>
+                                            <span className={`px-2 py-1 rounded-full text-xs font-bold ${product.is_active && isLowStock ? "bg-red-100 text-red-600" : "bg-slate-100 text-slate-700"}`}>
                                                 {displayStock}
                                             </span>
                                             <span className="text-[10px] text-slate-400 mt-0.5">{unitName}</span>
@@ -995,9 +1073,13 @@ export default function ProductPage() {
                 
                 {/* Section 1: Basic Info */}
                 <div className="border p-4 rounded-xl bg-slate-50/50">
-                    <h3 className="text-sm font-bold text-slate-900 mb-4 flex items-center gap-2">
-                        <Package className="w-4 h-4 text-slate-500" /> Basic Information
-                    </h3>
+                    <div className="flex justify-between items-center mb-4">
+                        <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                            <Package className="w-4 h-4 text-slate-500" /> Basic Information
+                        </h3>
+                        {/* [NEW] Active Status Switch in Modal */}
+                        {renderField('is_active')}
+                    </div>
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                         <div className="md:col-span-3">{renderField('product_name')}</div>
                         <div className="md:col-span-1">{renderField('location')}</div>
@@ -1026,7 +1108,11 @@ export default function ProductPage() {
                                             <Eye className="w-4 h-4 mr-1" /> Preview
                                         </Button>
                                         <button 
-                                            onClick={() => handleFormChange('product_image', '')}
+                                            onClick={() => {
+                                                handleFormChange('product_image', ''); 
+                                                setImageFile(null); 
+                                                if (fileInputRef.current) fileInputRef.current.value = "";
+                                            }}
                                             className="text-red-500 hover:text-red-700 ml-1"
                                             title="Remove image"
                                         >
@@ -1060,8 +1146,8 @@ export default function ProductPage() {
                             {renderField('gst')}
                             <div className="grid grid-cols-2 gap-2">
                                 {renderField('default_unit_id')}
-                                {/* ✅ [MODIFIED] Disable if not carton */}
-                                {renderField('total_pack_ctn', 'Packs in Ctn', '', !isCarton)}
+                                {/* ✅ [MODIFIED] Dynamic label for Packs in Ctn */}
+                                {renderField('total_pack_ctn', packsInCtnLabel, '', !isCarton)}
                             </div>
                         </div>
                         {/* Carton Pricing - Disable if not Carton */}
@@ -1069,15 +1155,18 @@ export default function ProductPage() {
                             <div className={`text-xs font-bold uppercase tracking-wide mb-2 flex items-center gap-2 ${!isCarton ? 'text-slate-400' : 'text-indigo-700'}`}>
                                 <Package className="w-3 h-3"/> Carton (CTN)
                             </div>
-                            {renderField('sell_price_ctn', 'Price (Ctn)', 'bg-white', !isCarton)}
+                            {/* [MODIFIED] Dynamic Labels */}
+                            {renderField('sell_price_ctn', priceLabelCtn, 'bg-white', !isCarton)}
                             {renderField('margin_ctn', 'Margin %', 'bg-white', !isCarton)}
                         </div>
                         {/* Dynamic Unit Header */}
                         <div className="bg-emerald-50/50 p-4 rounded-lg border border-emerald-100 space-y-4">
                             <div className="text-xs font-bold text-emerald-700 uppercase tracking-wide mb-2 flex items-center gap-2">
-                                <Package className="w-3 h-3"/> {selectedUnitName}
+                                {/* [MODIFIED] Change Header Label to "Pack" if isCarton (CTN selected) */}
+                                <Package className="w-3 h-3"/> {isCarton ? "Pack" : selectedUnitName}
                             </div>
-                            {renderField('sell_price_pack', `Price (${selectedUnitName})`, 'bg-white')}
+                            {/* [MODIFIED] Dynamic Labels */}
+                            {renderField('sell_price_pack', priceLabelPack, 'bg-white')}
                             {renderField('margin_pack', 'Margin %', 'bg-white')}
                         </div>
                     </div>
@@ -1091,7 +1180,8 @@ export default function ProductPage() {
                     <div className="grid grid-cols-3 gap-4 max-w-2xl">
                         {/* ✅ [MODIFIED] Disable Current Stock (CTN) if not carton */}
                         {renderField('current_stock_level', 'Current Stock (CTN)', '', !isCarton)}
-                        {renderField('current_stock_level_pack', `Current Stock (${selectedUnitName})`)}
+                        {/* ✅ [MODIFIED] Dynamic label for Pack Stock */}
+                        {renderField('current_stock_level_pack', `Current Stock (${isCarton ? "Pack" : selectedUnitName})`)}
                         {renderField('min_stock_level', 'Min Stock Level')}
                     </div>
                 </div>
@@ -1124,7 +1214,10 @@ export default function ProductPage() {
                         {lowStockItems.map(item => (
                             <tr key={item.id}>
                                 <td className="p-3 font-medium">{item.product_name}</td>
-                                <td className="p-3 text-center font-bold text-red-600">{item.current_stock_level}</td>
+                                <td className="p-3 text-center font-bold text-red-600">
+                                    {/* 2. Low Stock 표시 기준도 변경 */}
+                                    {(item.product_units?.unit_name.toLowerCase().includes('ctn') || item.product_units?.unit_name.toLowerCase().includes('carton')) ? item.current_stock_level : item.current_stock_level_pack}
+                                </td>
                                 <td className="p-3 text-center text-slate-500">{item.min_stock_level}</td>
                             </tr>
                         ))}
@@ -1139,6 +1232,7 @@ export default function ProductPage() {
 
       {/* 5. Customer Usage Modal */}
       <Dialog open={isUseModalOpen} onOpenChange={setIsUseModalOpen}>
+        {/* ... (Usage Modal Content Same as Before) ... */}
         <DialogContent className="max-w-5xl max-h-[85vh] overflow-hidden flex flex-col">
             <DialogHeader>
                 <DialogTitle className="flex items-center gap-2">
@@ -1176,6 +1270,10 @@ export default function ProductPage() {
                                 const discPack = Number(item.custom_price_pack) || 0;
                                 const finalPack = basePack - (basePack * (discPack / 100));
 
+                                // [NEW] Check if product unit is Carton or CTN
+                                const usageUnitName = currentUsageProduct?.product_units?.unit_name || "";
+                                const isUsageProductCarton = usageUnitName.toLowerCase().includes('ctn') || usageUnitName.toLowerCase().includes('carton');
+
                                 return (
                                     <tr key={item.id} className="hover:bg-slate-50/50">
                                         <td className="p-3">
@@ -1185,17 +1283,19 @@ export default function ProductPage() {
                                         <td className="p-3 text-right">
                                             <div className="flex flex-col items-end gap-1">
                                                 <div className="flex items-center gap-1">
+                                                    {/* [MODIFIED] Disable Ctn Disc Input if not Carton */}
                                                     <Input 
                                                         type="number" 
                                                         step="0.01" 
-                                                        className="w-20 h-8 text-right bg-white" 
+                                                        disabled={!isUsageProductCarton}
+                                                        className={`w-20 h-8 text-right ${!isUsageProductCarton ? "bg-slate-100 text-slate-400" : "bg-white"}`}
                                                         value={item.custom_price_ctn || 0} 
                                                         onChange={(e) => handleUpdateUsage(item.id, 'custom_price_ctn', e.target.value)}
                                                         onBlur={(e) => handleUpdateUsage(item.id, 'custom_price_ctn', toFixed2(e.target.value).toString())}
                                                     />
-                                                    <span className="text-slate-400 text-xs">%</span>
+                                                    <span className={`text-xs ${!isUsageProductCarton ? "text-slate-300" : "text-slate-400"}`}>%</span>
                                                 </div>
-                                                <div className="text-[10px] text-emerald-600 font-medium bg-emerald-50 px-1 rounded flex items-center gap-1">
+                                                <div className={`text-[10px] font-medium px-1 rounded flex items-center gap-1 ${!isUsageProductCarton ? "text-slate-400 bg-slate-100" : "text-emerald-600 bg-emerald-50"}`}>
                                                     <Calculator className="w-3 h-3"/> ${finalCtn.toFixed(2)}
                                                 </div>
                                             </div>
@@ -1223,7 +1323,7 @@ export default function ProductPage() {
                                                 <Button size="icon" variant="ghost" className="h-8 w-8 text-green-600 hover:text-green-700 hover:bg-green-50" onClick={() => handleSaveUsage(item)}>
                                                     <Save className="w-4 h-4" />
                                                 </Button>
-                                                <Button size="icon" variant="ghost" className="h-8 w-8 text-red-400 hover:text-red-600 hover:bg-red-50" onClick={() => handleDeleteUsage(item.id)}>
+                                                <Button size="icon" variant="ghost" className="h-8 w-8 text-red-400 hover:text-red-600 hover:bg-red-50" onClick={() => handleDeleteUsage(item.id)} title="Delete">
                                                     <X className="w-4 h-4" />
                                                 </Button>
                                             </div>

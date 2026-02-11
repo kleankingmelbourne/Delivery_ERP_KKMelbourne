@@ -74,6 +74,7 @@ interface ProductMaster {
     current_stock_level: number; 
     current_stock_level_pack: number; 
     default_unit_id?: string;
+    unit_name?: string; 
 }
 interface AllowedProduct { product_id: string; discount_ctn: number; discount_pack: number; }
 interface InvoiceItem { productId: string; unit: string; quantity: number; basePrice: number; discountRate: number; unitPrice: number; defaultUnitName?: string; }
@@ -117,13 +118,22 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
       // 마스터 데이터 로드
       const [custRes, prodRes, userRes, unitRes] = await Promise.all([
         supabase.from("customers").select("id, name, due_date, note, in_charge_delivery"),
-        supabase.from("products").select("*"),
+        // [수정] total_pack_ctn 추가
+        supabase.from("products").select("*, product_units (unit_name)"), 
         supabase.auth.getUser(),
         supabase.from("product_units").select("id, unit_name") 
       ]);
 
       if (custRes.data) setCustomers(custRes.data.map((c: any) => ({ id: c.id, name: c.name, due_date_term: c.due_date, note: c.note, in_charge_delivery: c.in_charge_delivery })));
-      if (prodRes.data) setAllProducts(prodRes.data);
+      
+      if (prodRes.data) {
+          const mappedProducts = prodRes.data.map((p: any) => ({
+              ...p,
+              unit_name: p.product_units?.unit_name || "CTN"
+          }));
+          setAllProducts(mappedProducts);
+      }
+
       if (userRes.data.user) {
         const { data: profile } = await supabase.from('profiles').select('display_name').eq('id', userRes.data.user.id).single();
         setCurrentUserName(profile?.display_name || userRes.data.user.email?.split('@')[0] || "Unknown");
@@ -159,17 +169,14 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
       // 아이템 매핑
       const loadedItems = inv.invoice_items.map((item: any) => {
         let unit = item.unit;
+        // Legacy Data Fallback
         if (!unit) {
             const match = item.description.match(/\((CTN|PACK)\)$/);
             unit = match ? match[1] : "CTN";
         }
         
         const prod = (prodRes.data || []).find((p: any) => p.id === item.product_id);
-        let defaultUnitName = "CTN";
-        if (prod && prod.default_unit_id && unitRes.data) {
-            const u = unitRes.data.find((u: any) => u.id === prod.default_unit_id);
-            if (u) defaultUnitName = u.unit_name;
-        }
+        const defaultUnitName = prod?.product_units?.unit_name || "CTN";
 
         return {
             productId: item.product_id,
@@ -255,8 +262,7 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
     const p = allProducts.find(p => p.id === productId); 
     if (!p) return;
     
-    const defUnitId = p.default_unit_id;
-    const defUnitName = defUnitId ? (unitMap[defUnitId] || "CTN") : "CTN";
+    const defUnitName = p.unit_name || "CTN";
     
     let unitToSet = defUnitName;
     if (unitToSet.toLowerCase().includes("carton")) unitToSet = "CTN";
@@ -287,7 +293,6 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
     const item = items[index]; if (!item.productId) return;
     applyPriceLogic(index, item.productId, item.unit, item.basePrice, newRate);
   };
-
   const updateItem = (index: number, field: keyof InvoiceItem, value: any) => { const newItems = [...items]; newItems[index] = { ...newItems[index], [field]: value }; setItems(newItems); };
   const removeItem = (index: number) => { if (items.length > 1) setItems(items.filter((_, i) => i !== index)); };
   const addItem = () => setItems([...items, { productId: "", unit: "CTN", quantity: 1, basePrice: 0, discountRate: 0, unitPrice: 0 }]);
@@ -296,49 +301,53 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
   const subTotal = roundAmount(items.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0));
   const gstTotal = roundAmount(subTotal * 0.1);
   const grandTotal = roundAmount(subTotal + gstTotal);
-
-  // ----------------------------------------------------------------
-  // [NEW] 재고 확인 로직 (Check Stock Availability for Edit)
-  // ----------------------------------------------------------------
-  const checkStockAvailability = async (newItemsList: InvoiceItem[]) => {
+  
+  // --- [MODIFIED] Stock Check Logic (Updated to account for carton opening) ---
+  const checkStockAvailability = async (itemList: InvoiceItem[]) => {
       const insufficientItems: string[] = [];
 
-      for (const item of newItemsList) {
+      for (const item of itemList) {
           if (!item.productId) continue;
 
-          // 1. 최신 DB 재고 가져오기
+          // 최신 재고 정보 가져오기 (total_pack_ctn 포함)
           const { data: product } = await supabase
               .from('products')
-              .select('id, product_name, current_stock_level, current_stock_level_pack')
+              .select('id, product_name, current_stock_level, current_stock_level_pack, total_pack_ctn')
               .eq('id', item.productId)
               .single();
 
           if (product) {
-              let currentStock = item.unit === 'CTN' ? product.current_stock_level : product.current_stock_level_pack;
+              let currentCtn = product.current_stock_level || 0;
+              let currentPack = product.current_stock_level_pack || 0;
+              const packsPerCtn = product.total_pack_ctn || 1;
               
-              // 2. [가상 복구] 기존 인보이스에 있던 수량만큼 더해준다 (원복 시뮬레이션)
+              // 1. [가상 복구] 기존 인보이스의 수량을 먼저 더해줌
               const originalItem = originalItems.find(oi => 
                   oi.productId === item.productId && oi.unit === item.unit
               );
               if (originalItem) {
-                  currentStock += originalItem.quantity;
+                  if (originalItem.unit === 'CTN') currentCtn += originalItem.quantity;
+                  else currentPack += originalItem.quantity;
               }
 
-              // 3. [가상 차감] 새로운 수량만큼 뺀다
-              const remainingStock = currentStock - item.quantity;
-
-              // 4. 부족하면 목록에 추가
-              if (remainingStock < 0) {
-                  insufficientItems.push(`${product.product_name} (${item.unit})`);
+              // 2. [가상 차감] - 부족 시 Auto Unpack 시뮬레이션
+              if (item.unit === "CTN") {
+                  if (currentCtn < item.quantity) {
+                      insufficientItems.push(`${product.product_name} (${item.unit})`);
+                  }
+              } else {
+                  // PACK
+                  const totalAvailablePacks = currentPack + (currentCtn * packsPerCtn);
+                  if (totalAvailablePacks < item.quantity) {
+                      insufficientItems.push(`${product.product_name} (${item.unit})`);
+                  }
               }
           }
       }
       return insufficientItems;
   };
 
-  // ----------------------------------------------------------------
-  // [MODIFIED] 재고 업데이트 함수
-  // ----------------------------------------------------------------
+  // --- [MODIFIED] Update Inventory Logic (Smart Deduction) ---
   const updateInventory = async (itemList: InvoiceItem[], isReturn: boolean) => {
     for (const item of itemList) {
         if (!item.productId) continue;
@@ -348,16 +357,33 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
 
         let currentCtn = product.current_stock_level || 0;
         let currentPack = product.current_stock_level_pack || 0;
+        const packsPerCtn = product.total_pack_ctn || 1;
         const qty = item.quantity; 
 
         if (isReturn) {
-            // [재고 복구]
+            // [재고 복구] - 단순히 수량 복구
             if (item.unit === 'CTN') currentCtn += qty;
             else currentPack += qty;
         } else {
-            // [재고 차감]
-            if (item.unit === 'CTN') currentCtn -= qty;
-            else currentPack -= qty;
+            // [재고 차감] - 스마트 차감 (Auto Unpack)
+            if (item.unit === 'CTN') { 
+                currentCtn -= qty; 
+            } else { 
+                // Unit is PACK
+                if (currentPack >= qty) {
+                    currentPack -= qty;
+                } else {
+                    // Pack 부족 -> Carton 확인
+                    if (currentCtn > 0) {
+                        currentCtn -= 1; // Open 1 carton
+                        currentPack += packsPerCtn; // Add packs from carton
+                        currentPack -= qty; // Deduct needed packs
+                    } else {
+                        // Carton도 없으면 그냥 마이너스
+                        currentPack -= qty;
+                    }
+                }
+            }
         }
 
         await supabase.from('products').update({ current_stock_level: currentCtn, current_stock_level_pack: currentPack }).eq('id', item.productId);
@@ -367,7 +393,6 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
   const handleUpdate = async () => {
     if (!selectedCustomerId) return alert("Please select a customer.");
     
-    // [NEW] 재고 확인 (저장 전)
     setLoading(true);
     const validItems = items.filter(item => item.productId);
     
@@ -377,14 +402,14 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
         if (insufficientItems.length > 0) {
             alert(`Stock Insufficient for the following items:\n- ${insufficientItems.join('\n- ')}\n\nCannot update invoice.`);
             setLoading(false);
-            return; // 저장 중단
+            return; 
         }
     }
 
     try {
       const selectedCustomer = customers.find(c => c.id === selectedCustomerId);
 
-      // 1. 기존 재고 복구 (Revert Original Items)
+      // 1. 기존 재고 복구 (Revert Original Items) - Return Mode
       if (originalItems.length > 0) {
         await updateInventory(originalItems, true); 
       }
@@ -428,7 +453,7 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
         const { error: itemError } = await supabase.from("invoice_items").insert(itemsData);
         if (itemError) throw itemError;
 
-        // 4. 새 재고 차감 (Apply New Items)
+        // 4. 새 재고 차감 (Apply New Items) - Deduction Mode
         await updateInventory(validItems, false); 
       }
 
@@ -517,7 +542,18 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
             <div className="border border-slate-200 rounded-lg"> 
               <table className="w-full text-sm text-left">
                 <thead className="bg-slate-50 border-b border-slate-200 text-slate-700 font-bold text-xs uppercase">
-                  <tr><th className="px-4 py-3 w-[35%]">Product</th><th className="px-4 py-3 w-[8%]">Unit</th><th className="px-4 py-3 w-[10%] text-right bg-slate-100/50">Base</th><th className="px-4 py-3 w-[10%] text-right text-blue-700">Net</th><th className="px-4 py-3 w-[8%] text-right">Disc %</th><th className="px-4 py-3 w-[8%] text-center">Qty</th><th className="px-4 py-3 w-[12%] text-right">Total</th><th className="w-[4%]"></th></tr>
+                  <tr>
+                    {/* [VISUAL 1] # Header added */}
+                    <th className="px-4 py-3 w-[3%] text-center text-slate-400">#</th>
+                    <th className="px-4 py-3 w-[32%]">Product</th>
+                    <th className="px-4 py-3 w-[8%]">Unit</th>
+                    <th className="px-4 py-3 w-[10%] text-right bg-slate-100/50">Base</th>
+                    <th className="px-4 py-3 w-[10%] text-right text-blue-700">Net</th>
+                    <th className="px-4 py-3 w-[8%] text-right">Disc %</th>
+                    <th className="px-4 py-3 w-[8%] text-center">Qty</th>
+                    <th className="px-4 py-3 w-[12%] text-right">Total</th>
+                    <th className="w-[4%]"></th>
+                  </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {items.map((item, idx) => {
@@ -525,6 +561,8 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
                     
                     return (
                         <tr key={idx} className="hover:bg-slate-50/50">
+                          {/* [VISUAL 2] Row Number added */}
+                          <td className="p-2 text-center text-xs text-slate-400 font-bold">{idx + 1}</td>
                           <td className="p-2"><SearchableSelect options={productOptions} value={item.productId} onChange={(val) => handleProductChange(idx, val)} placeholder="Search..." className="w-full min-w-[250px]" onClick={() => handleProductClick(idx)} /></td>
                           <td className="p-2">
                               <select 
@@ -545,10 +583,8 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
                           </td>
                           <td className="p-2 text-right text-slate-400 text-xs line-through decoration-slate-300">${item.basePrice.toFixed(2)}</td>
                           <td className="p-2 text-right font-bold text-blue-700 text-sm">${item.unitPrice.toFixed(2)}</td>
-                          <td className="p-2"><Input type="number" min="0" max="100" className="text-right h-9 text-xs border-blue-100 focus:border-blue-500 font-bold pr-2 bg-blue-50/50 text-blue-700" value={item.discountRate} onChange={(e) => handleDiscountChange(idx, Number(e.target.value))} /></td>
-                          <td className="p-2">
-                            <Input type="number" step="1" onKeyDown={(e) => { if (e.key === '.' || e.key === 'e') e.preventDefault(); }} className="text-center h-9" value={item.quantity} onChange={(e) => { const val = e.target.value; if (val === '') updateItem(idx, "quantity", ''); else updateItem(idx, "quantity", parseInt(val, 10)); }} />
-                          </td>
+                          <td className="p-2 relative"><Input type="number" min="0" max="100" className="text-right h-9 text-xs border-blue-100 focus:border-blue-500 font-bold pr-2 bg-blue-50/50 text-blue-700" value={item.discountRate} onChange={(e) => handleDiscountChange(idx, Number(e.target.value))} /></td>
+                          <td className="p-2"><Input type="number" step="1" onKeyDown={(e) => { if (e.key === '.' || e.key === 'e') e.preventDefault(); }} className="text-center h-9" value={item.quantity} onChange={(e) => { const val = e.target.value; if (val === '') updateItem(idx, "quantity", ''); else updateItem(idx, "quantity", parseInt(val, 10)); }} /></td>
                           <td className="px-4 py-3 text-right font-bold text-slate-900">${(item.quantity * item.unitPrice).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                           <td className="p-2 text-center"><button onClick={() => removeItem(idx)} className="text-slate-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button></td>
                         </tr>
@@ -560,7 +596,7 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
             </div>
             
             <div className="space-y-6">
-                <div className="space-y-2"><label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2"><FileText className="w-3.5 h-3.5" /> Invoice Memo</label><Textarea placeholder="Invoice notes..." className="resize-none h-20 bg-slate-50" value={memo} onChange={(e) => setMemo(e.target.value)} /></div>
+                <div className="space-y-2"><label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2"><FileText className="w-3.5 h-3.5" /> Invoice Memo</label><Textarea placeholder="Visible on invoice..." className="resize-none h-[80px] bg-slate-50" value={memo} onChange={(e) => setMemo(e.target.value)} /></div>
                 <div className="bg-amber-50 p-4 rounded-lg border border-amber-200 shadow-sm space-y-2"><div className="flex items-center justify-between"><h3 className="font-bold text-amber-900 text-xs uppercase flex items-center gap-2"><Lock className="w-3 h-3"/> Staff Note</h3><span className="text-[10px] text-amber-700 font-medium px-2 py-0.5 bg-amber-100 rounded-full">Auto-updates Customer Profile</span></div><Textarea className="bg-white border-amber-200 text-sm min-h-[100px] resize-y" value={staffNote} onChange={(e) => setStaffNote(e.target.value)} placeholder="Internal notes about this customer..." /></div>
             </div>
           </div>
@@ -614,6 +650,7 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
                </div>
             </div>
           )}
+
         </div>
       </div>
     </div>

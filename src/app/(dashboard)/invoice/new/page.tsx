@@ -71,8 +71,9 @@ interface ProductMaster {
     total_pack_ctn?: number; 
     default_unit_id?: string; 
     product_units?: { unit_name: string }; 
-    current_stock_level: number;       // [NEW] 재고 확인용
-    current_stock_level_pack: number;  // [NEW] 재고 확인용
+    unit_name?: string; 
+    current_stock_level: number;       
+    current_stock_level_pack: number;  
 } 
 interface AllowedProduct { product_id: string; discount_ctn: number; discount_pack: number; }
 interface InvoiceItem { productId: string; unit: string; quantity: number; basePrice: number; discountRate: number; unitPrice: number; defaultUnitName?: string; }
@@ -128,7 +129,11 @@ export default function NewInvoicePage() {
           if(units) units.forEach((u: any) => uMap[u.id] = u.unit_name);
           setUnitMap(uMap);
 
-          setAllProducts(prodData as any);
+          const mappedProducts = prodData.map((p: any) => ({
+              ...p,
+              unit_name: p.product_units?.unit_name || "CTN" 
+          }));
+          setAllProducts(mappedProducts);
       }
       
       const { data: { user } } = await supabase.auth.getUser();
@@ -223,8 +228,7 @@ export default function NewInvoicePage() {
     const p = allProducts.find(p => p.id === productId); 
     if (!p) return;
     
-    const defUnitId = p.default_unit_id;
-    const defUnitName = defUnitId ? (unitMap[defUnitId] || "CTN") : "CTN";
+    const defUnitName = p.unit_name || "CTN";
     
     let unitToSet = defUnitName;
     if (unitToSet.toLowerCase().includes("carton")) unitToSet = "CTN";
@@ -264,44 +268,81 @@ export default function NewInvoicePage() {
   const gstTotal = roundAmount(subTotal * 0.1);
   const grandTotal = roundAmount(subTotal + gstTotal);
   
-  // --- [NEW] Stock Check Logic ---
+  // --- [MODIFIED] Stock Check Logic (Updated to account for carton opening) ---
   const checkStockAvailability = async (itemList: InvoiceItem[]) => {
       const insufficientItems: string[] = [];
       
       for (const item of itemList) {
           if (!item.productId) continue;
 
-          // 최신 재고 정보를 가져옵니다.
+          // 최신 재고 정보 가져오기
           const { data: product } = await supabase
               .from('products')
-              .select('id, product_name, current_stock_level, current_stock_level_pack')
+              .select('id, product_name, current_stock_level, current_stock_level_pack, total_pack_ctn')
               .eq('id', item.productId)
               .single();
 
           if (product) {
-              const currentStock = item.unit === "CTN" ? product.current_stock_level : product.current_stock_level_pack;
-              // 재고가 주문 수량보다 적으면 (즉, 결과가 음수이면)
-              if ((currentStock - item.quantity) < 0) {
-                  insufficientItems.push(`${product.product_name} (${item.unit})`);
+              const currentCtn = product.current_stock_level || 0;
+              const currentPack = product.current_stock_level_pack || 0;
+              const packsPerCtn = product.total_pack_ctn || 1;
+
+              // [재고 체크] Pack인 경우, Ctn을 까서 충당 가능한지까지 확인
+              if (item.unit === "CTN") {
+                  if (currentCtn < item.quantity) {
+                      insufficientItems.push(`${product.product_name} (${item.unit})`);
+                  }
+              } else {
+                  // PACK
+                  const totalAvailablePacks = currentPack + (currentCtn * packsPerCtn);
+                  if (totalAvailablePacks < item.quantity) {
+                      insufficientItems.push(`${product.product_name} (${item.unit})`);
+                  }
               }
           }
       }
       return insufficientItems;
   };
 
+  // --- [MODIFIED] Update Inventory Logic (Smart Deduction) ---
   const updateInventory = async (itemList: InvoiceItem[], isReturn: boolean) => {
     for (const item of itemList) {
         if (!item.productId) continue;
         const { data: product } = await supabase.from('products').select('current_stock_level, current_stock_level_pack, total_pack_ctn').eq('id', item.productId).single();
         if (!product) continue;
+
         let currentCtn = product.current_stock_level || 0;
         let currentPack = product.current_stock_level_pack || 0;
+        const packsPerCtn = product.total_pack_ctn || 1; // 0으로 나누기 방지
         const qty = item.quantity; 
+
         if (isReturn) {
+            // [반품/삭제] 단순히 더해줌
             if (item.unit === 'CTN') { currentCtn += qty; } else { currentPack += qty; }
         } else {
-            if (item.unit === 'CTN') { currentCtn -= qty; } 
-            else { currentPack -= qty; }
+            // [출고/생성] 차감 로직
+            if (item.unit === 'CTN') { 
+                currentCtn -= qty; 
+            } else { 
+                // PACK 차감 로직 (부족하면 CTN 오픈)
+                if (currentPack >= qty) {
+                    // 팩 재고가 충분하면 팩에서 차감
+                    currentPack -= qty;
+                } else {
+                    // 팩 재고가 부족함 -> CTN 확인
+                    if (currentCtn > 0) {
+                        // CTN을 1개 까서 PACK 재고에 더함
+                        currentCtn -= 1;
+                        currentPack += packsPerCtn;
+                        
+                        // 그 후 PACK 차감
+                        currentPack -= qty;
+                    } else {
+                        // CTN도 없으면 그냥 마이너스 처리 (일관성 유지)
+                        currentPack -= qty;
+                    }
+                }
+            }
         }
         await supabase.from('products').update({ current_stock_level: currentCtn, current_stock_level_pack: currentPack }).eq('id', item.productId);
     }
@@ -325,7 +366,17 @@ export default function NewInvoicePage() {
         if (validItems.length > 0) {
           const itemsData = validItems.map(item => {
               const p = allProducts.find(x => x.id === item.productId);
-              return { invoice_id: nextId, product_id: item.productId, description: `${p?.product_name || 'Item'} (${item.unit})`, quantity: item.quantity, unit: item.unit, base_price: item.basePrice, discount: item.discountRate, unit_price: item.unitPrice, amount: roundAmount(item.quantity * item.unitPrice) };
+              return { 
+                  invoice_id: nextId, 
+                  product_id: item.productId, 
+                  description: `${p?.product_name || 'Item'} (${item.unit})`, 
+                  quantity: item.quantity, 
+                  unit: item.unit, // [확인] 아이템의 unit 저장
+                  base_price: item.basePrice, 
+                  discount: item.discountRate, 
+                  unit_price: item.unitPrice, 
+                  amount: roundAmount(item.quantity * item.unitPrice) 
+              };
           });
           const { error: itemError } = await supabase.from("invoice_items").insert(itemsData);
           if (itemError) throw itemError;
@@ -347,17 +398,15 @@ export default function NewInvoicePage() {
   const handleSubmit = async (redirect: boolean) => {
     if (!selectedCustomerId) return alert("Please select a customer.");
     
-    // [NEW] 재고 확인
     setLoading(true);
     const validItems = items.filter(item => item.productId);
     
-    // Credit Memo가 아닐 때만 재고 부족 체크
     if (grandTotal >= 0) {
         const insufficientItems = await checkStockAvailability(validItems);
         if (insufficientItems.length > 0) {
             alert(`Stock Insufficient for the following items:\n- ${insufficientItems.join('\n- ')}\n\nCannot save invoice.`);
             setLoading(false);
-            return; // 저장 중단
+            return; 
         }
     }
 
@@ -373,7 +422,17 @@ export default function NewInvoicePage() {
 
       const itemsData = validItems.map(item => {
         const p = allProducts.find(x => x.id === item.productId);
-        return { invoice_id: inv.id, product_id: item.productId, description: `${p?.product_name} (${item.unit})`, quantity: item.quantity, unit: item.unit, base_price: item.basePrice, discount: item.discountRate, unit_price: item.unitPrice, amount: roundAmount(item.quantity * item.unitPrice) };
+        return { 
+            invoice_id: inv.id, 
+            product_id: item.productId, 
+            description: `${p?.product_name} (${item.unit})`, 
+            quantity: item.quantity, 
+            unit: item.unit, // [중요] 여기 item.unit이 해당 아이템에 맞게 저장됩니다.
+            base_price: item.basePrice, 
+            discount: item.discountRate, 
+            unit_price: item.unitPrice, 
+            amount: roundAmount(item.quantity * item.unitPrice) 
+        };
       });
 
       if (itemsData.length > 0) {
@@ -414,8 +473,11 @@ export default function NewInvoicePage() {
     setShowAllProducts(false); setAutoAddProduct(false); setAvailableCredit(0); setCurrentDriverId(null); 
     setIsPickup(false); setCustomerStats({ totalOverdue: 0, oldestInvoiceDate: null });
     const refreshProducts = async () => {
-        const { data: prodData } = await supabase.from("products").select("*");
-        if (prodData) setAllProducts(prodData as any);
+        const { data: prodData } = await supabase.from("products").select("*, product_units(unit_name)");
+        if (prodData) {
+            const mapped = prodData.map((p:any) => ({...p, unit_name: p.product_units?.unit_name || "CTN"}));
+            setAllProducts(mapped);
+        }
     };
     refreshProducts();
   };
@@ -451,7 +513,18 @@ export default function NewInvoicePage() {
             <div className="border border-slate-200 rounded-lg"> 
               <table className="w-full text-sm text-left">
                 <thead className="bg-slate-50 border-b border-slate-200 text-slate-700 font-bold text-xs uppercase">
-                  <tr><th className="px-4 py-3 w-[35%]">Product</th><th className="px-4 py-3 w-[8%]">Unit</th><th className="px-4 py-3 w-[10%] text-right bg-slate-100/50">Base</th><th className="px-4 py-3 w-[10%] text-right text-blue-700">Net</th><th className="px-4 py-3 w-[8%] text-right">Disc %</th><th className="px-4 py-3 w-[8%] text-center">Qty</th><th className="px-4 py-3 w-[12%] text-right">Total</th><th className="w-[4%]"></th></tr>
+                  <tr>
+                    {/* [VISUAL 1] # Header added */}
+                    <th className="px-4 py-3 w-[3%] text-center text-slate-400">#</th>
+                    <th className="px-4 py-3 w-[32%]">Product</th>
+                    <th className="px-4 py-3 w-[8%]">Unit</th>
+                    <th className="px-4 py-3 w-[10%] text-right bg-slate-100/50">Base</th>
+                    <th className="px-4 py-3 w-[10%] text-right text-blue-700">Net</th>
+                    <th className="px-4 py-3 w-[8%] text-right">Disc %</th>
+                    <th className="px-4 py-3 w-[8%] text-center">Qty</th>
+                    <th className="px-4 py-3 w-[12%] text-right">Total</th>
+                    <th className="w-[4%]"></th>
+                  </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {items.map((item, idx) => {
@@ -459,8 +532,11 @@ export default function NewInvoicePage() {
                     
                     return (
                         <tr key={idx} className="hover:bg-slate-50/50">
+                          {/* [VISUAL 2] Row Number added */}
+                          <td className="p-2 text-center text-xs text-slate-400 font-bold">{idx + 1}</td>
                           <td className="p-2"><SearchableSelect options={productOptions} value={item.productId} onChange={(val) => handleProductChange(idx, val)} placeholder="Search product..." className="w-full min-w-[250px]" onClick={() => handleProductClick(idx)} /></td>
                           <td className="p-2">
+                              {/* [수정] Unit Select 박스 */}
                               <select 
                                 className={`w-full p-2 border border-slate-200 rounded text-center font-medium outline-none text-xs ${!isCtnOrPack && item.productId ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : 'bg-slate-50'}`} 
                                 value={item.unit} 

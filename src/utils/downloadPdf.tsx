@@ -8,7 +8,7 @@ import QuotationDocument, { QuotationData } from '@/components/pdf/QuotationDocu
 import PurchaseOrderDocument, { PurchaseOrderData } from '@/components/pdf/PurchaseOrderDocument';
 
 // ------------------------------------------------------------------
-// 1. Invoice 데이터 조회 및 변환
+// 1. Invoice 데이터 조회 및 변환 (Credit Memo 포함)
 // ------------------------------------------------------------------
 const getInvoiceData = async (invoiceId: string): Promise<InvoiceData | null> => {
   if (!invoiceId) return null;
@@ -20,10 +20,10 @@ const getInvoiceData = async (invoiceId: string): Promise<InvoiceData | null> =>
     .select(`
       *,
       customers ( 
-        name, company, address, suburb, state, postcode,
+        name, company, address, suburb, state, postcode, mobile,
         delivery_address, delivery_suburb, delivery_state, delivery_postcode
       ),
-      invoice_items ( quantity, unit_price, amount, products ( * ) )
+      invoice_items ( quantity, unit, unit_price, amount, products ( * ) )
     `)
     .eq('id', invoiceId)
     .single();
@@ -42,7 +42,7 @@ const getInvoiceData = async (invoiceId: string): Promise<InvoiceData | null> =>
       const name = product.name || product.product_name || product.description || "Item";
       return {
         qty: item.quantity || 0,
-        unit: product.unit || "EA",
+        unit: item.unit || product.unit || "EA",
         description: name,
         itemCode: product.item_code || "",
         unitPrice: item.unit_price || 0,
@@ -79,6 +79,9 @@ const getInvoiceData = async (invoiceId: string): Promise<InvoiceData | null> =>
       date: invoice.invoice_date,
       dueDate: invoice.due_date || invoice.invoice_date,
       customerName: invoice.customers?.company || invoice.customers?.name || "Unknown Customer",
+      
+      customerMobile: invoice.customers?.mobile || "",
+      
       deliveryName: invoice.customers?.name || "",
       address: billingAddr,
       deliveryAddress: finalDeliveryAddress,
@@ -174,7 +177,7 @@ export const printBulkPdf = async (ids: string[]) => {
 };
 
 // ------------------------------------------------------------------
-// 4. Picking Summary (Updated: Vendor ID Added)
+// 4. Picking Summary
 // ------------------------------------------------------------------
 export const downloadPickingSummary = async (ids: string[]) => {
   const supabase = createClient();
@@ -189,7 +192,6 @@ export const downloadPickingSummary = async (ids: string[]) => {
     return;
   }
 
-  // [UPDATE] vendorProductId 추가
   const summaryMap = new Map<string, { name: string, location: string, qty: number, unit: string, vendorProductId: string }>();
 
   items.forEach((item: any) => {
@@ -203,7 +205,7 @@ export const downloadPickingSummary = async (ids: string[]) => {
     }
     const name = product.name || product.product_name || item.description.replace(/\((CTN|PACK|BOX|KG|G)\)$/i, '').trim();
     const qty = item.quantity || 0;
-    const vendorProductId = product.vendor_product_id || ""; // [NEW] Get Vendor ID
+    const vendorProductId = product.vendor_product_id || "";
 
     if (summaryMap.has(key)) {
       const existing = summaryMap.get(key)!;
@@ -224,14 +226,13 @@ export const downloadPickingSummary = async (ids: string[]) => {
   const now = new Date();
   const dateStr = `${now.getDate().toString().padStart(2,'0')}/${(now.getMonth()+1).toString().padStart(2,'0')}/${now.getFullYear()}, ${now.getHours()}:${now.getMinutes()}`;
 
-  // [UPDATE] Column Layout: Added VENDOR ID
   let content = `Product Picking Summary\nGenerated: ${dateStr}\nSelected Invoices Count: ${ids.length}\n==========================================================================================\nLOCATION      | UNIT   | QTY   | VENDOR ID      | PRODUCT NAME\n------------------------------------------------------------------------------------------\n`;
   
   summaryList.forEach(item => {
     const locStr = `[ ${item.location} ]`.padEnd(13, ' ');
     const unitStr = `${item.unit}`.padEnd(6, ' '); 
     const qtyStr = `${item.qty}`.padEnd(5, ' ');
-    const vidStr = `${item.vendorProductId}`.padEnd(14, ' '); // 14 chars padding
+    const vidStr = `${item.vendorProductId}`.padEnd(14, ' '); 
     content += `${locStr} | ${unitStr} | ${qtyStr} | ${vidStr} | ${item.name}\n`;
   });
   
@@ -243,7 +244,7 @@ export const downloadSummaryTxt = downloadPickingSummary;
 
 
 // ------------------------------------------------------------------
-// 5. Statement PDF 생성 및 다운로드 (주소 통합, 웹사이트, Footer Info 추가)
+// 5. Statement PDF 생성 및 다운로드 (Mobile 추가)
 // ------------------------------------------------------------------
 export const fetchAndGenerateStatementBlob = async (
   customerId: string, 
@@ -256,7 +257,7 @@ export const fetchAndGenerateStatementBlob = async (
   try {
     const { data: customer, error: customerError } = await supabase
       .from("customers")
-      .select("id, address, suburb, state, postcode")
+      .select("id, address, suburb, state, postcode, mobile") 
       .eq("id", customerId)
       .maybeSingle(); 
 
@@ -265,9 +266,14 @@ export const fetchAndGenerateStatementBlob = async (
     const formatAddress = (addr?: string, sub?: string, st?: string, post?: string) => 
       [addr, sub, st, post].filter(val => val && val.trim().length > 0).join(", ");
 
-    const customerAddress = customer 
+    let customerAddress = customer 
       ? formatAddress(customer.address, customer.suburb, customer.state, customer.postcode)
       : "";
+    
+    // ✅ [Statement] 주소 뒤에 Mobile 번호 추가
+    if (customer?.mobile) {
+        customerAddress += `\nMobile: ${customer.mobile}`;
+    }
 
     const { data: prevInvoices } = await supabase
       .from("invoices")
@@ -414,7 +420,7 @@ export const printStatementPdf = async (customerId: string, startDate: string, e
 
 
 // ------------------------------------------------------------------
-// 6. Quotation PDF 생성 및 다운로드
+// 6. Quotation PDF 생성 및 다운로드 (Mobile 추가)
 // ------------------------------------------------------------------
 const getQuotationData = async (quotationId: string): Promise<QuotationData | null> => {
   if (!quotationId) return null;
@@ -426,10 +432,10 @@ const getQuotationData = async (quotationId: string): Promise<QuotationData | nu
     .select(`
       *,
       customers ( 
-        name, company, address, suburb, state, postcode,
+        name, company, address, suburb, state, postcode, mobile,
         delivery_address, delivery_suburb, delivery_state, delivery_postcode
       ),
-      quotation_items ( quantity, unit_price, amount, products ( * ) )
+      quotation_items ( quantity, unit, unit_price, amount, products ( * ) )
     `)
     .eq('id', quotationId)
     .single();
@@ -448,7 +454,7 @@ const getQuotationData = async (quotationId: string): Promise<QuotationData | nu
       const name = product.name || product.product_name || product.description || "Item";
       return {
         qty: item.quantity || 0,
-        unit: product.unit || "EA",
+        unit: item.unit || product.unit || "EA", 
         description: name,
         itemCode: product.item_code || "",
         unitPrice: item.unit_price || 0,
@@ -463,23 +469,32 @@ const getQuotationData = async (quotationId: string): Promise<QuotationData | nu
     const formatAddress = (addr: string, sub: string, st: string, post: string) => 
       [addr, sub, st, post].filter(Boolean).join(" ");
 
-    const billingAddr = formatAddress(
+    let billingAddr = formatAddress(
       quotation.customers?.address, quotation.customers?.suburb, quotation.customers?.state, quotation.customers?.postcode
     );
+
+    // ✅ [Quotation] 주소 뒤에 Mobile 번호 추가
+    if (quotation.customers?.mobile) {
+        billingAddr += `\nMobile: ${quotation.customers.mobile}`;
+    }
+
     const finalDeliveryAddress = billingAddr; 
 
     const calculatedSubtotal = mappedItems.reduce((sum: number, item: any) => sum + (Number(item.amount) || 0), 0);
     const calculatedGST = calculatedSubtotal * 0.10;
     const calculatedTotalAmount = calculatedSubtotal + calculatedGST;
 
+    const customerName = quotation.customers?.company || quotation.customers?.name || quotation.quotation_to || "Unknown Customer";
+    const deliveryName = quotation.customers?.name || quotation.quotation_to || "";
+
     return {
       invoiceNo: quotation.quotation_number || quotation.id, 
       date: quotation.issue_date || quotation.quotation_date, 
       dueDate: quotation.valid_until || quotation.quotation_date, 
       
-      customerName: quotation.customers?.company || quotation.customers?.name || "Unknown Customer",
-      deliveryName: quotation.customers?.name || "",
-      address: billingAddr,
+      customerName: customerName,
+      deliveryName: deliveryName,
+      address: billingAddr, 
       deliveryAddress: finalDeliveryAddress,
       memo: quotation.memo || "", 
       
@@ -538,7 +553,7 @@ export const printQuotationPdf = async (id: string) => {
 };
 
 // ------------------------------------------------------------------
-// 7. Purchase Order PDF 생성 및 다운로드
+// 7. Purchase Order PDF 생성 및 다운로드 (Unit 추가)
 // ------------------------------------------------------------------
 const getPurchaseOrderData = async (poId: string): Promise<PurchaseOrderData | null> => {
   const supabase = createClient();
@@ -557,12 +572,11 @@ const getPurchaseOrderData = async (poId: string): Promise<PurchaseOrderData | n
     return null;
   }
 
-  // [UPDATE] products에서 vendor_product_id 조회
   const { data: items } = await supabase
     .from('purchase_order_items')
     .select(`
       *,
-      products ( vendor_product_id, product_name, gst )
+      products ( vendor_product_id, product_name, gst, unit )
     `)
     .eq('po_id', poId);
 
@@ -575,8 +589,9 @@ const getPurchaseOrderData = async (poId: string): Promise<PurchaseOrderData | n
     
     return {
         description: item.description || item.products?.product_name || "Item",
-        vendorProductId: item.products?.vendor_product_id || "", // [NEW] Vendor Product ID 매핑
+        vendorProductId: item.products?.vendor_product_id || "", 
         quantity: Number(item.quantity) || 0,
+        unit: item.unit || item.products?.unit || "EA",
         unitPrice: Number(item.unit_price) || 0,
         amount: amount,
         gst: productGst
@@ -606,9 +621,9 @@ const getPurchaseOrderData = async (poId: string): Promise<PurchaseOrderData | n
 
     vendorName: po.product_vendors?.vendor_name || "",
     vendorAddress: po.product_vendors?.address || "",
-    vendorSuburb: po.product_vendors?.suburb || "",   // [NEW]
-    vendorState: po.product_vendors?.state || "",     // [NEW]
-    vendorPostcode: po.product_vendors?.postcode || "", // [NEW]
+    vendorSuburb: po.product_vendors?.suburb || "",   
+    vendorState: po.product_vendors?.state || "",     
+    vendorPostcode: po.product_vendors?.postcode || "", 
     vendorPhone: po.product_vendors?.tel || "",
     vendorEmail: po.product_vendors?.email || "",
 

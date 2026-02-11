@@ -7,6 +7,7 @@ export interface InvoiceData {
   dueDate: string;
   customerName: string;
   customerId?: string;
+  customerMobile?: string; // ✅ [수정] 모바일 번호 필드 추가
   deliveryName?: string;
   address: string;
   deliveryAddress?: string;
@@ -30,7 +31,6 @@ export interface InvoiceData {
   bsb?: string;
   accountNumber?: string;
   
-  // ✅ [수정] DB 컬럼명과 100% 일치하게 변경
   bank_payid?: string; 
 
   companyName?: string;
@@ -58,7 +58,6 @@ const styles = StyleSheet.create({
   bankingRow: { flexDirection: 'row', marginBottom: 2 },
   bankingLabel: { width: 60, fontWeight: 'bold', color: '#555' },
   
-  // PayID 스타일
   separatorLine: { borderBottomWidth: 1, borderBottomColor: '#eee', marginVertical: 4 },
   payIdRow: { flexDirection: 'row', marginTop: 2 },
   payIdLabel: { width: 60, fontWeight: 'bold', color: '#555' }, 
@@ -135,7 +134,6 @@ export const InvoicePage = ({ data }: { data: InvoiceData }) => {
             <View style={styles.bankingRow}><Text style={styles.bankingLabel}>BSB:</Text><Text>{data.bsb || "-"}</Text></View>
             <View style={styles.bankingRow}><Text style={styles.bankingLabel}>A/C NO:</Text><Text>{data.accountNumber || "-"}</Text></View>
             
-            {/* ✅ [수정] 변수명을 bank_payid로 변경하여 매핑 */}
             <View style={styles.separatorLine} />
             <View style={styles.payIdRow}><Text style={styles.payIdLabel}>PayID:</Text><Text>{data.bank_payid || "-"}</Text></View>
           </View>
@@ -147,6 +145,8 @@ export const InvoicePage = ({ data }: { data: InvoiceData }) => {
               <Text style={styles.sectionTitle}>INVOICE TO</Text>
               <Text style={styles.nameText}>{data.customerName}</Text> 
               <Text style={styles.addressText}>{data.address}</Text>
+              {/* ✅ [수정] 주소 밑에 모바일 번호 추가 */}
+              <Text style={styles.addressText}>Mobile: {data.customerMobile}</Text>
           </View>
           <View style={styles.addressColumn}>
              <Text style={styles.sectionTitle}>DELIVERY TO</Text>

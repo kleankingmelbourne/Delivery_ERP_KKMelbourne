@@ -356,27 +356,38 @@ function PaymentFormContent() {
 
           // [NEW] 만약 완납(Fully Paid)되었다면, 증거 사진 삭제 (bucket: delivery_proofs)
           if (isFullyPaid) {
+            console.log(`Invoice ${invoiceId} is fully paid. Attempting to delete proof...`);
             try {
-              // 1. 해당 인보이스 ID가 포함된 파일 찾기 (확장자를 모르므로 search 사용)
-              // 보통 파일명에 invoiceId가 포함되어 저장됨
-              const { data: files } = await supabase
+              // 1. 파일 목록 조회 (파일명에 invoiceId가 포함된 파일 검색)
+              const { data: files, error: listError } = await supabase
                 .storage
-                .from('delivery_proofs')
+                .from('delivery-proofs')
                 .list('', { search: invoiceId });
 
-              if (files && files.length > 0) {
-                const filesToRemove = files.map(f => f.name);
-                // 2. 파일 삭제 실행
-                const { error: removeError } = await supabase
-                  .storage
-                  .from('delivery_proofs')
-                  .remove(filesToRemove);
+              if (listError) {
+                console.error("List files error:", listError);
+              } else if (files && files.length > 0) {
+                // 정확한 매칭을 위해 필터링 (선택 사항이지만 권장)
+                // 예: ID가 'INV-1'인데 'INV-10'이 검색되는 것 방지
+                const targetFiles = files.filter(f => f.name.startsWith(invoiceId + "_")); 
+                // 또는 단순하게 files 전체를 삭제해도 됩니다 (파일명을 유니크하게 지었다면).
                 
-                if (removeError) {
-                  console.error("Failed to delete proof for invoice:", invoiceId, removeError);
-                } else {
-                  console.log("Proof deleted for paid invoice:", invoiceId);
+                const filesToRemove = targetFiles.length > 0 ? targetFiles.map(f => f.name) : files.map(f => f.name);
+
+                if (filesToRemove.length > 0) {
+                    const { error: removeError } = await supabase
+                      .storage
+                      .from('delivery-proofs')
+                      .remove(filesToRemove);
+                    
+                    if (removeError) {
+                      console.error("Failed to delete proof:", removeError);
+                    } else {
+                      console.log("Proof deleted successfully:", filesToRemove);
+                    }
                 }
+              } else {
+                  console.log("No proof files found for this invoice.");
               }
             } catch (err) {
               console.error("Error during proof deletion:", err);
@@ -601,7 +612,7 @@ function PaymentFormContent() {
                                 className="border-slate-300 data-[state=checked]:bg-blue-600 data-[state=checked]:border-blue-600"
                             />
                         </td>
-                        <td className="px-6 py-4 font-mono text-xs text-slate-500">#{inv.id.slice(0,8).toUpperCase()}</td>
+                        <td className="px-6 py-4 font-mono text-xs text-slate-500">#{inv.id.slice(0,13).toUpperCase()}</td>
                         <td className="px-6 py-4 text-slate-700">{inv.invoice_date}</td>
                         <td className="px-6 py-4 text-slate-500">{inv.due_date}</td>
                         <td className="px-6 py-4 text-right font-medium text-slate-900">{formatCurrency(inv.total_amount)}</td>

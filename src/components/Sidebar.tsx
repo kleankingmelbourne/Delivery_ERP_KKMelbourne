@@ -28,11 +28,11 @@ import {
   Navigation,     
   TrendingUp,     
   Banknote,       
-  Receipt         
+  Receipt,
+  RefreshCw // [NEW] 자동 생성 아이콘 추가
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import Image from "next/image"
-import { Basic } from "next/font/google"
 
 // --- 메뉴 구성 데이터 ---
 const menuItems = [
@@ -73,7 +73,17 @@ const menuItems = [
     ]
   },
 
-  { name: "STATEMENT", href: "/statement", icon: FileSearch },
+  // [MODIFIED] STATEMENT (서브메뉴로 변경됨)
+  { 
+    name: "STATEMENT", 
+    icon: FileSearch,
+    isSubmenu: true,
+    subItems: [
+      { name: "STATEMENT LIST", href: "/statement/list", icon: List },
+      { name: "AUTO STATEMENT", href: "/statement/auto", icon: RefreshCw }, // 자동 생성 느낌의 아이콘
+    ]
+  },
+
   { name: "QUOTATION", href: "/quotation", icon: FileSpreadsheet },
 
   // PRODUCT
@@ -115,7 +125,7 @@ const menuItems = [
   { name: "STAFF", href: "/staff", icon: UserCircle },
   { name: "POST", href: "/post", icon: ClipboardList },
   
-  // [변경된 부분] SETTING 메뉴 이름 변경
+  // SETTING
   { 
     name: "SETTING", 
     icon: Settings, 
@@ -184,15 +194,6 @@ export default function Sidebar() {
                 priority 
             />
         </div>
-
-        {/* 로고 텍스트 (한 줄 표시 수정됨) */}
-        {/* {!isCollapsed && (
-          <div className="text-center mt-3 animate-in fade-in slide-in-from-top-2 duration-300 w-full overflow-hidden">
-             <h1 className="text-[11px] font-black tracking-tight text-slate-900 whitespace-nowrap">
-               KLEAN KING MELBOURNE PTY LTD
-             </h1>
-          </div>
-        )} */}
       </div>
 
       {/* 2. 메뉴 리스트 영역 */}

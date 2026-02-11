@@ -7,7 +7,7 @@ import Link from "next/link";
 import { 
   Plus, Search, MoreHorizontal, FileText, 
   Printer, Mail, Edit, Trash2, Loader2, ChevronDown, ChevronUp,
-  ArrowRightLeft, Download // [NEW] Download 아이콘 추가
+  ArrowRightLeft, Download, UserX
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,7 +20,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-// [NEW] PDF 관련 함수 import
 import { downloadQuotationPdf, printQuotationPdf } from "@/utils/downloadPdf";
 import EmailSendDialog from "@/components/email/EmailSendDialog";
 
@@ -31,11 +30,12 @@ interface Quotation {
   issue_date: string;
   valid_until: string;
   total_amount: number;
-  subtotal: number; // [NEW]
-  gst_total: number; // [NEW]
+  subtotal: number;
+  gst_total: number;
   status: string;
   memo: string;
-  customer_id: string;
+  customer_id: string | null; 
+  quotation_to: string | null; 
   created_who: string;
   updated_who: string;
   customers: {
@@ -75,7 +75,8 @@ export default function QuotationListPage() {
   // Expand Row State
   const [expandedRowId, setExpandedRowId] = useState<string | null>(null);
   const [cachedItems, setCachedItems] = useState<Record<string, QuotationItem[]>>({});
-  // 이메일 발송 대상 상태
+  
+  // Email State
   const [emailTarget, setEmailTarget] = useState<{
     id: string;
     type: 'quotation';
@@ -120,7 +121,7 @@ export default function QuotationListPage() {
   const filteredQuotations = useMemo(() => {
     return quotations.filter((q) => {
       const searchLower = searchTerm.toLowerCase();
-      const customerName = q.customers?.name?.toLowerCase() || "";
+      const customerName = (q.customers?.name || q.quotation_to || "").toLowerCase();
       const qNumber = q.quotation_number?.toLowerCase() || "";
       const matchesSearch = customerName.includes(searchLower) || qNumber.includes(searchLower);
 
@@ -145,7 +146,7 @@ export default function QuotationListPage() {
     setEmailTarget({
       id: q.id,
       type: 'quotation',
-      customerName: q.customers?.name || "Customer",
+      customerName: q.customers?.name || q.quotation_to || "Customer",
       customerEmail: q.customers?.email || "",
       docNumber: q.quotation_number || q.id.slice(0, 8),
     });
@@ -174,14 +175,19 @@ export default function QuotationListPage() {
     }
   };
 
-  const handleConvertToInvoice = async (quotationId: string) => {
+  const handleConvertToInvoice = async (quotation: Quotation) => {
+    if (!quotation.customer_id) {
+        alert("Cannot convert to Invoice: This quotation is not linked to a registered customer.");
+        return;
+    }
+
     if (!confirm("Are you sure you want to convert this quotation to an Invoice?")) return;
 
     try {
       const { data: quoteData, error: qError } = await supabase
         .from("quotations")
         .select(`*, quotation_items (*), customers ( name )`)
-        .eq("id", quotationId)
+        .eq("id", quotation.id)
         .single();
 
       if (qError || !quoteData) throw new Error("Failed to load quotation data");
@@ -225,7 +231,7 @@ export default function QuotationListPage() {
         if (itemError) throw itemError;
       }
 
-      await supabase.from("quotations").update({ status: "Accepted" }).eq("id", quotationId);
+      await supabase.from("quotations").update({ status: "Accepted" }).eq("id", quotation.id);
 
       alert("Successfully converted to Invoice!");
       router.push("/invoice");
@@ -235,9 +241,6 @@ export default function QuotationListPage() {
       alert("Error converting to invoice: " + e.message);
     }
   };
-
-  // [DEPRECATED] handleAction 대신 직접 함수 호출
-  // const handleAction = (action: string, id: string) => { ... };
 
   const toggleRow = async (id: string) => {
     if (expandedRowId === id) {
@@ -359,7 +362,21 @@ export default function QuotationListPage() {
                       </td>
                       <td className="px-4 py-3 text-slate-600 font-medium">{quotation.issue_date}</td>
                       <td className="px-4 py-3 font-bold text-slate-800">{quotation.quotation_number}</td>
-                      <td className="px-4 py-3">{quotation.customers?.name || <span className="text-slate-400 italic">Unknown</span>}</td>
+                      
+                      {/* [MODIFIED] Customer Name with Badge */}
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                            <span className="font-medium">
+                                {quotation.customers?.name || quotation.quotation_to || <span className="text-slate-400 italic">Unknown</span>}
+                            </span>
+                            {!quotation.customer_id && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700 border border-amber-200 whitespace-nowrap flex items-center gap-1" title="Unregistered Customer">
+                                    Manual
+                                </span>
+                            )}
+                        </div>
+                      </td>
+
                       <td className="px-4 py-3 text-right font-bold text-slate-900">${quotation.total_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                       
                       <td className="px-4 py-3 text-slate-600 text-xs">{quotation.created_who || "-"}</td>
@@ -393,8 +410,9 @@ export default function QuotationListPage() {
                           <DropdownMenuContent align="end" className="w-48">
                             
                             <DropdownMenuItem 
-                              onClick={() => handleConvertToInvoice(quotation.id)} 
-                              className="cursor-pointer text-blue-700 font-medium focus:text-blue-800 focus:bg-blue-50"
+                              disabled={!quotation.customer_id}
+                              onClick={() => quotation.customer_id && handleConvertToInvoice(quotation)} 
+                              className={`cursor-pointer font-medium focus:bg-blue-50 ${!quotation.customer_id ? 'text-slate-400 opacity-50 cursor-not-allowed' : 'text-blue-700 focus:text-blue-800'}`}
                             >
                               <ArrowRightLeft className="w-4 h-4 mr-2" /> Convert to Invoice
                             </DropdownMenuItem>
@@ -433,9 +451,12 @@ export default function QuotationListPage() {
                             
                             <div className="flex justify-between items-start mb-4">
                               <div className="text-sm space-y-1">
-                                <p className="font-bold text-slate-700">Customer Details:</p>
-                                <p className="text-slate-600">{quotation.customers?.name}</p>
-                                <p className="text-slate-500">{quotation.customers?.email}</p>
+                                <div className="flex items-center gap-2">
+                                    <p className="font-bold text-slate-700">Customer Details:</p>
+                                    {!quotation.customer_id && <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 rounded border border-amber-200">Manual</span>}
+                                </div>
+                                <p className="text-slate-600">{quotation.customers?.name || quotation.quotation_to}</p>
+                                {quotation.customers?.email && <p className="text-slate-500">{quotation.customers?.email}</p>}
                               </div>
                               <div className="text-right space-y-1">
                                 <p className="text-xs font-bold text-slate-500 uppercase">Valid Until</p>

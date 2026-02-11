@@ -1,13 +1,12 @@
 import React from 'react';
 import { Page, Text, View, Document, StyleSheet, Image } from '@react-pdf/renderer';
 
-// 데이터 인터페이스 (InvoiceData와 구조는 같지만 이름만 변경)
 export interface QuotationData {
-  invoiceNo: string;      // Quote Number
-  date: string;           // Quote Date
-  dueDate: string;        // Valid Until
-  customerName: string;   
-  deliveryName?: string;  
+  invoiceNo: string;
+  date: string;
+  dueDate: string;
+  customerName: string;
+  deliveryName?: string;
   address: string;
   deliveryAddress?: string;
   memo?: string;
@@ -21,10 +20,9 @@ export interface QuotationData {
   }[];
   subtotal: number;
   gst: number;
-  total: number;       
-  totalAmount: number; 
+  total: number;
+  totalAmount: number;
   
-  // 회사 정보
   bankName?: string;
   bsb?: string;
   accountNumber?: string;
@@ -35,7 +33,6 @@ export interface QuotationData {
   companyAddress?: string;
   bank_payid?: string;
   
-  // 견적서 하단 문구 (company_settings.quotation_info)
   invoiceInfo?: string; 
 }
 
@@ -48,7 +45,6 @@ const styles = StyleSheet.create({
   companyInfo: { marginTop: 0, textAlign: 'left', fontSize: 9, lineHeight: 1.5 },
   companyTitle: { fontSize: 12, fontWeight: 'bold', marginBottom: 3, color: '#000' },
   
-  // Box Styles
   invoiceDetailsBox: { width: '100%', borderWidth: 1, borderColor: '#ddd', padding: 10, backgroundColor: '#fafafa', marginBottom: 5 },
   invoiceTitle: { fontSize: 14, fontWeight: 'bold', textAlign: 'center', marginBottom: 8, borderBottomWidth: 1, borderColor: '#ddd', paddingBottom: 5 },
   
@@ -64,7 +60,6 @@ const styles = StyleSheet.create({
   payIdRow: { flexDirection: 'row', marginTop: 2 },
   payIdLabel: { width: 60, fontWeight: 'bold', color: '#555' }, 
 
-  
   addressContainer: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10, marginBottom: 20, borderTopWidth: 1, borderColor: '#eee', paddingTop: 15, width: '100%' },
   addressColumn: { width: '48%', flexDirection: 'column' },
   sectionTitle: { fontSize: 10, fontWeight: 'bold', color: '#666', marginBottom: 4 },
@@ -90,7 +85,6 @@ const styles = StyleSheet.create({
   totalBox: { width: '45%' },
   totalRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
   
-  // Total Amount 강조 스타일
   totalRowBalance: { 
     flexDirection: 'row', 
     justifyContent: 'space-between', 
@@ -128,9 +122,7 @@ export const QuotationPage = ({ data }: { data: QuotationData }) => {
         </View>
         <View style={styles.topRightColumn}>
           <View style={styles.invoiceDetailsBox}>
-            {/* [CHANGE] 타이틀 변경 */}
             <Text style={styles.invoiceTitle}>QUOTATION</Text>
-            {/* [CHANGE] 라벨 변경 */}
             <View style={styles.metaRow}><Text style={styles.metaLabel}>QUOTE NO:</Text><Text>{data.invoiceNo}</Text></View>
             <View style={styles.metaRow}><Text style={styles.metaLabel}>DATE:</Text><Text>{data.date}</Text></View>
             <View style={styles.metaRow}><Text style={styles.metaLabel}>VALID UNTIL:</Text><Text>{data.dueDate}</Text></View>
@@ -150,6 +142,7 @@ export const QuotationPage = ({ data }: { data: QuotationData }) => {
           <View style={styles.addressColumn}>
               <Text style={styles.sectionTitle}>QUOTE TO</Text>
               <Text style={styles.nameText}>{data.customerName}</Text> 
+              {/* Address에 Mobile이 포함되어 넘어옴 */}
               <Text style={styles.addressText}>{data.address}</Text>
           </View>
           <View style={styles.addressColumn}>
@@ -171,7 +164,8 @@ export const QuotationPage = ({ data }: { data: QuotationData }) => {
           <Text style={styles.colQty}>QTY</Text>
           <Text style={styles.colUnit}>UNIT</Text>
           <Text style={styles.colDesc}>PRODUCT NAME</Text>
-          <Text style={styles.colItem}>ITEM</Text>
+          {/* [CHANGE] 헤더 이름을 ITEM -> ID로 변경 */}
+          <Text style={styles.colItem}>ID</Text>
           <Text style={styles.colPrice}>PRICE</Text>
           <Text style={styles.colAmount}>AMOUNT</Text>
         </View>
@@ -180,6 +174,7 @@ export const QuotationPage = ({ data }: { data: QuotationData }) => {
             <Text style={styles.colQty}>{item.qty}</Text>
             <Text style={styles.colUnit}>{item.unit}</Text>
             <Text style={styles.colDesc}>{item.description}</Text>
+            {/* vendor_product_id가 들어옴 */}
             <Text style={styles.colItem}>{item.itemCode}</Text>
             <Text style={styles.colPrice}>${item.unitPrice.toFixed(2)}</Text>
             <Text style={styles.colAmount}>${item.amount.toFixed(2)}</Text>
@@ -192,7 +187,6 @@ export const QuotationPage = ({ data }: { data: QuotationData }) => {
           <View style={styles.totalRow}><Text>Subtotal</Text><Text>${data.subtotal.toFixed(2)}</Text></View>
           <View style={styles.totalRow}><Text>GST</Text><Text>${data.gst.toFixed(2)}</Text></View>
           
-          {/* [CHANGE] 견적서는 Total Amount가 최종 금액이므로 Balance Due를 표시하지 않음 */}
           <View style={styles.totalRowBalance}>
               <Text style={styles.totalLabel}>TOTAL AMOUNT</Text>
               <Text style={styles.totalValue}>${data.totalAmount.toFixed(2)}</Text>

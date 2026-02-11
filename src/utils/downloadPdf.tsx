@@ -40,11 +40,16 @@ const getInvoiceData = async (invoiceId: string): Promise<InvoiceData | null> =>
     const mappedItems = invoice.invoice_items?.map((item: any) => {
       const product = item.products || {};
       const name = product.name || product.product_name || product.description || "Item";
+      
+      // [수정] Vendor Product ID에 대괄호 추가 로직
+      const vId = product.vendor_product_id;
+      const formattedId = vId ? `[${vId}]` : "";
+
       return {
         qty: item.quantity || 0,
         unit: item.unit || product.unit || "EA",
         description: name,
-        itemCode: product.item_code || "",
+        itemCode: formattedId, // [수정된 ID 적용]
         unitPrice: item.unit_price || 0,
         amount: item.amount || 0
       };
@@ -177,7 +182,7 @@ export const printBulkPdf = async (ids: string[]) => {
 };
 
 // ------------------------------------------------------------------
-// 4. Picking Summary
+// 4. Picking Summary (정렬 기능 개선)
 // ------------------------------------------------------------------
 export const downloadPickingSummary = async (ids: string[]) => {
   const supabase = createClient();
@@ -226,17 +231,42 @@ export const downloadPickingSummary = async (ids: string[]) => {
   const now = new Date();
   const dateStr = `${now.getDate().toString().padStart(2,'0')}/${(now.getMonth()+1).toString().padStart(2,'0')}/${now.getFullYear()}, ${now.getHours()}:${now.getMinutes()}`;
 
-  let content = `Product Picking Summary\nGenerated: ${dateStr}\nSelected Invoices Count: ${ids.length}\n==========================================================================================\nLOCATION      | UNIT   | QTY   | VENDOR ID      | PRODUCT NAME\n------------------------------------------------------------------------------------------\n`;
+  // [수정] 정렬을 위한 고정 너비 설정
+  const wLoc = 18;  // Location 너비
+  const wUnit = 8;  // Unit 너비
+  const wQty = 8;   // Qty 너비
+  const wVid = 22;  // Vendor ID 너비 (대괄호 포함 여유 있게)
+
+  // Header 생성 (padEnd로 정렬 맞춤)
+  const hLoc = "LOCATION".padEnd(wLoc, ' ');
+  const hUnit = "UNIT".padEnd(wUnit, ' ');
+  const hQty = "QTY".padEnd(wQty, ' ');
+  const hVid = "VENDOR ID".padEnd(wVid, ' ');
+  const hName = "PRODUCT NAME";
+
+  let content = `Product Picking Summary\n`;
+  content += `Generated: ${dateStr}\n`;
+  content += `Selected Invoices Count: ${ids.length}\n`;
+  content += `====================================================================================================\n`;
+  content += `${hLoc} | ${hUnit} | ${hQty} | ${hVid} | ${hName}\n`;
+  content += `----------------------------------------------------------------------------------------------------\n`;
   
   summaryList.forEach(item => {
-    const locStr = `[ ${item.location} ]`.padEnd(13, ' ');
-    const unitStr = `${item.unit}`.padEnd(6, ' '); 
-    const qtyStr = `${item.qty}`.padEnd(5, ' ');
-    const vidStr = `${item.vendorProductId}`.padEnd(14, ' '); 
+    const locText = item.location ? `[ ${item.location} ]` : "";
+    const locStr = locText.padEnd(wLoc, ' ');
+    
+    const unitStr = `${item.unit}`.padEnd(wUnit, ' '); 
+    const qtyStr = `${item.qty}`.padEnd(wQty, ' ');
+    
+    // Vendor ID에 대괄호 적용 (원하시면 제거 가능)
+    const vIdRaw = item.vendorProductId ? `[${item.vendorProductId}]` : "";
+    const vidStr = vIdRaw.padEnd(wVid, ' '); 
+    
     content += `${locStr} | ${unitStr} | ${qtyStr} | ${vidStr} | ${item.name}\n`;
   });
   
-  content += `==========================================================================================\n`;
+  content += `====================================================================================================\n`;
+  
   const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
   saveAs(blob, `Picking_Summary_${now.getFullYear()}-${now.getMonth()+1}-${now.getDate()}.txt`);
 };
@@ -420,7 +450,7 @@ export const printStatementPdf = async (customerId: string, startDate: string, e
 
 
 // ------------------------------------------------------------------
-// 6. Quotation PDF 생성 및 다운로드 (Mobile 추가)
+// 6. Quotation PDF 생성 및 다운로드 (Mobile 추가 & Vendor ID 적용)
 // ------------------------------------------------------------------
 const getQuotationData = async (quotationId: string): Promise<QuotationData | null> => {
   if (!quotationId) return null;
@@ -452,11 +482,16 @@ const getQuotationData = async (quotationId: string): Promise<QuotationData | nu
     const mappedItems = quotation.quotation_items?.map((item: any) => {
       const product = item.products || {};
       const name = product.name || product.product_name || product.description || "Item";
+      
+      // [수정] Vendor Product ID 대괄호 추가
+      const vId = product.vendor_product_id;
+      const formattedId = vId ? `[${vId}]` : "";
+
       return {
         qty: item.quantity || 0,
-        unit: item.unit || product.unit || "EA", 
+        unit: item.unit || product.unit || "EA",
         description: name,
-        itemCode: product.item_code || "",
+        itemCode: formattedId, // [수정된 ID 적용]
         unitPrice: item.unit_price || 0,
         amount: item.amount || 0
       };

@@ -7,7 +7,7 @@ export interface InvoiceData {
   dueDate: string;
   customerName: string;
   customerId?: string;
-  customerMobile?: string; // ✅ [수정] 모바일 번호 필드 추가
+  customerMobile?: string; 
   deliveryName?: string;
   address: string;
   deliveryAddress?: string;
@@ -16,7 +16,7 @@ export interface InvoiceData {
     qty: number;
     unit: string;
     description: string;
-    itemCode: string;
+    itemCode: string; // Vendor Product ID가 들어올 예정
     unitPrice: number;
     amount: number;
   }[];
@@ -145,8 +145,7 @@ export const InvoicePage = ({ data }: { data: InvoiceData }) => {
               <Text style={styles.sectionTitle}>INVOICE TO</Text>
               <Text style={styles.nameText}>{data.customerName}</Text> 
               <Text style={styles.addressText}>{data.address}</Text>
-              {/* ✅ [수정] 주소 밑에 모바일 번호 추가 */}
-              <Text style={styles.addressText}>Mobile: {data.customerMobile}</Text>
+              {data.customerMobile && <Text style={styles.addressText}>Mobile: {data.customerMobile}</Text>}
           </View>
           <View style={styles.addressColumn}>
              <Text style={styles.sectionTitle}>DELIVERY TO</Text>
@@ -167,7 +166,8 @@ export const InvoicePage = ({ data }: { data: InvoiceData }) => {
           <Text style={styles.colQty}>QTY</Text>
           <Text style={styles.colUnit}>UNIT</Text>
           <Text style={styles.colDesc}>PRODUCT NAME</Text>
-          <Text style={styles.colItem}>ITEM</Text>
+          {/* [CHANGE] 헤더 이름을 ITEM -> ID로 변경 */}
+          <Text style={styles.colItem}>ID</Text>
           <Text style={styles.colPrice}>PRICE</Text>
           <Text style={styles.colAmount}>AMOUNT</Text>
         </View>
@@ -176,6 +176,7 @@ export const InvoicePage = ({ data }: { data: InvoiceData }) => {
             <Text style={styles.colQty}>{item.qty}</Text>
             <Text style={styles.colUnit}>{item.unit}</Text>
             <Text style={styles.colDesc}>{item.description}</Text>
+            {/* 여기 itemCode에 vendor_product_id가 들어옴 */}
             <Text style={styles.colItem}>{item.itemCode}</Text>
             <Text style={styles.colPrice}>${item.unitPrice.toFixed(2)}</Text>
             <Text style={styles.colAmount}>${item.amount.toFixed(2)}</Text>

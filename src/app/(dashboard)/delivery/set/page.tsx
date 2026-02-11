@@ -21,6 +21,7 @@ interface InvoiceItem {
     products: {        
         product_name: string;
         location: string | null; 
+        vendor_product_id: string | null; // ✅ [수정] Vendor ID 추가
     } | null;
 }
 
@@ -142,7 +143,8 @@ export default function SetDeliveryPage() {
          }
          if (eventType === 'INSERT') {
              if (newRecord.is_pickup === true) return;
-             const { data: fetchedInvoice, error } = await supabase.from("invoices").select(`id, invoice_date, created_at, total_amount, driver_id, customer_id, is_completed, is_pickup, delivery_run, delivery_order, customers ( name, in_charge_delivery ), invoice_items ( quantity, unit, products ( product_name, location ) )`).eq("id", newRecord.id).single();
+             // ✅ [수정] Realtime Fetch 쿼리에도 vendor_product_id 추가
+             const { data: fetchedInvoice, error } = await supabase.from("invoices").select(`id, invoice_date, created_at, total_amount, driver_id, customer_id, is_completed, is_pickup, delivery_run, delivery_order, customers ( name, in_charge_delivery ), invoice_items ( quantity, unit, products ( product_name, location, vendor_product_id ) )`).eq("id", newRecord.id).single();
              if (error || !fetchedInvoice) return;
              if (!fetchedInvoice.invoice_date || !String(fetchedInvoice.invoice_date).includes(currentDate)) return;
              
@@ -181,7 +183,8 @@ export default function SetDeliveryPage() {
       const { data: allProfileData } = await supabase.from("profiles").select("id, display_name").eq("status", "active").order("display_name");
       if (allProfileData) setAllStaff(allProfileData);
 
-      const { data: invoiceData, error: invoiceError } = await supabase.from("invoices").select(`id, invoice_date, created_at, total_amount, driver_id, customer_id, is_completed, is_pickup, delivery_run, delivery_order, customers ( name, in_charge_delivery ), invoice_items ( quantity, unit, products ( product_name, location ) )`).eq("invoice_date", selectedDate).neq("status", "Paid").is("is_pickup", false).order("id");
+      // ✅ [수정] 초기 데이터 로드 시 vendor_product_id 추가
+      const { data: invoiceData, error: invoiceError } = await supabase.from("invoices").select(`id, invoice_date, created_at, total_amount, driver_id, customer_id, is_completed, is_pickup, delivery_run, delivery_order, customers ( name, in_charge_delivery ), invoice_items ( quantity, unit, products ( product_name, location, vendor_product_id ) )`).eq("invoice_date", selectedDate).neq("status", "Paid").is("is_pickup", false).order("id");
       if (invoiceError) throw invoiceError;
 
       const rawInvoices = (invoiceData as any[]).filter(inv => inv.is_pickup !== true);
@@ -259,13 +262,16 @@ export default function SetDeliveryPage() {
 
     if (targetInvoices.length === 0) return alert("No invoices found in selected drivers.");
 
-    const combinedItems: Record<string, { name: string, location: string, unit: string, qty: number }> = {};
+    // ✅ [수정] 타입에 vendorProductId 추가
+    const combinedItems: Record<string, { name: string, location: string, unit: string, qty: number, vendorProductId: string }> = {};
 
     targetInvoices.forEach(inv => {
         if (inv.invoice_items) {
             inv.invoice_items.forEach(item => {
                 const name = item.products?.product_name || "Unknown Item";
                 const location = item.products?.location || "";
+                // ✅ [수정] Vendor ID 추출
+                const vendorProductId = item.products?.vendor_product_id || ""; 
                 
                 let rawUnit = item.unit || "Pack"; 
                 if (rawUnit.toLowerCase().includes('ctn') || rawUnit.toLowerCase().includes('box') || rawUnit.toLowerCase().includes('carton')) {
@@ -278,7 +284,7 @@ export default function SetDeliveryPage() {
                 const uniqueKey = `${name}_${rawUnit}`;
 
                 if (!combinedItems[uniqueKey]) {
-                    combinedItems[uniqueKey] = { name, location, unit: rawUnit, qty: 0 };
+                    combinedItems[uniqueKey] = { name, location, unit: rawUnit, qty: 0, vendorProductId };
                 } else {
                     if (!combinedItems[uniqueKey].location && location) {
                         combinedItems[uniqueKey].location = location;
@@ -323,10 +329,11 @@ export default function SetDeliveryPage() {
             th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #ddd; }
             th { background: #eee; font-weight: bold; border-bottom: 2px solid #333; }
             tr:nth-child(even) { background-color: #fcfcfc; }
-            .col-loc { width: 15%; font-weight: bold; color: #d32f2f; }
-            .col-unit { width: 10%; text-align: center; color: #666; font-weight: bold; }
-            .col-qty { width: 10%; text-align: center; font-weight: bold; font-size: 1.1em; }
-            .col-name { width: 65%; }
+            .col-loc { width: 12%; font-weight: bold; color: #d32f2f; }
+            .col-unit { width: 8%; text-align: center; color: #666; font-weight: bold; }
+            .col-qty { width: 8%; text-align: center; font-weight: bold; font-size: 1.1em; }
+            .col-id { width: 15%; color: #555; font-size: 0.9em; font-weight: 500; } /* ✅ ID Column Style */
+            .col-name { width: 57%; }
             @media print { .summary-box { background: none; border: 1px solid #000; } th { background: none !important; } }
           </style>
         </head>
@@ -343,14 +350,14 @@ export default function SetDeliveryPage() {
                 <th class="col-loc">Location</th>
                 <th class="col-unit">Unit</th>
                 <th class="col-qty">Qty</th>
-                <th class="col-name">Product Name</th>
+                <th class="col-id">ID</th> <th class="col-name">Product Name</th>
               </tr>
             </thead>
             <tbody>
     `;
 
     if (sortedList.length === 0) {
-        html += `<tr><td colspan="4" style="text-align:center; padding:20px;">No items found.</td></tr>`;
+        html += `<tr><td colspan="5" style="text-align:center; padding:20px;">No items found.</td></tr>`;
     } else {
         sortedList.forEach(item => {
             html += `
@@ -358,7 +365,7 @@ export default function SetDeliveryPage() {
                   <td class="col-loc">${item.location || '-'}</td>
                   <td class="col-unit">${item.unit}</td>
                   <td class="col-qty">${item.qty}</td>
-                  <td class="col-name">${item.name}</td>
+                  <td class="col-id">${item.vendorProductId || '-'}</td> <td class="col-name">${item.name}</td>
                 </tr>
             `;
         });

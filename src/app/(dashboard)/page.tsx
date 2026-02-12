@@ -3,54 +3,34 @@
 import React, { useEffect, useState, useRef } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { 
-  DollarSign, 
-  Truck, 
-  CreditCard, 
-  TrendingUp, 
-  Loader2,
-  AlertCircle,
-  FileText
+  DollarSign, Truck, CreditCard, TrendingUp, Loader2, AlertCircle, FileText
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
 import { 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  Cell
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell
 } from 'recharts';
 
-// --- [New] Chart Wrapper Component ---
-// ResponsiveContainer 대신 직접 크기를 측정하여 차트를 그리는 안전한 래퍼입니다.
+// --- Chart Wrapper (유지) ---
 const ChartWrapper = ({ height = 300, children }: { height?: number, children: (size: { width: number, height: number }) => React.ReactNode }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
 
   useEffect(() => {
     if (!containerRef.current) return;
-
     const resizeObserver = new ResizeObserver((entries) => {
       if (!entries || entries.length === 0) return;
       const { width } = entries[0].contentRect;
-      // 너비가 변경되었을 때만 업데이트
-      if (width > 0) {
-        setSize({ width, height });
-      }
+      if (width > 0) setSize({ width, height });
     });
-
     resizeObserver.observe(containerRef.current);
     return () => resizeObserver.disconnect();
   }, [height]);
 
   return (
     <div ref={containerRef} style={{ width: '100%', height }} className="min-w-0">
-      {size.width > 0 ? (
-        children(size)
-      ) : (
+      {size.width > 0 ? children(size) : (
         <div className="flex h-full items-center justify-center">
           <Loader2 className="w-6 h-6 text-slate-300 animate-spin" />
         </div>
@@ -66,8 +46,12 @@ const getMelbourneDate = () => {
     timeZone: "Australia/Melbourne", 
     year: 'numeric', month: '2-digit', day: '2-digit' 
   };
-  const formatter = new Intl.DateTimeFormat('en-CA', options); 
-  return formatter.format(now);
+  // 포맷을 YYYY-MM-DD로 맞추기 위한 로직
+  const parts = new Intl.DateTimeFormat('en-CA', options).formatToParts(now);
+  const year = parts.find(p => p.type === 'year')?.value;
+  const month = parts.find(p => p.type === 'month')?.value;
+  const day = parts.find(p => p.type === 'day')?.value;
+  return `${year}-${month}-${day}`;
 };
 
 export default function DashboardPage() {
@@ -75,7 +59,6 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [todayDate, setTodayDate] = useState("");
 
-  // Stats State
   const [stats, setStats] = useState({
     todayRevenue: 0,
     overdueAmount: 0, 
@@ -85,9 +68,8 @@ export default function DashboardPage() {
     deliveryCompleted: 0
   });
 
-  // Chart Data
-  const [monthlyChartData, setMonthlyChartData] = useState<any[]>([]); // 12 Months
-  const [weeklyChartData, setWeeklyChartData] = useState<any[]>([]);   // 8 Weeks
+  const [monthlyChartData, setMonthlyChartData] = useState<any[]>([]);
+  const [weeklyChartData, setWeeklyChartData] = useState<any[]>([]);
 
   useEffect(() => {
     setTodayDate(getMelbourneDate());
@@ -98,37 +80,48 @@ export default function DashboardPage() {
     try {
       const today = getMelbourneDate();
       
-      // 1. KPI Data
-      const { data: todayData } = await supabase
-        .from('invoices')
-        .select('total_amount, is_completed')
-        .eq('invoice_date', today);
+      // 🚀 핵심 변경: Promise.all로 4개의 요청을 병렬(동시) 실행
+      // 1. 오늘 매출 & 배송
+      // 2. 미납금 전체
+      // 3. 월별 차트 데이터 (RPC 호출 - DB에서 계산됨)
+      // 4. 주별 차트 데이터 (RPC 호출 - DB에서 계산됨)
+      
+      const [todayRes, unpaidRes, monthlyRes, weeklyRes] = await Promise.all([
+        supabase
+          .from('invoices')
+          .select('total_amount, is_completed')
+          .eq('invoice_date', today),
+        
+        supabase
+          .from('invoices')
+          .select('total_amount, paid_amount, due_date')
+          .neq('status', 'Paid'),
 
+        supabase.rpc('get_monthly_revenue'), // SQL 함수 호출
+
+        supabase.rpc('get_weekly_revenue')   // SQL 함수 호출
+      ]);
+
+      // --- 1. KPI 계산 (여전히 클라이언트에서 빠름) ---
       let todayRev = 0;
       let delTotal = 0;
       let delCompleted = 0;
 
-      if (todayData) {
-        todayData.forEach(inv => {
+      if (todayRes.data) {
+        todayRes.data.forEach(inv => {
             todayRev += inv.total_amount;
             delTotal++;
             if (inv.is_completed) delCompleted++;
         });
       }
 
-      // 2. Unpaid Data
-      const { data: unpaidData } = await supabase
-        .from('invoices')
-        .select('total_amount, paid_amount, due_date')
-        .neq('status', 'Paid'); 
-
       let totalOut = 0;
       let overdueOut = 0;
       let unpaidCnt = 0;
 
-      if (unpaidData) {
-          unpaidCnt = unpaidData.length;
-          unpaidData.forEach(inv => {
+      if (unpaidRes.data) {
+          unpaidCnt = unpaidRes.data.length;
+          unpaidRes.data.forEach(inv => {
               const remaining = inv.total_amount - (inv.paid_amount || 0);
               totalOut += remaining;
               
@@ -138,62 +131,28 @@ export default function DashboardPage() {
           });
       }
 
-      // 3. Chart Data
-      const oneYearAgo = new Date();
-      oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
-      const oneYearAgoStr = oneYearAgo.toISOString().split('T')[0];
-
-      const { data: historyData } = await supabase
-        .from('invoices')
-        .select('invoice_date, total_amount')
-        .gte('invoice_date', oneYearAgoStr)
-        .order('invoice_date', { ascending: true });
-
-      const monthMap = new Map<string, number>();
-      const weekMap = new Map<string, number>();
-
-      const eightWeeksAgo = new Date();
-      eightWeeksAgo.setDate(eightWeeksAgo.getDate() - 56);
-      const eightWeeksAgoStr = eightWeeksAgo.toISOString().split('T')[0];
-
-      if (historyData) {
-          historyData.forEach(inv => {
-              const monthKey = inv.invoice_date.slice(0, 7); 
-              monthMap.set(monthKey, (monthMap.get(monthKey) || 0) + inv.total_amount);
-
-              if (inv.invoice_date >= eightWeeksAgoStr) {
-                  const d = new Date(inv.invoice_date);
-                  const day = d.getDay();
-                  const diff = d.getDate() - day + (day == 0 ? -6 : 1); 
-                  const monday = new Date(d.setDate(diff));
-                  const weekKey = monday.toISOString().slice(5, 10); 
-                  
-                  weekMap.set(weekKey, (weekMap.get(weekKey) || 0) + inv.total_amount);
-              }
-          });
-      }
-
-      const monthlyResult = Array.from(monthMap.entries()).map(([key, val]) => ({
-          name: key, 
-          total: val
-      })).sort((a, b) => a.name.localeCompare(b.name));
-
-      const weeklyResult = Array.from(weekMap.entries()).map(([key, val]) => ({
-          name: key, 
-          total: val
-      })).sort((a, b) => a.name.localeCompare(b.name));
-
-      const formattedMonthly = monthlyResult.map(item => {
-          const [y, m] = item.name.split('-');
-          const date = new Date(parseInt(y), parseInt(m) - 1, 1);
+      // --- 2. Chart 데이터 가공 (이제 루프 없이 매핑만 하면 됨) ---
+      
+      // 월별 차트 포맷팅
+      const formattedMonthly = (monthlyRes.data || []).map((item: any) => {
+          const [y, m] = item.period.split('-');
+          // 로컬 타임존 이슈 방지를 위해 날짜 객체 생성 방식 조정
+          const dateStr = new Date(parseInt(y), parseInt(m) - 1, 1).toLocaleString('default', { month: 'short', year: '2-digit' });
           return {
-              name: date.toLocaleString('default', { month: 'short', year: '2-digit' }), 
+              name: dateStr,
               total: item.total
           };
       });
 
+      // 주별 차트 포맷팅 (데이터가 적으므로 바로 사용)
+      const formattedWeekly = (weeklyRes.data || []).map((item: any) => ({
+        name: item.period, // 필요시 포맷팅 변경 가능 (예: MM-DD)
+        total: item.total
+      }));
+
+      // State 업데이트
       setMonthlyChartData(formattedMonthly);
-      setWeeklyChartData(weeklyResult);
+      setWeeklyChartData(formattedWeekly);
 
       setStats({
         todayRevenue: todayRev,
@@ -205,7 +164,7 @@ export default function DashboardPage() {
       });
 
     } catch (e) {
-      console.error(e);
+      console.error("Dashboard Fetch Error:", e);
     } finally {
       setLoading(false);
     }
@@ -217,7 +176,6 @@ export default function DashboardPage() {
 
   return (
     <div className="flex-1 space-y-6 p-8 pt-6 bg-slate-50/50 min-h-screen">
-      
       {/* Header */}
       <div className="flex items-center justify-between space-y-2">
         <div>
@@ -355,7 +313,7 @@ export default function DashboardPage() {
                     fontSize={11} 
                     tickLine={false} 
                     axisLine={false}
-                    width={40}
+                    width={80} // 날짜가 잘리지 않도록 너비 조정
                   />
                   <Tooltip 
                     cursor={{fill: '#f1f5f9'}}

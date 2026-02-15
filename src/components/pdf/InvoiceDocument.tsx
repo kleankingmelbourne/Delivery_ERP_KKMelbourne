@@ -54,8 +54,8 @@ const styles = StyleSheet.create({
   invoiceTitle: { fontSize: 14, fontWeight: 'bold', textAlign: 'center', marginBottom: 8, borderBottomWidth: 1, borderColor: '#ddd', paddingBottom: 5 },
   
   paymentBox: { width: '100%', borderWidth: 1, borderColor: '#ddd', padding: 10, backgroundColor: '#fafafa' },
-  paymentTitle: { fontSize: 11, fontWeight: 'bold', marginBottom: 6, textDecoration: 'underline' },
-  bankingRow: { flexDirection: 'row', marginBottom: 2 },
+  paymentTitle: { fontSize: 11, fontWeight: 'bold', marginBottom: 0, textDecoration: 'underline' },
+  bankingRow: { flexDirection: 'row', marginBottom: 1 },
   bankingLabel: { width: 60, fontWeight: 'bold', color: '#555' },
   
   separatorLine: { borderBottomWidth: 1, borderBottomColor: '#eee', marginVertical: 4 },
@@ -65,15 +65,15 @@ const styles = StyleSheet.create({
   metaRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
   metaLabel: { fontWeight: 'bold', color: '#555' },
   
-  addressContainer: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10, marginBottom: 20, borderTopWidth: 1, borderColor: '#eee', paddingTop: 15, width: '100%' },
+  addressContainer: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 1, marginBottom: 1, borderTopWidth: 1, borderColor: '#eee', paddingTop: 15, width: '100%' },
   addressColumn: { width: '48%', flexDirection: 'column' },
-  sectionTitle: { fontSize: 10, fontWeight: 'bold', color: '#666', marginBottom: 4 },
+  sectionTitle: { fontSize: 10, fontWeight: 'bold', color: '#666', marginBottom: 10 },
   nameText: { fontSize: 12, fontWeight: 'bold', marginBottom: 6 },
   addressText: { fontSize: 9, lineHeight: 1.4, color: '#444' },
-  memoContainer: { marginBottom: 15, borderWidth: 1, borderColor: '#333', padding: 8, backgroundColor: '#fdfdfd' },
+  memoContainer: { marginBottom: 5, borderWidth: 1, borderColor: '#333', padding: 8, backgroundColor: '#fdfdfd' },
   memoLabel: { fontSize: 9, fontWeight: 'bold', marginBottom: 3, textDecoration: 'underline' },
   memoText: { fontSize: 9, lineHeight: 1.4 },
-  tableContainer: { marginTop: 5, marginBottom: 20 },
+  tableContainer: { marginTop: 1, marginBottom: 5 },
   tableHeader: { flexDirection: 'row', backgroundColor: '#f0f0f0', borderBottomWidth: 1, borderColor: '#000', paddingVertical: 8, alignItems: 'center' },
   tableRow: { flexDirection: 'row', borderBottomWidth: 1, borderColor: '#eee', paddingVertical: 8, alignItems: 'center' },
   colQty: { width: '8%', textAlign: 'center' },
@@ -156,7 +156,7 @@ export const InvoicePage = ({ data }: { data: InvoiceData }) => {
 
       {data.memo && (
         <View style={styles.memoContainer}>
-          <Text style={styles.memoLabel}>MEMO / NOTES:</Text>
+          <Text style={styles.memoLabel}>MEMO :</Text>
           <Text style={styles.memoText}>{data.memo}</Text>
         </View>
       )}

@@ -56,7 +56,7 @@ const styles = StyleSheet.create({
   companyTitle: { fontSize: 12, fontWeight: 'bold', marginBottom: 3, color: '#000' },
   
   invoiceDetailsBox: { width: '100%', borderWidth: 1, borderColor: '#ddd', padding: 10, backgroundColor: '#fafafa', marginBottom: 5 },
-  creditTitle: { fontSize: 14, fontWeight: 'bold', textAlign: 'center', marginBottom: 8, borderBottomWidth: 1, borderColor: '#ddd', paddingBottom: 5, color: '#DC2626' },
+  creditTitle: { fontSize: 14, fontWeight: 900, textAlign: 'center', marginBottom: 8, borderBottomWidth: 1, borderColor: '#ddd', paddingBottom: 5, color: '#DC2626' },
   
   metaRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
   metaLabel: { fontWeight: 'bold', color: '#555' },

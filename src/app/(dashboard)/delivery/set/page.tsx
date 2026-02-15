@@ -318,7 +318,7 @@ export default function SetDeliveryPage() {
     let html = `
       <html>
         <head>
-          <title>Packing List - ${selectedDate}</title>
+          <title>Picking List - ${selectedDate}</title>
           <style>
             body { font-family: sans-serif; padding: 20px; font-size: 14px; }
             h1 { text-align: center; margin-bottom: 5px; font-size: 24px; }
@@ -338,7 +338,7 @@ export default function SetDeliveryPage() {
           </style>
         </head>
         <body>
-          <h1>📦 Packing List - ${driverTitle}</h1>
+          <h1>📦 Picking List - ${driverTitle}</h1>
           <div class="meta">Date: ${selectedDate}</div>
           <div class="summary-box">
              <div class="summary-item">📑 Invoices Selected: ${totalInvoices}</div>
@@ -602,11 +602,11 @@ export default function SetDeliveryPage() {
                 </div>
             )}
 
-            {/* ✅ [복구] Packing List 버튼 (선택된 컬럼이 있을 때만 표시) */}
+            {/* ✅ [복구] Picking List 버튼 (선택된 컬럼이 있을 때만 표시) */}
             {selectedColumns.size > 0 && (
                 <Button onClick={handleGeneratePackingList} className="h-8 text-xs px-3 font-bold bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm animate-in fade-in slide-in-from-top-2">
                     <ListChecks className="w-3.5 h-3.5 mr-1.5" />
-                    Packing List ({selectedColumns.size})
+                    Picking List ({selectedColumns.size})
                 </Button>
             )}
 

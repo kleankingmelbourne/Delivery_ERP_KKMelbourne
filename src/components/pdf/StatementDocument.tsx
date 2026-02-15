@@ -5,13 +5,21 @@ import { format } from 'date-fns';
 export interface StatementTransaction {
   id: string;
   date: string;
-  type: 'Invoice' | 'Payment';
+  type: 'Invoice' | 'Payment' | 'Credit';
   reference: string;
   amount: number;     
   credit: number;     
   balance?: number;   
-  dueDate?: string;
-  status?: string; 
+  dueDate?: string; // 이미 포함되어 있음
+}
+
+export interface StatementAgeing {
+  current: number;
+  days30: number;
+  days60: number;
+  days90: number;
+  over90: number;
+  total: number;
 }
 
 export interface StatementData {
@@ -24,7 +32,7 @@ export interface StatementData {
   customerId?: string;
   customerAddress?: string;
 
-  amountOverdue: number;
+  ageing: StatementAgeing;
 
   companyName?: string;
   companyAddress?: string;
@@ -43,7 +51,7 @@ const styles = StyleSheet.create({
   page: { padding: 40, fontFamily: 'Helvetica', fontSize: 9, color: '#333' },
   
   // Header with Logo
-  header: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 30 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
   companySection: { width: '50%' },
   logoImage: { width: 200, height: 100, objectFit: 'contain', marginTop: -20, marginLeft: -20 }, 
   companyTitle: { fontSize: 11, fontWeight: 'bold', marginBottom: 4, color: '#1a1a1a' },
@@ -55,42 +63,37 @@ const styles = StyleSheet.create({
   metaLabel: { fontWeight: 'bold', color: '#555' },
 
   // Bill To
-  billToSection: { marginTop: 10, marginBottom: 20, padding: 10, borderTop: '1px solid #eee', borderBottom: '1px solid #eee' },
+  billToSection: { marginTop: 0, marginBottom: 0, padding: 10, borderTop: '1px solid #eee', borderBottom: '1px solid #eee' },
   sectionLabel: { fontSize: 8, color: '#888', textTransform: 'uppercase', marginBottom: 4 },
   customerName: { fontSize: 12, fontWeight: 'bold', marginBottom: 2 },
   customerDetail: { fontSize: 9, color: '#444', lineHeight: 1.4 },
 
   // Table
-  table: { marginTop: 10 },
+  table: { marginTop: 20 },
   tableHeader: { flexDirection: 'row', borderBottom: '1px solid #000', paddingBottom: 6, marginBottom: 6, backgroundColor: '#f9f9f9', paddingTop: 6 },
   tableRow: { flexDirection: 'row', borderBottom: '1px solid #eee', paddingVertical: 6, alignItems: 'center' },
   
-  colDate: { width: '12%' },
+  // [수정] Due Date 컬럼 추가 및 전체 너비 재조정 (Total 100%)
+  colDate: { width: '13%' },
   colRef: { width: '20%' }, 
   colDesc: { width: '10%' }, 
-  colDebit: { width: '13%', textAlign: 'right' },  
-  colCredit: { width: '13%', textAlign: 'right' }, 
-  colBalance: { width: '17%', textAlign: 'right' },
-  colStatus: { width: '15%', textAlign: 'center' }, 
+  colDebit: { width: '14%', textAlign: 'right' },  
+  colCredit: { width: '14%', textAlign: 'right' }, 
+  colBalance: { width: '15%', textAlign: 'right' },
+  colDueDate: { width: '14%', textAlign: 'center' }, // [NEW] Due Date 컬럼
 
-  // Footer & Totals
-  footerSection: { marginTop: 20, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  paymentInfo: { width: '45%', padding: 10, backgroundColor: '#f0fdf4', borderRadius: 4 },
+  // Ageing Table Styles
+  ageingContainer: { marginTop: 20, marginBottom: 10, border: '1px solid #ddd' },
+  ageingHeader: { flexDirection: 'row', backgroundColor: '#859e77', paddingVertical: 6 },
+  ageingHeaderCell: { flex: 1, color: '#fff', fontSize: 8, fontWeight: 'bold', textAlign: 'center' },
+  ageingRow: { flexDirection: 'row', paddingVertical: 8, backgroundColor: '#fff' },
+  ageingCell: { flex: 1, fontSize: 9, textAlign: 'center', color: '#333' },
+
+  // Footer & Payment Info
+  footerSection: { marginTop: 10, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  paymentInfo: { width: '100%', padding: 10, color: '#fff', backgroundColor: '#859e77', borderRadius: 4, marginTop: 10 },
   
-  totalsContainer: { width: '50%', flexDirection: 'column', alignItems: 'flex-end' },
-  
-  overdueBox: { 
-    border: '1px solid #fecaca', backgroundColor: '#fef2f2', padding: 8, borderRadius: 4, 
-    marginBottom: 10, width: '100%', flexDirection: 'row', justifyContent: 'space-between' 
-  },
-  
-  totalBox: { width: '100%' },
-  totalRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 5, borderBottom: '1px solid #eee' },
-  totalRowFinal: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8, borderTop: '2px solid #000', marginTop: 5 },
-  totalLabel: { fontWeight: 'bold' },
-  totalValue: { fontWeight: 'bold', fontSize: 12 },
-  
-  bottomInfo: { marginTop: 40, borderTop: '1px solid #eee', paddingTop: 10, textAlign: 'left' },
+  bottomInfo: { marginTop: 30, borderTop: '1px solid #859e77', paddingTop: 10, textAlign: 'left' },
   bottomText: { fontSize: 8, color: '#666', lineHeight: 1.5 },
 });
 
@@ -98,10 +101,13 @@ const StatementDocument = ({ data }: { data: StatementData }) => {
   const logoUrl = typeof window !== 'undefined' ? `${window.location.origin}/images/logo.png` : '/images/logo.png';
   
   let runningBalance = data.openingBalance;
-  const finalBalance = data.transactions.reduce((acc, t) => acc + t.amount - t.credit, data.openingBalance);
-
+  
   const formatDate = (dateStr: string) => {
     try { return format(new Date(dateStr), 'dd/MM/yyyy'); } catch { return dateStr; }
+  };
+
+  const formatCurrency = (amount: number) => {
+    return amount.toLocaleString('en-AU', { style: 'currency', currency: 'AUD' });
   };
 
   return (
@@ -125,15 +131,14 @@ const StatementDocument = ({ data }: { data: StatementData }) => {
           </View>
         </View>
 
-        {/* [FIXED] Customer Section with Address */}
+        {/* Bill To */}
         <View style={styles.billToSection}>
           <Text style={styles.sectionLabel}>Bill To</Text>
           <Text style={styles.customerName}>{data.customerName}</Text>
-          {/* [FIXED] 주소 표시 추가 */}
           {data.customerAddress && <Text style={styles.customerDetail}>{data.customerAddress}</Text>}
         </View>
 
-        {/* Table Section */}
+        {/* Transaction Table */}
         <View style={styles.table}>
           <View style={styles.tableHeader}>
             <Text style={[styles.colDate, { fontWeight: 'bold' }]}>Date</Text>
@@ -142,7 +147,8 @@ const StatementDocument = ({ data }: { data: StatementData }) => {
             <Text style={[styles.colDebit, { fontWeight: 'bold' }]}>Charges</Text>
             <Text style={[styles.colCredit, { fontWeight: 'bold' }]}>Credits</Text>
             <Text style={[styles.colBalance, { fontWeight: 'bold' }]}>Balance</Text>
-            <Text style={[styles.colStatus, { fontWeight: 'bold' }]}>Status</Text>
+            {/* [추가] Due Date 헤더 */}
+            <Text style={[styles.colDueDate, { fontWeight: 'bold' }]}>Due Date</Text>
           </View>
 
           {/* Opening Balance Row */}
@@ -153,35 +159,58 @@ const StatementDocument = ({ data }: { data: StatementData }) => {
             <Text style={styles.colDebit}>-</Text>
             <Text style={styles.colCredit}>-</Text>
             <Text style={styles.colBalance}>${data.openingBalance.toFixed(2)}</Text>
-            <Text style={styles.colStatus}>-</Text>
+            {/* Opening Balance Row의 Due Date는 비워둠 */}
+            <Text style={styles.colDueDate}>-</Text>
           </View>
 
           {/* Transactions */}
           {data.transactions.map((t, idx) => {
             runningBalance += (t.amount - t.credit);
-            const displayRef = t.reference.length > 20 ? t.reference.slice(0, 20) + '...' : t.reference;
-
-            const isOverdue = t.status === 'Overdue';
-            const statusColor = isOverdue ? '#dc2626' : (t.status === 'Paid' ? '#16a34a' : '#555');
+            const displayRef = t.reference.length > 25 ? t.reference.slice(0, 25) + '...' : t.reference;
 
             return (
               <View key={idx} style={styles.tableRow}>
                 <Text style={styles.colDate}>{formatDate(t.date)}</Text>
                 <Text style={styles.colRef}>{displayRef}</Text>
                 <Text style={styles.colDesc}>{t.type}</Text>
+                
                 <Text style={styles.colDebit}>
-                    {t.amount > 0 ? `$${t.amount.toFixed(2)}` : '-'}
+                    {(t.amount > 0 || t.type === 'Invoice') ? `$${t.amount.toFixed(2)}` : '-'}
                 </Text>
+                
                 <Text style={styles.colCredit}>
                     {t.credit > 0 ? `$${t.credit.toFixed(2)}` : '-'}
                 </Text>
                 <Text style={styles.colBalance}>${runningBalance.toFixed(2)}</Text>
-                <Text style={[styles.colStatus, { color: statusColor, fontSize: 8 }]}>
-                    {t.status || '-'}
+                
+                {/* [추가] Due Date 데이터 표시 */}
+                <Text style={styles.colDueDate}>
+                    {t.dueDate ? formatDate(t.dueDate) : '-'}
                 </Text>
               </View>
             );
           })}
+        </View>
+
+        {/* Ageing Analysis Bar */}
+        <Text style={{marginBottom: 4}}>OVERDUE INFORMATION</Text>
+        <View style={styles.ageingContainer}>
+            <View style={styles.ageingHeader}>
+                <Text style={styles.ageingHeaderCell}>Current</Text>
+                <Text style={styles.ageingHeaderCell}>1-30 Days</Text>
+                <Text style={styles.ageingHeaderCell}>31-60 Days</Text>
+                <Text style={styles.ageingHeaderCell}>61-90 Days</Text>
+                <Text style={styles.ageingHeaderCell}>Over 90 Days</Text>
+                <Text style={styles.ageingHeaderCell}>Statement Amount</Text>
+            </View>
+            <View style={styles.ageingRow}>
+                <Text style={styles.ageingCell}>{formatCurrency(data.ageing.current)}</Text>
+                <Text style={styles.ageingCell}>{formatCurrency(data.ageing.days30)}</Text>
+                <Text style={styles.ageingCell}>{formatCurrency(data.ageing.days60)}</Text>
+                <Text style={styles.ageingCell}>{formatCurrency(data.ageing.days90)}</Text>
+                <Text style={styles.ageingCell}>{formatCurrency(data.ageing.over90)}</Text>
+                <Text style={[styles.ageingCell, { fontWeight: 'bold' }]}>{formatCurrency(data.ageing.total)}</Text>
+            </View>
         </View>
 
         {/* Footer Section */}
@@ -194,33 +223,7 @@ const StatementDocument = ({ data }: { data: StatementData }) => {
               <Text>Acc: {data.accountNumber || "-"}</Text>
               <Text style={{ marginTop: 6}}>or</Text>
               <Text style={{ marginTop: 6}}>PayID: {data.bank_payid || "-"}</Text>
-              <Text style={{ marginTop: 6, fontSize: 8, color: '#666' }}>Please quote Invoice # or Customer Name</Text>
-           </View>
-
-           <View style={styles.totalsContainer}>
-              {/* Overdue Box */}
-              {data.amountOverdue > 0 && (
-                  <View style={styles.overdueBox}>
-                      <Text style={{ color: '#991b1b', fontWeight: 'bold' }}>OVERDUE AMOUNT:</Text>
-                      <Text style={{ color: '#991b1b', fontWeight: 'bold' }}>${data.amountOverdue.toFixed(2)}</Text>
-                  </View>
-              )}
-
-              {/* Totals */}
-              <View style={styles.totalBox}>
-                  <View style={styles.totalRow}>
-                    <Text>Current Charges:</Text>
-                    <Text>${data.transactions.reduce((sum, t) => sum + t.amount, 0).toFixed(2)}</Text>
-                  </View>
-                  <View style={styles.totalRow}>
-                    <Text>Less Payments:</Text>
-                    <Text>-${data.transactions.reduce((sum, t) => sum + t.credit, 0).toFixed(2)}</Text>
-                  </View>
-                  <View style={styles.totalRowFinal}>
-                    <Text style={styles.totalLabel}>Total Amount Due:</Text>
-                    <Text style={styles.totalValue}>${finalBalance.toFixed(2)}</Text>
-                  </View>
-              </View>
+              <Text style={{ marginTop: 6, fontSize: 8 }}>Please quote Invoice # or Customer Name</Text>
            </View>
         </View>
         

@@ -12,7 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 
-// 📍 Server Action 임포트 (경로 확인해주세요)
+// 📍 Server Action 임포트
 import { getPlaceSuggestions, getPlaceDetails } from "@/app/actions/google-maps";
 
 interface CustomerDialogProps {
@@ -48,8 +48,8 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
     in_charge_delivery: "", 
     login_permit: true, disable_order: false,
     credit_limit: "", due_date: "C.O.D",
-    address: "", suburb: "", state: "", postcode: "", lat: null, lng: null,
-    delivery_address: "", delivery_suburb: "", delivery_state: "", delivery_postcode: "", delivery_lat: null, delivery_lng: null,
+    address: "", suburb: "", state: "", postcode: "", lat: null as number | null, lng: null as number | null,
+    delivery_address: "", delivery_suburb: "", delivery_state: "", delivery_postcode: "", delivery_lat: null as number | null, delivery_lng: null as number | null,
     note: ""
   };
 
@@ -82,7 +82,6 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
         setFormData({
           ...initialData,
           ...cleanData,
-          // null 방지 처리
           name: cleanData.name || "",
           company: cleanData.company || "",
           email: cleanData.email || "",
@@ -93,10 +92,14 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
           suburb: cleanData.suburb || "",
           state: cleanData.state || "",
           postcode: cleanData.postcode || "",
+          lat: cleanData.lat || null, 
+          lng: cleanData.lng || null, 
           delivery_address: cleanData.delivery_address || "",
           delivery_suburb: cleanData.delivery_suburb || "",
           delivery_state: cleanData.delivery_state || "",
           delivery_postcode: cleanData.delivery_postcode || "",
+          delivery_lat: cleanData.delivery_lat || null, 
+          delivery_lng: cleanData.delivery_lng || null, 
           note: cleanData.note || "",
           credit_limit: cleanData.credit_limit || "",
           group_id: cleanData.group_id || "", 
@@ -124,11 +127,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
     setFormData(prev => ({ ...prev, [field]: value }));
   };
 
-  // ---------------------------------------------------------
-  // [Modified] Google Maps Logic (Server Action)
-  // ---------------------------------------------------------
-
-  // 주소 입력 핸들러 (디바운싱 적용)
+  // Google Maps Auto-complete Logic
   useEffect(() => {
     let isActive = true;
     const targetAddress = activeSearchField === 'billing' ? formData.address : formData.delivery_address;
@@ -148,7 +147,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
       } finally {
         if (isActive) setIsSearching(false);
       }
-    }, 300); // 300ms Delay
+    }, 300);
 
     return () => {
       isActive = false;
@@ -156,7 +155,6 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
     };
   }, [formData.address, formData.delivery_address, activeSearchField]);
 
-  // 주소 입력창 포커스/변경 핸들러
   const handleAddressInput = (field: 'billing' | 'delivery', value: string) => {
     setActiveSearchField(field);
     if (field === 'billing') {
@@ -166,9 +164,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
     }
   };
 
-  // 주소 선택 핸들러
   const handleSelectPlace = async (placeId: string, description: string, field: 'billing' | 'delivery') => {
-    // 1. UI 즉시 업데이트 및 드롭다운 닫기
     setActiveSearchField(null);
     setSuggestions([]);
 
@@ -178,16 +174,21 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
         setFormData(prev => ({ ...prev, delivery_address: description }));
     }
 
-    // 2. 상세 주소 가져오기
+    // Server Action 호출
     const details = await getPlaceDetails(placeId);
+    
     if (details) {
+        // console.log(`📍 ${field.toUpperCase()} Selected Details:`, details);
+
         if (field === 'billing') {
             setFormData(prev => ({
                 ...prev,
                 address: details.address,
                 suburb: details.suburb,
                 state: details.state,
-                postcode: details.postcode
+                postcode: details.postcode,
+                lat: details.lat, 
+                lng: details.lng  
             }));
         } else {
             setFormData(prev => ({
@@ -195,7 +196,9 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
                 delivery_address: details.address,
                 delivery_suburb: details.suburb,
                 delivery_state: details.state,
-                delivery_postcode: details.postcode
+                delivery_postcode: details.postcode,
+                delivery_lat: details.lat, 
+                delivery_lng: details.lng  
             }));
         }
     }
@@ -205,25 +208,69 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
     if (!formData.name) return alert("Customer Name is required.");
     setLoading(true);
     try {
+      // ---------------------------------------------------------------
+      // [NEW] 좌표 자동 보정 로직 (Auto-Correction)
+      // 사용자가 드롭다운을 클릭하지 않고 타이핑만 했을 경우를 대비해, 
+      // 저장 직전에 주소 텍스트로 좌표를 다시 한 번 검색합니다.
+      // ---------------------------------------------------------------
+      
+      let finalLat = formData.lat;
+      let finalLng = formData.lng;
+      let finalDeliveryLat = formData.delivery_lat;
+      let finalDeliveryLng = formData.delivery_lng;
+
+      // 1. Billing Address 좌표가 없으면 검색 시도
+      if ((!finalLat || !finalLng) && formData.address.length > 5) {
+          // console.log("⚠️ Billing coordinates missing. Attempting auto-fetch...");
+          const suggestions = await getPlaceSuggestions(formData.address);
+          if (suggestions.length > 0) {
+              const details = await getPlaceDetails(suggestions[0].place_id);
+              if (details && details.lat) {
+                  finalLat = details.lat;
+                  finalLng = details.lng;
+                  // console.log("✅ Billing coordinates auto-fetched:", finalLat, finalLng);
+              }
+          }
+      }
+
+      // 2. Delivery Address 좌표가 없으면 검색 시도 (Billing과 다를 경우)
+      if (!isSameAddress && (!finalDeliveryLat || !finalDeliveryLng) && formData.delivery_address.length > 5) {
+          // console.log("⚠️ Delivery coordinates missing. Attempting auto-fetch...");
+          const suggestions = await getPlaceSuggestions(formData.delivery_address);
+          if (suggestions.length > 0) {
+              const details = await getPlaceDetails(suggestions[0].place_id);
+              if (details && details.lat) {
+                  finalDeliveryLat = details.lat;
+                  finalDeliveryLng = details.lng;
+                  // console.log("✅ Delivery coordinates auto-fetched:", finalDeliveryLat, finalDeliveryLng);
+              }
+          }
+      }
+      // ---------------------------------------------------------------
+
       const finalDeliveryData = isSameAddress ? {
         delivery_address: formData.address,
         delivery_suburb: formData.suburb,
         delivery_state: formData.state,
         delivery_postcode: formData.postcode,
-        delivery_lat: formData.lat,
-        delivery_lng: formData.lng
+        // 같은 주소면 좌표도 복사 (Billing 좌표가 방금 업데이트 되었을 수 있으므로 final 변수 사용)
+        delivery_lat: finalLat, 
+        delivery_lng: finalLng  
       } : {
         delivery_address: formData.delivery_address,
         delivery_suburb: formData.delivery_suburb,
         delivery_state: formData.delivery_state,
         delivery_postcode: formData.delivery_postcode,
-        delivery_lat: formData.delivery_lat,
-        delivery_lng: formData.delivery_lng
+        delivery_lat: finalDeliveryLat,
+        delivery_lng: finalDeliveryLng
       };
 
-      const { password, customer_groups, profiles, ...restData } = formData as any;
+      const { id, password, customer_groups, profiles, ...restData } = formData as any;
+      
       const payload: any = {
-        ...restData,
+        ...restData, 
+        lat: finalLat, // 보정된 좌표 사용
+        lng: finalLng, // 보정된 좌표 사용
         ...finalDeliveryData,
         credit_limit: formData.credit_limit ? Number(formData.credit_limit) : null,
         group_id: formData.group_id ? Number(formData.group_id) : null,
@@ -232,6 +279,14 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
       };
 
       if (formData.password) payload.password = formData.password; 
+
+      // console.log("🚀 [FINAL SUBMIT] Payload:", {
+      //     address: payload.address,
+      //     lat: payload.lat,
+      //     lng: payload.lng,
+      //     delivery_lat: payload.delivery_lat,
+      //     delivery_lng: payload.delivery_lng
+      // });
 
       let error;
       if (customerData?.id) {
@@ -265,16 +320,12 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
         <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
           
-          {/* Header */}
           <div className="flex justify-between items-center px-6 py-4 border-b border-slate-100 bg-slate-50">
             <h2 className="text-lg font-bold text-slate-900">{customerData ? "Edit Customer" : "Add New Customer"}</h2>
             <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X className="w-6 h-6" /></button>
           </div>
 
-          {/* Body */}
           <div className="flex-1 overflow-y-auto p-6 space-y-8">
-            
-            {/* Account Settings */}
             <section className="space-y-4">
               <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider border-b pb-2">Account Settings</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -285,7 +336,6 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
               </div>
             </section>
 
-            {/* Basic Info */}
             <section className="space-y-4">
               <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider border-b pb-2">Basic Info</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -299,7 +349,6 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
               </div>
             </section>
 
-            {/* Staff Assignment */}
             <section className="space-y-4">
               <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider border-b pb-2 flex items-center gap-2"><Users className="w-4 h-4"/> Staff Assignment</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -308,7 +357,6 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
               </div>
             </section>
 
-            {/* Financial Info */}
             <section className="space-y-4">
               <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider border-b pb-2">Financial</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -317,14 +365,12 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
               </div>
             </section>
 
-            {/* Address Details (Modified for Server Action) */}
             <section className="space-y-8">
               <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider border-b pb-2 flex items-center gap-2">
                   Address Details 
                   <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full border border-blue-200 font-normal normal-case">Google Maps Auto-complete</span>
               </h3>
               
-              {/* Billing Address */}
               <div className="bg-slate-50 p-5 rounded-lg border border-slate-200 space-y-4 relative">
                 <h4 className="font-bold text-slate-800 flex items-center gap-2"><MapPin className="w-4 h-4 text-blue-600"/> Billing Address</h4>
                 
@@ -339,7 +385,6 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
                             placeholder="Start typing billing address..."
                         />
                         {isSearching && activeSearchField === 'billing' && <Loader2 className="absolute right-3 top-8 w-4 h-4 animate-spin text-slate-400" />}
-                        {/* Dropdown */}
                         {activeSearchField === 'billing' && suggestions.length > 0 && (
                             <div className="absolute z-10 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-60 overflow-y-auto">
                                 {suggestions.map((p) => (
@@ -362,7 +407,6 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
 
               <div className="flex items-center space-x-2 pl-1"><Checkbox id="sameAddress" checked={isSameAddress} onCheckedChange={(c) => setIsSameAddress(!!c)} className="border-slate-400 data-[state=checked]:bg-slate-900" /><label htmlFor="sameAddress" className="text-sm font-medium leading-none cursor-pointer select-none text-slate-700">Delivery address is same as billing address</label></div>
 
-              {/* Delivery Address */}
               {!isSameAddress && (
                 <div className="bg-slate-50 p-5 rounded-lg border border-slate-200 space-y-4 animate-in slide-in-from-top-2 fade-in relative">
                   <h4 className="font-bold text-slate-800 flex items-center gap-2"><MapPin className="w-4 h-4 text-emerald-600"/> Delivery Address</h4>
@@ -378,7 +422,6 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
                             placeholder="Start typing delivery address..."
                           />
                           {isSearching && activeSearchField === 'delivery' && <Loader2 className="absolute right-3 top-8 w-4 h-4 animate-spin text-slate-400" />}
-                          {/* Dropdown */}
                           {activeSearchField === 'delivery' && suggestions.length > 0 && (
                               <div className="absolute z-10 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-60 overflow-y-auto">
                                   {suggestions.map((p) => (

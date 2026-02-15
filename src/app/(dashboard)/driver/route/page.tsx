@@ -5,12 +5,16 @@ import { createClient } from "@/utils/supabase/client";
 import { GoogleMap, useJsApiLoader, DirectionsRenderer, Marker } from '@react-google-maps/api';
 import { Loader2, MapPin } from "lucide-react";
 
-declare var google: any;
-
-const LIBRARIES: ("places" | "geometry" | "drawing" | "visualization")[] = ["places"];
+// [중요] 라이브러리 배열 상수화 (재렌더링 방지)
+const LIBRARIES: ("places" | "geometry")[] = ["places", "geometry"];
 
 const getMelbourneDate = () => {
-  return new Date().toLocaleDateString('en-CA', { timeZone: 'Australia/Melbourne' });
+  const now = new Date();
+  const options: Intl.DateTimeFormatOptions = { 
+    timeZone: "Australia/Melbourne", year: 'numeric', month: '2-digit', day: '2-digit' 
+  };
+  const formatter = new Intl.DateTimeFormat('en-CA', options); 
+  return formatter.format(now);
 };
 
 export default function DriverRoutePage() {
@@ -18,20 +22,39 @@ export default function DriverRoutePage() {
   const [loading, setLoading] = useState(true);
   const [directionsResponse, setDirectionsResponse] = useState<any>(null);
   const [currentRun, setCurrentRun] = useState(1);
-  const [returnAddress, setReturnAddress] = useState("");
+  const [debugMsg, setDebugMsg] = useState(""); // 디버깅용 메시지
 
+  // Google Maps API 로드
   const { isLoaded } = useJsApiLoader({
-    id: 'google-map-script',
+    id: 'google-map-script', // 다른 페이지와 ID 통일
     googleMapsApiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || "",
     libraries: LIBRARIES
   });
 
-  // ✅ 맵이 로드되면 데이터 가져오기 시작
   useEffect(() => {
     if (isLoaded) {
         fetchRouteData();
     }
   }, [isLoaded]);
+
+  // 주소를 좌표로 변환
+  const geocodeAddress = async (address: string): Promise<{ lat: number; lng: number } | null> => {
+      if (!window.google || !window.google.maps) return null;
+      const geocoder = new window.google.maps.Geocoder();
+      return new Promise((resolve) => {
+          geocoder.geocode({ address: address }, (results: any, status: any) => {
+              if (status === 'OK' && results[0]) {
+                  resolve({
+                      lat: results[0].geometry.location.lat(),
+                      lng: results[0].geometry.location.lng()
+                  });
+              } else {
+                  console.warn(`Geocoding failed for "${address}": ${status}`);
+                  resolve(null);
+              }
+          });
+      });
+  };
 
   const fetchRouteData = async () => {
     setLoading(true);
@@ -39,57 +62,53 @@ export default function DriverRoutePage() {
     if (!user) { setLoading(false); return; }
 
     // ---------------------------------------------------------
-    // 1. 복귀 주소 (Return Address) 가져오기 - 우선순위 로직 수정됨
+    // 1. 복귀 주소 (Return Address) 확인
     // ---------------------------------------------------------
     let finalAddr = "";
-
-    // 1순위: 로컬 스토리지 (방금 앱에서 선택한 값)
-    const saved = localStorage.getItem("returnAddress");
-    if (saved) {
-        finalAddr = saved;
-    } 
     
-    // 2순위: 로컬에 없으면 드라이버 프로필 (DB)
+    // 1순위: 로컬 스토리지
+    const saved = localStorage.getItem("returnAddress");
+    if (saved) finalAddr = saved;
+    
+    // 2순위: 프로필
     if (!finalAddr) {
         const { data: profile } = await supabase.from('profiles').select('address').eq('id', user.id).single();
         if (profile?.address) finalAddr = profile.address;
     }
 
-    // 3순위: 프로필도 없으면 회사 주소 (DB)
+    // 3순위: 회사 설정
     if (!finalAddr) {
         const { data: company } = await supabase
-            .from('company_settings') // ✅ 복수형(settings)으로 수정됨
+            .from('company_settings')
             .select('address_line1, address_line2, state, suburb, postcode')
             .maybeSingle();
         
         if (company) {
             const parts = [
-                company.address_line1, 
-                company.address_line2, 
-                company.suburb, 
-                company.state, 
-                company.postcode
+                company.address_line1, company.address_line2, company.suburb, company.state, company.postcode
             ].filter(p => p && p.trim() !== "");
             finalAddr = parts.join(", ");
         }
     }
 
-    // 최종 결정된 주소 설정
-    if (finalAddr) setReturnAddress(finalAddr);
+    // 좌표 변환
+    let returnCoords: { lat: number; lng: number } | null = null;
+    if (finalAddr) {
+        returnCoords = await geocodeAddress(finalAddr);
+        console.log("📍 Final Destination Found:", finalAddr, returnCoords);
+    } else {
+        console.log("⚠️ No Final Destination found. Route will end at last delivery.");
+    }
 
     // ---------------------------------------------------------
-    // 2. 배송 데이터 가져오기
+    // 2. 배송 데이터 (좌표 포함)
     // ---------------------------------------------------------
     const today = getMelbourneDate();
     const { data, error } = await supabase
       .from('invoices')
       .select(`
-        id, 
-        invoice_to, 
-        delivery_run, 
-        is_completed, 
-        delivery_order, 
-        customers(delivery_address, delivery_suburb, delivery_state, delivery_postcode)
+        id, invoice_to, delivery_run, is_completed, delivery_order, 
+        customers(lat, lng, delivery_lat, delivery_lng)
       `)
       .eq('invoice_date', today)
       .eq('driver_id', user.id)
@@ -103,77 +122,114 @@ export default function DriverRoutePage() {
     }
 
     if (data && data.length > 0) {
-      // 주소 조합
-      const items = data.map((item: any) => {
-          const cust = Array.isArray(item.customers) ? item.customers[0] : item.customers;
-          const fullAddress = cust 
-            ? `${cust.delivery_address || ''}, ${cust.delivery_suburb || ''} ${cust.delivery_state || ''} ${cust.delivery_postcode || ''}`.trim()
-            : "";
-          // 쉼표 제거 등 포맷팅
-          const cleanAddress = fullAddress.replace(/^, /, "").replace(/, $/, "");
-          return { ...item, address: cleanAddress || "Unknown Address" };
-      });
-
-      // 1차(Run 1) 미완료 건이 있으면 1차, 다 했으면 2차
-      const run1Pending = items.some((i: any) => i.delivery_run === 1 && !i.is_completed);
+      const run1Pending = data.some((i: any) => i.delivery_run === 1 && !i.is_completed);
       const targetRun = run1Pending ? 1 : 2;
       setCurrentRun(targetRun);
 
-      const targetItems = items.filter((i: any) => i.delivery_run === targetRun);
+      const targetItems = data.filter((i: any) => i.delivery_run === targetRun);
       
       if (targetItems.length > 0) {
-          calculateRoute(targetItems, finalAddr);
+          calculateRoute(targetItems, returnCoords);
       } else {
-          setLoading(false); // 해당 Run에 배송 건 없음
+          setLoading(false);
       }
     } else {
-        setLoading(false); // 오늘 배송 없음
+        setLoading(false);
     }
   };
 
-  const calculateRoute = (items: any[], finalDest: string) => {
-      // 구글 맵 로딩 체크
-      if (!isLoaded || items.length === 0) {
+  const calculateRoute = (items: any[], returnDest: { lat: number; lng: number } | null) => {
+      if (!isLoaded || !window.google) return;
+
+      // 1. 배송지 Waypoints 생성
+      const waypoints: google.maps.DirectionsWaypoint[] = [];
+      const validLocations: { lat: number; lng: number }[] = [];
+
+      items.forEach((item: any) => {
+          const cust = Array.isArray(item.customers) ? item.customers[0] : item.customers;
+          if (!cust) return;
+
+          const lat = cust.delivery_lat || cust.lat;
+          const lng = cust.delivery_lng || cust.lng;
+
+          if (lat && lng && lat !== 0 && lng !== 0) {
+              const location = { lat, lng };
+              waypoints.push({ location, stopover: true });
+              validLocations.push(location);
+          }
+      });
+
+      if (waypoints.length === 0) {
           setLoading(false);
           return;
       }
 
-      const directionsService = new google.maps.DirectionsService();
-      
-      const waypoints = items.map(item => ({
-          location: item.address,
-          stopover: true
-      }));
-
-      // 출발지: 현재 위치 (실패 시 첫 배송지)
+      // 2. 출발지 설정 및 경로 요청
       navigator.geolocation.getCurrentPosition((pos) => {
           const origin = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-          requestDirections(directionsService, origin, waypoints, finalDest);
+          requestDirections(origin, waypoints, returnDest);
       }, (err) => {
-          console.warn("Geolocation failed", err);
-          // 위치 권한 없으면 리스트 첫번째를 시작점으로
-          requestDirections(directionsService, waypoints[0].location, waypoints.slice(1), finalDest);
+          console.warn("Geolocation failed, using first stop as start", err);
+          if (validLocations.length > 0) {
+              // 위치 권한 없으면 첫 배송지에서 시작 (Waypoints 목록에서 첫 번째 제거)
+              const newOrigin = validLocations[0];
+              const newWaypoints = waypoints.slice(1);
+              requestDirections(newOrigin, newWaypoints, returnDest);
+          } else {
+              setLoading(false);
+          }
       });
   };
 
-  const requestDirections = (service: any, origin: any, waypoints: any[], finalDest: string) => {
-      // 도착지가 없으면(설정 안됨) 마지막 배송지가 도착지가 됨
-      const destination = finalDest || waypoints[waypoints.length -1].location;
+  // ✅ [핵심 수정] 도착지 및 경유지 설정 로직 강화
+  const requestDirections = (
+      origin: google.maps.LatLngLiteral, 
+      allWaypoints: google.maps.DirectionsWaypoint[], 
+      returnDest: { lat: number; lng: number } | null
+  ) => {
+      const directionsService = new window.google.maps.DirectionsService();
 
-      service.route({
+      let destination: google.maps.LatLngLiteral | undefined;
+      let finalWaypoints: google.maps.DirectionsWaypoint[] = [];
+
+      if (returnDest) {
+          // [CASE A] 복귀 주소가 있는 경우 (창고로 복귀)
+          // Waypoints: 모든 배송지 (순서대로)
+          // Destination: 복귀 주소
+          destination = returnDest;
+          finalWaypoints = allWaypoints; 
+          console.log("🚗 Route Mode: Return to Base");
+      } else {
+          // [CASE B] 복귀 주소가 없는 경우 (마지막 배송지에서 종료)
+          // Waypoints: 마지막 배송지를 제외한 나머지
+          // Destination: 마지막 배송지
+          if (allWaypoints.length > 0) {
+              const lastStop = allWaypoints[allWaypoints.length - 1];
+              destination = lastStop.location as google.maps.LatLngLiteral;
+              finalWaypoints = allWaypoints.slice(0, -1);
+          }
+          console.log("🚛 Route Mode: One-way Trip (No Return Address)");
+      }
+
+      if (!destination) {
+          console.error("Destination undefined");
+          setLoading(false);
+          return;
+      }
+
+      directionsService.route({
           origin: origin,
           destination: destination,
-          waypoints: waypoints, 
-          optimizeWaypoints: false, // 보이는 순서 그대로
-          travelMode: google.maps.TravelMode.DRIVING
+          waypoints: finalWaypoints,
+          optimizeWaypoints: false, // 배송 순서 유지
+          travelMode: window.google.maps.TravelMode.DRIVING
       }, (result: any, status: any) => {
-          if (status === google.maps.DirectionsStatus.OK) {
+          if (status === window.google.maps.DirectionsStatus.OK) {
               setDirectionsResponse(result);
           } else {
-              console.error("Maps Error:", status);
-              // alert("Could not load route map."); // 필요시 주석 해제
+              console.error("Maps Directions Error:", status);
           }
-          setLoading(false); // 로딩 종료
+          setLoading(false);
       });
   }
 
@@ -181,7 +237,6 @@ export default function DriverRoutePage() {
 
   return (
     <div className="h-[calc(100vh-130px)] w-full relative"> 
-      {/* 상단 Run 정보 배지 */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 bg-white/90 backdrop-blur px-4 py-2 rounded-full shadow-md text-sm font-bold text-slate-800 border border-slate-200">
           Route for {currentRun === 1 ? "1st Run" : "2nd Run"}
       </div>
@@ -195,7 +250,10 @@ export default function DriverRoutePage() {
           >
               <DirectionsRenderer 
                   directions={directionsResponse} 
-                  options={{ suppressMarkers: true }} 
+                  options={{ 
+                      suppressMarkers: true, 
+                      preserveViewport: false 
+                  }} 
               />
               
               {/* S: Start */}
@@ -206,21 +264,30 @@ export default function DriverRoutePage() {
                   />
               )}
 
-              {/* 1, 2, 3... Stops */}
-              {directionsResponse.routes[0]?.legs.slice(0, -1).map((leg: any, idx: number) => (
-                  <Marker 
-                    key={idx} 
-                    position={leg.end_location} 
-                    label={{ text: `${idx + 1}`, color: "white", fontWeight: "bold" }} 
-                  />
-              ))}
+              {/* 1, 2, 3... Stops (경유지 & 도착지) */}
+              {directionsResponse.routes[0]?.legs.map((leg: any, idx: number) => {
+                  const isLastLeg = idx === directionsResponse.routes[0].legs.length - 1;
+                  
+                  // 마지막 지점(도착지) -> F (Final)
+                  if (isLastLeg) {
+                      return (
+                          <Marker 
+                            key="final"
+                            position={leg.end_location} 
+                            label={{ text: "F", color: "white", fontWeight: "bold" }} 
+                          />
+                      );
+                  }
 
-              {/* F: Finish */}
-              <Marker 
-                position={directionsResponse.routes[0].legs[directionsResponse.routes[0].legs.length - 1].end_location} 
-                label={{ text: "F", color: "white", fontWeight: "bold" }} 
-              />
-
+                  // 중간 경유지들 -> 숫자
+                  return (
+                      <Marker 
+                        key={idx} 
+                        position={leg.end_location} 
+                        label={{ text: `${idx + 1}`, color: "white", fontWeight: "bold" }} 
+                      />
+                  );
+              })}
           </GoogleMap>
       ) : (
           <div className="flex flex-col items-center justify-center h-full text-slate-400 bg-slate-50">

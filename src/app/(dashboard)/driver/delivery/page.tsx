@@ -60,7 +60,7 @@ const getMelbourneDate = () => {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Australia/Melbourne' });
 };
 
-const LIBRARIES: ("places" | "geometry" | "drawing" | "visualization")[] = ["places"];
+const LIBRARIES: ("places" | "geometry")[] = ["places", "geometry"];
 
 export default function DriverDeliveryPage() {
   const supabase = createClient();

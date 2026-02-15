@@ -6,7 +6,7 @@ import Script from "next/script";
 import { 
   Calendar as CalendarIcon, Truck, Map as MapIcon, Navigation, 
   MapPin, CheckCircle2, User, Loader2, MapPin as WarehouseIcon, Radio,
-  Box, X, Circle, FileText // [NEW] FileText 아이콘 추가
+  Box, X, Circle, FileText 
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -31,7 +31,7 @@ interface Invoice {
   delivery_run: number;
   driver_id: string;
   is_completed: boolean;
-  memo: string | null; // [NEW] 메모 필드 추가
+  memo: string | null; 
   customers: {
     name: string;
     suburb: string | null;
@@ -92,6 +92,7 @@ export default function DeliveryRoutePage() {
 
   // Map
   const [isMapOpen, setIsMapOpen] = useState(false);
+  const [isGoogleLoaded, setIsGoogleLoaded] = useState(false); // Google API 로드 상태 관리
   const [warehouseLocation, setWarehouseLocation] = useState(DEFAULT_LOCATION);
   const GOOGLE_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
 
@@ -101,7 +102,13 @@ export default function DeliveryRoutePage() {
   const [invoiceItems, setInvoiceItems] = useState<InvoiceItem[]>([]);
   const [loadingItems, setLoadingItems] = useState(false);
 
-  useEffect(() => { setIsMounted(true); }, []);
+  useEffect(() => { 
+      setIsMounted(true); 
+      // [FIX] 컴포넌트 마운트 시 이미 google 객체가 있는지 확인
+      if (window.google && window.google.maps) {
+          setIsGoogleLoaded(true);
+      }
+  }, []);
 
   // Get User Location
   useEffect(() => {
@@ -184,7 +191,6 @@ export default function DeliveryRoutePage() {
       const run = parseInt(runStr);
 
       setLoading(true);
-      // [MODIFIED] memo 컬럼 추가
       const { data, error } = await supabase
         .from("invoices")
         .select(`
@@ -207,7 +213,6 @@ export default function DeliveryRoutePage() {
       setLoading(false);
   };
 
-  // Fetch Invoice Items
   const handleInvoiceClick = async (invoice: Invoice) => {
     setSelectedInvoice(invoice);
     setIsDetailOpen(true);
@@ -229,7 +234,6 @@ export default function DeliveryRoutePage() {
   useEffect(() => { fetchRoutes(); }, [selectedDate]);
   useEffect(() => { fetchInvoices(); }, [selectedRouteKey]);
 
-  // Realtime Update Subscription
   useEffect(() => {
     const channel = supabase.channel('route_view_changes')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'invoices', filter: `invoice_date=eq.${selectedDate}` }, () => {
@@ -251,11 +255,14 @@ export default function DeliveryRoutePage() {
     <Script 
         src={`https://maps.googleapis.com/maps/api/js?key=${GOOGLE_API_KEY}&libraries=places,geometry&loading=async`}
         strategy="afterInteractive"
+        onLoad={() => {
+            // [FIX] onLoad 이벤트에서도 상태 업데이트 (onReady 대신 onLoad 사용 권장)
+            setIsGoogleLoaded(true);
+            console.log("Google Maps API Loaded via Script");
+        }}
     />
 
     <div className="flex flex-col h-[calc(100vh-65px)] bg-slate-50/50">
-      
-      {/* 1. Header */}
       <div className="h-16 border-b border-slate-200 bg-white px-6 flex items-center justify-between shrink-0 z-10 shadow-sm">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2 text-slate-800 font-bold text-lg">
@@ -287,8 +294,7 @@ export default function DeliveryRoutePage() {
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-        
-        {/* 2. Left Sidebar (Drivers & Runs) */}
+        {/* Left Sidebar */}
         <div className="w-64 bg-white border-r border-slate-200 flex flex-col overflow-y-auto shrink-0">
           <div className="p-4 text-xs font-bold text-slate-400 uppercase tracking-wider bg-slate-50/50 border-b border-slate-100">
               Active Routes ({routeList.length})
@@ -346,12 +352,10 @@ export default function DeliveryRoutePage() {
           </div>
         </div>
 
-        {/* 3. Right Content (Invoice List) */}
+        {/* Right Content */}
         <div className="flex-1 bg-slate-50/50 p-6 overflow-y-auto">
           {selectedRouteKey && currentRouteInfo ? (
             <div className="max-w-xl mx-auto space-y-4">
-              
-              {/* Route Summary */}
               <div className="flex items-center justify-between mb-4">
                  <div>
                      <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
@@ -368,7 +372,6 @@ export default function DeliveryRoutePage() {
                  </div>
               </div>
 
-              {/* Invoice List */}
               <div className="space-y-3 pb-20">
                 {invoices.length === 0 && (
                     <div className="text-center py-20 bg-white rounded-xl border border-dashed border-slate-300 text-slate-400">
@@ -376,29 +379,15 @@ export default function DeliveryRoutePage() {
                         <p>No invoices in this route.</p>
                     </div>
                 )}
-                
                 {invoices.map((invoice, index) => {
                   const isCompleted = invoice.is_completed;
-                  const isNew = invoice.delivery_order === 0;
-
                   return (
-                    <Card 
-                        key={invoice.id} 
-                        onClick={() => handleInvoiceClick(invoice)}
-                        className={cn(
-                        "border shadow-sm transition-all cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.99]",
-                        isCompleted ? "bg-slate-50/80 border-slate-200" : "bg-white border-slate-200",
-                        isNew && "border-red-300 bg-red-50/30"
-                    )}>
+                    <Card key={invoice.id} onClick={() => handleInvoiceClick(invoice)} className={cn("border shadow-sm transition-all cursor-pointer hover:shadow-md hover:border-slate-300 active:scale-[0.99]", isCompleted ? "bg-slate-50/80 border-slate-200" : "bg-white border-slate-200")}>
                       <CardContent className="p-3">
                         <div className="flex items-start gap-4">
-                            <div className={cn(
-                                "w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold shrink-0 shadow-sm border",
-                                isCompleted ? "bg-slate-200 text-slate-500 border-slate-300" : isNew ? "bg-red-100 text-red-600 border-red-200" : "bg-white text-slate-700 border-slate-200"
-                            )}>
-                            {isCompleted ? <CheckCircle2 className="w-5 h-5" /> : (index + 1)}
+                            <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold shrink-0 shadow-sm border", isCompleted ? "bg-slate-200 text-slate-500 border-slate-300" : "bg-white text-slate-700 border-slate-200")}>
+                              {isCompleted ? <CheckCircle2 className="w-5 h-5" /> : (index + 1)}
                             </div>
-                            
                             <div className="flex-1 min-w-0">
                                 <div className="flex items-center gap-2">
                                     <span className={cn("font-bold text-sm truncate", isCompleted ? "text-slate-400 line-through" : "text-slate-800")}>
@@ -411,8 +400,6 @@ export default function DeliveryRoutePage() {
                                         {invoice.customers?.delivery_address || invoice.customers?.address || "No Address"}, {invoice.customers?.suburb}
                                     </span>
                                 </div>
-
-                                {/* [NEW] 메모 표시 영역 */}
                                 {invoice.memo && (
                                     <div className="mt-2 text-xs bg-amber-50 text-amber-700 p-2 rounded border border-amber-100 flex items-start gap-1.5">
                                         <FileText className="w-3.5 h-3.5 mt-0.5 shrink-0 opacity-70"/>
@@ -420,14 +407,7 @@ export default function DeliveryRoutePage() {
                                     </div>
                                 )}
                             </div>
-
-                            {isCompleted ? (
-                                <Badge variant="outline" className="text-[10px] bg-white text-slate-400 border-slate-200 h-fit">
-                                    Completed
-                                </Badge>
-                            ) : (
-                                <Circle className="w-4 h-4 text-slate-300 shrink-0" />
-                            )}
+                            {isCompleted ? <Badge variant="outline" className="text-[10px] bg-white text-slate-400 border-slate-200 h-fit">Completed</Badge> : <Circle className="w-4 h-4 text-slate-300 shrink-0" />}
                         </div>
                       </CardContent>
                     </Card>
@@ -489,7 +469,6 @@ export default function DeliveryRoutePage() {
                 )}
             </div>
             
-            {/* [NEW] Dialog에서도 메모 보여주기 (선택사항) */}
             {selectedInvoice?.memo && (
                 <div className="bg-amber-50 text-amber-800 text-xs p-3 rounded-md border border-amber-200 flex gap-2 items-start mt-2">
                     <FileText className="w-4 h-4 shrink-0"/>
@@ -514,48 +493,63 @@ export default function DeliveryRoutePage() {
         driverId={currentRouteInfo?.driverId} 
         invoices={invoices}
         warehouseLocation={warehouseLocation}
+        isGoogleLoaded={isGoogleLoaded}
     />
     </>
   );
 }
 
-// 4. Map Dialog Component (With Real-time Driver Tracking)
-function RouteMapDialog({ isOpen, onClose, driverName, driverId, invoices, warehouseLocation }: { isOpen: boolean, onClose: () => void, driverName: string, driverId?: string, invoices: Invoice[], warehouseLocation: any }) {
+// 4. Map Dialog Component (Coordinate-based Routing & Driver Tracking with Validation)
+function RouteMapDialog({ 
+    isOpen, onClose, driverName, driverId, invoices, warehouseLocation, isGoogleLoaded 
+}: { 
+    isOpen: boolean, onClose: () => void, driverName: string, driverId?: string, invoices: Invoice[], warehouseLocation: any, isGoogleLoaded: boolean 
+}) {
     const supabase = createClient();
     const mapRef = useRef<HTMLDivElement>(null);
     const mapInstance = useRef<any>(null);
     const directionsRenderer = useRef<any>(null);
     
-    // 마커 관리용 Ref
     const markersRef = useRef<any[]>([]);
     const driverMarkerRef = useRef<any>(null);
 
-    // [New] Driver Location State
     const [driverLocation, setDriverLocation] = useState<{ lat: number, lng: number } | null>(null);
 
-    // 1. 드라이버 위치 구독 (Realtime)
+    const isValidLocation = (loc: any) => {
+        return loc && typeof loc.lat === 'number' && typeof loc.lng === 'number' && loc.lat !== 0 && loc.lng !== 0;
+    };
+
+    // 1. [초기화 로직] 다이얼로그가 닫히면 지도 객체를 '반드시' 삭제 (Reset)
+    useEffect(() => {
+        if (!isOpen) {
+            mapInstance.current = null;
+            directionsRenderer.current = null;
+            markersRef.current = [];
+            driverMarkerRef.current = null;
+        }
+    }, [isOpen]);
+
+    // 2. 드라이버 위치 구독
     useEffect(() => {
         if (!isOpen || !driverId) return;
 
-        // 초기 위치 가져오기 (DB 조회)
         const fetchInitialLocation = async () => {
-             const { data } = await supabase.from('driver_locations').select('lat, lng').eq('driver_id', driverId).single();
-             if (data) setDriverLocation({ lat: data.lat, lng: data.lng });
+             const { data } = await supabase.from('driver_locations').select('lat, lng').eq('driver_id', driverId).maybeSingle();
+             if (data && isValidLocation(data)) {
+                 setDriverLocation({ lat: data.lat, lng: data.lng });
+             } else {
+                 setDriverLocation(null);
+             }
         };
         fetchInitialLocation();
 
-        // 실시간 구독
         const channel = supabase.channel(`tracking_${driverId}`)
-            .on('postgres_changes', { 
-                event: '*', 
-                schema: 'public', 
-                table: 'driver_locations',
-                filter: `driver_id=eq.${driverId}`
-            }, (payload: any) => {
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'driver_locations', filter: `driver_id=eq.${driverId}` }, (payload: any) => {
                 const newLoc = payload.new;
-                if (newLoc) {
-                    console.log("🚚 Driver Moved:", newLoc.lat, newLoc.lng);
+                if (newLoc && isValidLocation(newLoc)) {
                     setDriverLocation({ lat: newLoc.lat, lng: newLoc.lng });
+                } else {
+                    setDriverLocation(null);
                 }
             })
             .subscribe();
@@ -563,14 +557,15 @@ function RouteMapDialog({ isOpen, onClose, driverName, driverId, invoices, wareh
         return () => { supabase.removeChannel(channel); };
     }, [isOpen, driverId]);
 
-    // 2. 지도 초기화 및 기본 마커 (창고, 배송지)
+    // 3. 지도 및 경로 그리기 (타이밍 이슈 해결)
     useEffect(() => {
-        if (!isOpen || !window.google) return;
+        if (!isOpen || !isGoogleLoaded || !window.google || !window.google.maps) return;
 
+        // [핵심 수정] 다이얼로그가 열리고 DOM(div)이 생성될 때까지 0.1초 기다림
         const timer = setTimeout(() => {
-            if (!mapRef.current) return;
+            if (!mapRef.current) return; // 아직 div가 없으면 중단
 
-            // 지도 생성 (최초 1회)
+            // 3-1. 지도 객체 생성 (없을 때만 새로 만듦)
             if (!mapInstance.current) {
                 mapInstance.current = new window.google.maps.Map(mapRef.current, {
                     center: warehouseLocation,
@@ -580,68 +575,96 @@ function RouteMapDialog({ isOpen, onClose, driverName, driverId, invoices, wareh
                 });
                 directionsRenderer.current = new window.google.maps.DirectionsRenderer({
                     map: mapInstance.current,
-                    suppressMarkers: true,
+                    suppressMarkers: true, 
+                    preserveViewport: false,
                 });
             }
 
-            // 기존 마커 제거 (드라이버 마커 제외)
+            // 3-2. 마커 및 경로 초기화 (지도가 이미 있어도 내용은 다시 그림)
             markersRef.current.forEach(m => m.setMap(null));
             markersRef.current = [];
-
-            // 배송지 마커 생성
-            const waypoints: any[] = [];
-            invoices.forEach((inv, idx) => {
-                 const c = inv.customers;
-                 const lat = c.delivery_lat || c.lat;
-                 const lng = c.delivery_lng || c.lng;
-                 
-                 if(lat && lng) {
-                     const marker = new window.google.maps.Marker({
-                         position: { lat, lng },
-                         map: mapInstance.current,
-                         label: { text: `${idx + 1}`, color: "white", fontWeight: "bold" },
-                         title: c.name,
-                         // 완료된 건은 흐리게
-                         opacity: inv.is_completed ? 0.5 : 1.0
-                     });
-                     markersRef.current.push(marker);
-                     waypoints.push({ location: { lat, lng }, stopover: true });
-                 }
-            });
-
-            // 경로 그리기
-            if(waypoints.length > 0) {
-                const ds = new window.google.maps.DirectionsService();
-                ds.route({
-                    origin: warehouseLocation,
-                    destination: warehouseLocation, // Round trip
-                    // @ts-ignore
-                    waypoints: waypoints,
-                    travelMode: window.google.maps.TravelMode.DRIVING,
-                    optimizeWaypoints: false 
-                }, (res: any, status: any) => {
-                    if(status === 'OK') directionsRenderer.current.setDirections(res);
-                });
+            
+            // directionsRenderer가 혹시 null일 수 있으므로 체크
+            if (directionsRenderer.current) {
+                directionsRenderer.current.setDirections({ routes: [] });
             }
 
-        }, 300);
+            const waypoints: any[] = [];
+            invoices.forEach((inv, idx) => {
+                const c = inv.customers;
+                const lat = c.delivery_lat || c.lat;
+                const lng = c.delivery_lng || c.lng;
 
-        return () => { clearTimeout(timer); };
-    }, [isOpen, invoices, warehouseLocation]);
+                if (lat && lng && lat !== 0 && lng !== 0) {
+                    const location = { lat, lng };
+                    const marker = new window.google.maps.Marker({
+                        position: location,
+                        map: mapInstance.current,
+                        label: { text: `${idx + 1}`, color: "white", fontWeight: "bold" },
+                        title: c.name,
+                        opacity: inv.is_completed ? 0.5 : 1.0,
+                    });
+                    markersRef.current.push(marker);
+                    waypoints.push({ location: location, stopover: true });
+                }
+            });
 
-    // 3. 드라이버 마커 업데이트 (위치 변경 시마다 실행)
+            // 3-3. 경로 요청
+            if (waypoints.length > 0) {
+                if (waypoints.length > 23) {
+                     const bounds = new window.google.maps.LatLngBounds();
+                     waypoints.forEach(wp => bounds.extend(wp.location));
+                     bounds.extend(warehouseLocation);
+                     if (mapInstance.current) mapInstance.current.fitBounds(bounds);
+                } else {
+                    const ds = new window.google.maps.DirectionsService();
+                    ds.route({
+                        origin: warehouseLocation,
+                        destination: warehouseLocation, 
+                        // @ts-ignore
+                        waypoints: waypoints,
+                        travelMode: window.google.maps.TravelMode.DRIVING,
+                        optimizeWaypoints: false 
+                    }, (res: any, status: any) => {
+                        if (status === 'OK') {
+                            if (directionsRenderer.current) directionsRenderer.current.setDirections(res);
+                        } else {
+                            console.error("Directions Request failed:", status);
+                        }
+                    });
+                }
+            } else {
+                if (mapInstance.current) {
+                    mapInstance.current.setCenter(warehouseLocation);
+                    mapInstance.current.setZoom(12);
+                }
+            }
+        }, 100); // 0.1초 지연 실행
+
+        return () => clearTimeout(timer); // 클린업
+
+    }, [isOpen, isGoogleLoaded, invoices, warehouseLocation]); 
+
+    // 4. 드라이버 마커 업데이트
     useEffect(() => {
-        if (!mapInstance.current || !window.google || !driverLocation) return;
+        // 지도가 아직 안 만들어졌으면(null) 실행 안 함
+        if (!mapInstance.current || !window.google) return;
 
-        // 드라이버 마커가 없으면 생성
+        if (!driverLocation) {
+            if (driverMarkerRef.current) {
+                driverMarkerRef.current.setMap(null);
+                driverMarkerRef.current = null;
+            }
+            return;
+        }
+
         if (!driverMarkerRef.current) {
             driverMarkerRef.current = new window.google.maps.Marker({
                 position: driverLocation,
                 map: mapInstance.current,
                 icon: {
-                    // 트럭 아이콘 (SVG path)
                     path: "M20 8h-3V4H3c-1.1 0-2 .9-2 2v11h2c0 1.66 1.34 3 3 3s3-1.34 3-3h6c0 1.66 1.34 3 3 3s3-1.34 3-3h2v-5l-3-4zM6 18.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm13.5-9l1.96 2.5H17V9.5h2.5zm-1.5 9c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z",
-                    fillColor: "#10b981", // Emerald-500
+                    fillColor: "#10b981", 
                     fillOpacity: 1,
                     strokeWeight: 1,
                     strokeColor: "#ffffff",
@@ -650,21 +673,15 @@ function RouteMapDialog({ isOpen, onClose, driverName, driverId, invoices, wareh
                 },
                 zIndex: 1000,
                 title: driverName,
-                animation: window.google.maps.Animation.DROP,
             });
         } else {
-            // 있으면 위치만 이동 (부드럽게)
+            // [중요] 지도가 재성성되었다면 마커도 새 지도에 다시 붙여야 함
+            if (driverMarkerRef.current.getMap() !== mapInstance.current) {
+                driverMarkerRef.current.setMap(mapInstance.current);
+            }
             driverMarkerRef.current.setPosition(driverLocation);
         }
-    }, [driverLocation]); 
-
-    // 닫을 때 초기화
-    useEffect(() => {
-        if (!isOpen) {
-            mapInstance.current = null;
-            driverMarkerRef.current = null;
-        }
-    }, [isOpen]);
+    }, [driverLocation, isOpen]); // isOpen이 바뀌어서 지도가 새로 그려지면 마커도 다시 그려야 함
 
     return (
         <Dialog open={isOpen} onOpenChange={onClose}>
@@ -674,17 +691,20 @@ function RouteMapDialog({ isOpen, onClose, driverName, driverId, invoices, wareh
                         <Navigation className="w-5 h-5 text-indigo-600"/>
                         Tracking: <span className="text-indigo-900">{driverName}</span>
                         {driverLocation && (
-                            <Badge variant="outline" className="ml-2 bg-emerald-50 text-emerald-600 border-emerald-200 animate-pulse">
-                                Live
-                            </Badge>
+                            <Badge variant="outline" className="ml-2 bg-emerald-50 text-emerald-600 border-emerald-200 animate-pulse">Live</Badge>
                         )}
                     </DialogTitle>
-                    <DialogDescription className="text-xs text-slate-500 hidden">
-                        Real-time delivery route and driver location map for {driverName}.
+                    <DialogDescription className="hidden">
+                        Real-time delivery route map for {driverName}
                     </DialogDescription>
                 </DialogHeader>
                 <div className="flex-1 relative w-full h-full bg-slate-100">
                     <div ref={mapRef} className="absolute inset-0 w-full h-full" />
+                    {!isGoogleLoaded && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-white/50 z-50">
+                            <Loader2 className="w-8 h-8 animate-spin text-slate-400" />
+                        </div>
+                    )}
                 </div>
             </DialogContent>
         </Dialog>

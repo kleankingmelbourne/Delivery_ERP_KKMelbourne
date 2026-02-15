@@ -8,7 +8,7 @@ import {
   ChevronLeft, ChevronRight, X, CheckSquare, Box,
   Download, FileDown, ChevronDown, ChevronUp, Mail,
   AlertCircle, Truck, CheckCircle2, Circle, Package, DollarSign,
-  Calculator, Receipt, FileStack, Image as ImageIcon 
+  Calculator, Receipt, FileStack, Image as ImageIcon, Layers 
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -21,6 +21,12 @@ import {
 } from "@/utils/downloadPdf"; 
 
 import EmailSendDialog from "@/components/email/EmailSendDialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 // --- [Utility] 반올림 함수 ---
 const roundAmount = (num: number) => {
@@ -306,6 +312,50 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     setSelectedIds(newSelected);
   };
   const isAllSelected = paginatedInvoices.length > 0 && paginatedInvoices.every(inv => selectedIds.has(inv.id));
+
+  // --- [NEW] Show/Hide Details Handler ---
+  const handleDetailView = async (type: 'show' | 'hide') => {
+      if (type === 'hide') {
+          setExpandedRowIds(new Set());
+      } else {
+          // Show All Logic
+          const allIds = paginatedInvoices.map(inv => inv.id);
+          const newExpanded = new Set(allIds);
+          
+          // 1. 이미 캐시된 항목 확인
+          const missingIds = allIds.filter(id => !detailsCache[id]);
+          
+          if (missingIds.length > 0) {
+              setLoadingRows(new Set(missingIds)); // 로딩 표시
+              
+              // 2. 한 번에 데이터 가져오기 (Bulk Fetch)
+              const { data: items, error } = await supabase
+                  .from("invoice_items")
+                  .select("id, invoice_id, description, quantity, unit_price, amount, unit, base_price, discount")
+                  .in("invoice_id", missingIds);
+
+              if (!error && items) {
+                  // 3. 데이터를 invoice_id 별로 그룹화하여 캐시에 저장
+                  const newCache = { ...detailsCache };
+                  items.forEach((item: any) => {
+                      if (!newCache[item.invoice_id]) {
+                          newCache[item.invoice_id] = [];
+                      }
+                      newCache[item.invoice_id].push(item);
+                  });
+                  // 아이템이 없는 인보이스도 빈 배열로 처리 (로딩 해제 위해)
+                  missingIds.forEach(id => {
+                      if (!newCache[id]) newCache[id] = [];
+                  });
+                  
+                  setDetailsCache(newCache);
+              }
+              setLoadingRows(new Set()); // 로딩 해제
+          }
+          setExpandedRowIds(newExpanded);
+      }
+  };
+
 
   // --- Actions Handlers ---
   const handleDownload = async (id: string) => { 
@@ -674,15 +724,36 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
 
         </div>
 
-        {/* Right Side: Page Size */}
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-bold text-slate-500 uppercase">Show:</span>
-          <select className="h-9 pl-3 pr-8 text-sm border border-slate-200 rounded-lg" value={pageSize} onChange={e=>setPageSize(e.target.value)}>
-            <option value="5">5 Rows</option>
-            <option value="10">10 Rows</option>
-            <option value="30">30 Rows</option>
-            <option value="all">All ({filteredInvoices.length})</option>
-          </select>
+        {/* Right Side: Page Size & Detail Toggle */}
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-slate-500 uppercase">Show:</span>
+            <select className="h-9 pl-3 pr-8 text-sm border border-slate-200 rounded-lg" value={pageSize} onChange={e=>setPageSize(e.target.value)}>
+              <option value="5">5 Rows</option>
+              <option value="10">10 Rows</option>
+              <option value="30">30 Rows</option>
+              <option value="all">All ({filteredInvoices.length})</option>
+            </select>
+          </div>
+
+          {/* [NEW] Detail View Toggle */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+                <button className="flex items-center gap-2 h-9 px-3 border border-slate-200 rounded-lg text-sm font-medium hover:bg-slate-50">
+                    <Layers className="w-4 h-4 text-slate-500" />
+                    Detail
+                    <ChevronDown className="w-3 h-3 text-slate-400" />
+                </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => handleDetailView('show')}>
+                    <ChevronDown className="w-4 h-4 mr-2" /> Show All Details
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleDetailView('hide')}>
+                    <ChevronUp className="w-4 h-4 mr-2" /> Hide All Details
+                </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
 
@@ -851,7 +922,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
                                      <>
                                        <p className="text-emerald-600 font-medium">Received: - {formatCurrency(inv.paid_amount || 0)}</p>
                                        <div className="mt-2 pt-1 border-t border-slate-200">
-                                           <p className="text-sm font-black text-slate-900 uppercase">Balance Due: {formatCurrency(balanceDue)}</p>
+                                            <p className="text-sm font-black text-slate-900 uppercase">Balance Due: {formatCurrency(balanceDue)}</p>
                                        </div>
                                      </>
                                   )}

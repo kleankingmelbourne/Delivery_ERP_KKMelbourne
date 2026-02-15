@@ -6,7 +6,7 @@ import {
   Plus, Package, AlertTriangle, DollarSign, Search, 
   MoreHorizontal, Edit, Trash2, Loader2,
   ChevronLeft, ChevronRight, ArrowUpDown, Users, Save, X, Calculator,
-  Filter, Download, Upload, ImageIcon, BarChart3, Eye, CheckCircle2, XCircle
+  Filter, Download, Upload, ImageIcon, BarChart3, Eye, CheckCircle2, XCircle, List
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -70,7 +70,7 @@ export default function ProductPage() {
   const [selectedVendor, setSelectedVendor] = useState<string>("all");
 
   const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 10;
+  const [itemsPerPage, setItemsPerPage] = useState(10);
 
   const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' } | null>(null);
 
@@ -645,7 +645,9 @@ export default function ProductPage() {
         const lowerTerm = searchTerm.toLowerCase();
         result = result.filter(p => 
             p.product_name?.toLowerCase().includes(lowerTerm) ||
-            p.product_barcode?.toLowerCase().includes(lowerTerm)
+            p.product_barcode?.toLowerCase().includes(lowerTerm) ||
+            // [MODIFIED] Added Vendor Product ID search
+            p.vendor_product_id?.toLowerCase().includes(lowerTerm)
         );
     }
     if (selectedCategory !== "all") {
@@ -666,14 +668,16 @@ export default function ProductPage() {
     return result;
   }, [products, searchTerm, selectedCategory, selectedVendor, sortConfig, statusFilter]);
 
+  // [MODIFIED] itemsPerPageToUse: itemsPerPage 상태값 사용
   const itemsPerPageToUse = itemsPerPage; 
   const totalPages = Math.ceil(processedProducts.length / itemsPerPageToUse);
   
   useEffect(() => {
+    // 페이지 크기가 바뀌었을 때 현재 페이지가 유효한지 확인하고 조정
     if (currentPage > totalPages && totalPages > 0) {
         setCurrentPage(totalPages);
     }
-  }, [totalPages, currentPage]);
+  }, [totalPages, currentPage, itemsPerPage]);
 
   const paginatedData = processedProducts.slice(
     (currentPage - 1) * itemsPerPageToUse,
@@ -880,6 +884,32 @@ export default function ProductPage() {
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
         <div className="p-4 border-b border-slate-100 flex flex-col md:flex-row items-center justify-between bg-slate-50/50 gap-4">
             <div className="flex flex-col md:flex-row items-center gap-2 w-full md:w-auto flex-1">
+                {/* [NEW] Rows per page Select Box (First position) */}
+                <div className="w-full md:w-[130px]">
+                    <Select 
+                        value={[10, 20, 30].includes(itemsPerPage) ? String(itemsPerPage) : 'all'}
+                        onValueChange={(val) => {
+                            if (val === 'all') setItemsPerPage(processedProducts.length || 10000); // 전체 선택
+                            else setItemsPerPage(Number(val));
+                            setCurrentPage(1); // 페이지 리셋
+                        }}
+                    >
+                        <SelectTrigger className="bg-white">
+                            <div className="flex items-center gap-2 text-slate-600">
+                                <List className="w-4 h-4" />
+                                <SelectValue placeholder="Rows" />
+                            </div>
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="10">10 Rows</SelectItem>
+                            <SelectItem value="20">20 Rows</SelectItem>
+                            <SelectItem value="30">30 Rows</SelectItem>
+                            {/* [MODIFIED] Show total count in All */}
+                            <SelectItem value="all">All ({processedProducts.length})</SelectItem>
+                        </SelectContent>
+                    </Select>
+                </div>
+
                 <div className="w-full md:w-[200px]">
                     <Select value={selectedCategory} onValueChange={setSelectedCategory}>
                         <SelectTrigger className="bg-white">
@@ -938,6 +968,8 @@ export default function ProductPage() {
                             />
                         </th>
                         <th className="px-4 py-3">Product Name</th>
+                        {/* [MODIFIED] Added Vendor ID Column */}
+                        <th className="px-4 py-3">Vendor ID</th>
                         <th className="px-4 py-3 text-right cursor-pointer hover:bg-slate-100" onClick={() => handleSort('stock_value')}>
                             <div className="flex items-center justify-end gap-1">Value <ArrowUpDown className="w-3 h-3"/></div>
                         </th>
@@ -945,9 +977,9 @@ export default function ProductPage() {
                             <div className="flex items-center justify-end gap-1">Cost <ArrowUpDown className="w-3 h-3"/></div>
                         </th>
                         <th className="px-4 py-3 text-right">Price(Ctn)</th>
-                        <th className="px-4 py-3 text-right text-indigo-600">Margin(C)</th>
+                        {/* [MODIFIED] Removed Margin(C) */}
                         <th className="px-4 py-3 text-right">Price(Pack)</th>
-                        <th className="px-4 py-3 text-right text-indigo-600">Margin(P)</th>
+                        {/* [MODIFIED] Removed Margin(P) */}
                         <th className="px-4 py-3 text-center cursor-pointer hover:bg-slate-100" onClick={() => handleSort('current_stock_level')}>
                             <div className="flex items-center justify-center gap-1">Stock <ArrowUpDown className="w-3 h-3"/></div>
                         </th>
@@ -992,21 +1024,24 @@ export default function ProductPage() {
                                                     {/* [MODIFIED] High Contrast Inactive Badge */}
                                                     {!product.is_active && <span className="text-[9px] bg-red-600 text-white px-2 py-0.5 rounded font-bold uppercase shadow-sm">Inactive</span>}
                                                 </div>
-                                                <div className="flex gap-2 mt-0.5">
-                                                    {product.product_barcode && <span className="text-[10px] text-slate-400">{product.product_barcode}</span>}
-                                                </div>
+                                                {/* [MODIFIED] Removed barcode display */}
                                             </div>
                                         </div>
                                     </td>
                                     
+                                    {/* [MODIFIED] Vendor ID Column */}
+                                    <td className="px-4 py-3 text-slate-600">
+                                        {product.vendor_product_id && <span className="text-xs font-medium">[{product.vendor_product_id}]</span>}
+                                    </td>
+
                                     <td className="px-4 py-3 text-right font-bold text-slate-700">
                                         ${product.stock_value?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                     </td>
                                     <td className="px-4 py-3 text-right text-slate-600">${Number(product.buy_price).toFixed(2)}</td>
                                     <td className="px-4 py-3 text-right text-slate-600 font-bold">${Number(product.sell_price_ctn).toFixed(2)}</td>
-                                    <td className="px-4 py-3 text-right text-xs font-bold text-indigo-600">{Number(product.margin_ctn).toFixed(1)}%</td>
+                                    {/* [MODIFIED] Removed Margin(C) Cell */}
                                     <td className="px-4 py-3 text-right text-slate-600">${Number(product.sell_price_pack).toFixed(2)}</td>
-                                    <td className="px-4 py-3 text-right text-xs font-bold text-indigo-600">{Number(product.margin_pack).toFixed(1)}%</td>
+                                    {/* [MODIFIED] Removed Margin(P) Cell */}
                                     
                                     <td className="px-4 py-3 text-center">
                                         <div className="flex flex-col items-center">

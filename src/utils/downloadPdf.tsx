@@ -487,3 +487,42 @@ export const printPurchaseOrderPdf = async (id: string) => {
   const result = await fetchAndGeneratePurchaseOrderBlob(id);
   if (result) window.open(URL.createObjectURL(result.blob), '_blank');
 };
+
+// 상단 import 부분에 추가
+import PackingListDocument from '@/components/pdf/PackingListDocument'; 
+
+// ... (기존 Invoice 데이터 조회 로직은 그대로 사용) ...
+
+// ==================================================================
+// PACKING LIST SECTION (NEW)
+// ==================================================================
+
+export const fetchAndGeneratePackingListBlob = async (id: string): Promise<{ blob: Blob, filename: string } | null> => {
+  try {
+    // 기존 getInvoiceData 함수 재활용 (데이터 구조는 같음)
+    const data = await getInvoiceData(id);
+    if (!data) throw new Error("Failed to load invoice data for packing list.");
+    
+    // PackingListDocument 컴포넌트 사용
+    const blob = await pdf(<PackingListDocument data={data} />).toBlob();
+    
+    // 파일명 설정 (PL_...)
+    const safeName = (data.customerName || "Customer").replace(/[^a-zA-Z0-9가-힣\s]/g, "").trim(); 
+    let formattedDate = data.date;
+    if (data.date && data.date.includes('-')) {
+        const [year, month, day] = data.date.split('-');
+        formattedDate = `${day}-${month}-${year}`;
+    }
+    const filename = `PackingList_${data.invoiceNo}_${formattedDate}_${safeName}.pdf`;
+    
+    return { blob, filename };
+  } catch (e: any) {
+    console.error("❌ [Packing List] Error:", e.message);
+    return null;
+  }
+};
+
+export const downloadPackingListPdf = async (id: string) => {
+  const result = await fetchAndGeneratePackingListBlob(id);
+  if (result) saveAs(result.blob, result.filename);
+};

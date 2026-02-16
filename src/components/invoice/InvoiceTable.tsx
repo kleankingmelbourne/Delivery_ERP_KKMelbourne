@@ -18,6 +18,7 @@ import {
   downloadBulkPdf, 
   printBulkPdf, 
   downloadPickingSummary, 
+  downloadPackingListPdf, // [추가] Packing List 다운로드 함수 임포트
 } from "@/utils/downloadPdf"; 
 
 import EmailSendDialog from "@/components/email/EmailSendDialog";
@@ -242,6 +243,12 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
   const handlePaymentRedirect = (customerId: string) => {
     if (!customerId) return alert("Customer information is missing.");
     router.push(`/payment/new?customerId=${customerId}`);
+  };
+
+  // [추가] Packing List 다운로드 핸들러
+  const handlePackingList = async (id: string) => {
+    setOpenMenuId(null);
+    await downloadPackingListPdf(id);
   };
 
   const toggleRow = async (invoiceId: string) => {
@@ -887,6 +894,10 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
                                   
                                   <button onClick={()=>handlePrint(inv.id)} className="w-full px-4 py-2 text-sm hover:bg-slate-50 flex gap-2"><Printer className="w-4 h-4"/> Print</button>
                                   <button onClick={()=>handleDownload(inv.id)} className="w-full px-4 py-2 text-sm hover:bg-slate-50 flex gap-2"><Download className="w-4 h-4"/> PDF</button>
+                                  
+                                  {/* [추가] Packing List 버튼 */}
+                                  <button onClick={()=>handlePackingList(inv.id)} className="w-full px-4 py-2 text-sm hover:bg-slate-50 flex gap-2"><Package className="w-4 h-4 text-orange-600"/> Packing List</button>
+
                                   <div className="border-t my-1"></div>
                                   
                                   <button onClick={()=>handleEdit(inv.id)} className="w-full px-4 py-2 text-sm hover:bg-slate-50 flex gap-2"><Edit className="w-4 h-4"/> Edit</button>
@@ -983,13 +994,13 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
       {viewProofUrl && (
         <div className="fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={() => setViewProofUrl(null)}>
           <div className="relative max-w-4xl w-full max-h-[90vh] flex flex-col items-center" onClick={e => e.stopPropagation()}>
-             <img src={viewProofUrl} alt="Delivery Proof" className="rounded-lg shadow-2xl max-w-full max-h-[85vh] object-contain bg-white" />
-             <button 
-               onClick={() => setViewProofUrl(null)}
-               className="mt-4 bg-white/10 text-white px-6 py-2 rounded-full hover:bg-white/20 backdrop-blur-sm transition-colors border border-white/20 font-medium"
-             >
-               Close
-             </button>
+              <img src={viewProofUrl} alt="Delivery Proof" className="rounded-lg shadow-2xl max-w-full max-h-[85vh] object-contain bg-white" />
+              <button 
+                onClick={() => setViewProofUrl(null)}
+                className="mt-4 bg-white/10 text-white px-6 py-2 rounded-full hover:bg-white/20 backdrop-blur-sm transition-colors border border-white/20 font-medium"
+              >
+                Close
+              </button>
           </div>
         </div>
       )}

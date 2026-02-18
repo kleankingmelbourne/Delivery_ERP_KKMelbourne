@@ -73,7 +73,8 @@ interface ProductMaster {
     product_units?: { unit_name: string }; 
     unit_name?: string; 
     current_stock_level: number;       
-    current_stock_level_pack: number;  
+    current_stock_level_pack: number;
+    is_active?: boolean; // [수정] boolean 타입으로 변경
 } 
 interface AllowedProduct { product_id: string; discount_ctn: number; discount_pack: number; }
 interface InvoiceItem { productId: string; unit: string; quantity: number; basePrice: number; discountRate: number; unitPrice: number; defaultUnitName?: string; }
@@ -124,6 +125,7 @@ export default function NewInvoicePage() {
       
       const { data: prodData } = await supabase.from("products").select("*, product_units (unit_name)");
       if (prodData) {
+
           const uMap: Record<string, string> = {};
           const { data: units } = await supabase.from("product_units").select("id, unit_name");
           if(units) units.forEach((u: any) => uMap[u.id] = u.unit_name);
@@ -206,7 +208,23 @@ export default function NewInvoicePage() {
   };
 
   // Options & Logic
-  const productOptions = useMemo(() => (showAllProducts ? allProducts : allProducts.filter(p => allowedProducts.some(ap => ap.product_id === p.id))).map(p => ({ id: p.id, label: p.product_name, subLabel: `$${p.sell_price_ctn} (CTN) / $${p.sell_price_pack} (PK)` })), [allProducts, allowedProducts, showAllProducts]);
+  const productOptions = useMemo(() => {
+
+    // [수정] is_active가 true인 상품만 필터링 (boolean 체크)
+    // is_active가 true인 것만 남김. (null이나 false는 제외)
+    const activeProducts = allProducts.filter(p => p.is_active === true);
+
+    const source = showAllProducts 
+        ? activeProducts 
+        : activeProducts.filter(p => allowedProducts.some(ap => ap.product_id === p.id));
+
+    return source.map(p => ({ 
+        id: p.id, 
+        label: p.product_name, 
+        subLabel: `$${p.sell_price_ctn} (CTN) / $${p.sell_price_pack} (PK)` 
+    }));
+  }, [allProducts, allowedProducts, showAllProducts]);
+
   const customerOptions = useMemo(() => customers.map(c => ({ id: c.id, label: c.name })), [customers]);
 
   const applyPriceLogic = (index: number, productId: string, unit: string, basePriceInput: number, discountRateInput: number, defaultUnitName?: string) => {
@@ -268,7 +286,7 @@ export default function NewInvoicePage() {
   const gstTotal = roundAmount(subTotal * 0.1);
   const grandTotal = roundAmount(subTotal + gstTotal);
   
-  // --- [MODIFIED] Stock Check Logic (Updated to account for carton opening) ---
+  // --- Stock Check Logic ---
   const checkStockAvailability = async (itemList: InvoiceItem[]) => {
       const insufficientItems: string[] = [];
       
@@ -304,7 +322,7 @@ export default function NewInvoicePage() {
       return insufficientItems;
   };
 
-  // --- [MODIFIED] Update Inventory Logic (Smart Deduction) ---
+  // --- Update Inventory Logic ---
   const updateInventory = async (itemList: InvoiceItem[], isReturn: boolean) => {
     for (const item of itemList) {
         if (!item.productId) continue;
@@ -313,7 +331,7 @@ export default function NewInvoicePage() {
 
         let currentCtn = product.current_stock_level || 0;
         let currentPack = product.current_stock_level_pack || 0;
-        const packsPerCtn = product.total_pack_ctn || 1; // 0으로 나누기 방지
+        const packsPerCtn = product.total_pack_ctn || 1; 
         const qty = item.quantity; 
 
         if (isReturn) {
@@ -326,19 +344,13 @@ export default function NewInvoicePage() {
             } else { 
                 // PACK 차감 로직 (부족하면 CTN 오픈)
                 if (currentPack >= qty) {
-                    // 팩 재고가 충분하면 팩에서 차감
                     currentPack -= qty;
                 } else {
-                    // 팩 재고가 부족함 -> CTN 확인
                     if (currentCtn > 0) {
-                        // CTN을 1개 까서 PACK 재고에 더함
                         currentCtn -= 1;
                         currentPack += packsPerCtn;
-                        
-                        // 그 후 PACK 차감
                         currentPack -= qty;
                     } else {
-                        // CTN도 없으면 그냥 마이너스 처리 (일관성 유지)
                         currentPack -= qty;
                     }
                 }
@@ -371,7 +383,7 @@ export default function NewInvoicePage() {
                   product_id: item.productId, 
                   description: `${p?.product_name || 'Item'} (${item.unit})`, 
                   quantity: item.quantity, 
-                  unit: item.unit, // [확인] 아이템의 unit 저장
+                  unit: item.unit, 
                   base_price: item.basePrice, 
                   discount: item.discountRate, 
                   unit_price: item.unitPrice, 
@@ -427,7 +439,7 @@ export default function NewInvoicePage() {
             product_id: item.productId, 
             description: `${p?.product_name} (${item.unit})`, 
             quantity: item.quantity, 
-            unit: item.unit, // [중요] 여기 item.unit이 해당 아이템에 맞게 저장됩니다.
+            unit: item.unit, 
             base_price: item.basePrice, 
             discount: item.discountRate, 
             unit_price: item.unitPrice, 
@@ -514,7 +526,6 @@ export default function NewInvoicePage() {
               <table className="w-full text-sm text-left">
                 <thead className="bg-slate-50 border-b border-slate-200 text-slate-700 font-bold text-xs uppercase">
                   <tr>
-                    {/* [VISUAL 1] # Header added */}
                     <th className="px-4 py-3 w-[3%] text-center text-slate-400">#</th>
                     <th className="px-4 py-3 w-[32%]">Product</th>
                     <th className="px-4 py-3 w-[8%]">Unit</th>
@@ -532,11 +543,9 @@ export default function NewInvoicePage() {
                     
                     return (
                         <tr key={idx} className="hover:bg-slate-50/50">
-                          {/* [VISUAL 2] Row Number added */}
                           <td className="p-2 text-center text-xs text-slate-400 font-bold">{idx + 1}</td>
                           <td className="p-2"><SearchableSelect options={productOptions} value={item.productId} onChange={(val) => handleProductChange(idx, val)} placeholder="Search product..." className="w-full min-w-[250px]" onClick={() => handleProductClick(idx)} /></td>
                           <td className="p-2">
-                              {/* [수정] Unit Select 박스 */}
                               <select 
                                 className={`w-full p-2 border border-slate-200 rounded text-center font-medium outline-none text-xs ${!isCtnOrPack && item.productId ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : 'bg-slate-50'}`} 
                                 value={item.unit} 

@@ -29,7 +29,7 @@ import {
   TrendingUp,     
   Banknote,       
   Receipt,
-  RefreshCw // [NEW] 자동 생성 아이콘 추가
+  RefreshCw 
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import Image from "next/image"
@@ -73,14 +73,14 @@ const menuItems = [
     ]
   },
 
-  // [MODIFIED] STATEMENT (서브메뉴로 변경됨)
+  // STATEMENT
   { 
     name: "STATEMENT", 
     icon: FileSearch,
-    isSubmenu: true,
+    isSubmenu: true, 
     subItems: [
       { name: "STATEMENT LIST", href: "/statement/list", icon: List },
-      { name: "AUTO STATEMENT", href: "/statement/auto", icon: RefreshCw }, // 자동 생성 느낌의 아이콘
+      { name: "AUTO STATEMENT", href: "/statement/auto", icon: RefreshCw },
     ]
   },
 
@@ -129,7 +129,7 @@ const menuItems = [
   { 
     name: "SETTING", 
     icon: Settings, 
-    isSubmenu: true,
+    isSubmenu: true, 
     subItems: [
       { name: "INFO SETTING", href: "/setting/info", icon: Settings },
       { name: "SALES INCHARGE", href: "/setting/sales", icon: UserCircle },
@@ -148,13 +148,16 @@ export default function Sidebar() {
   // 사이드바 접기/펴기
   const toggleSidebar = () => setIsCollapsed(prev => !prev)
 
-  // 메뉴 펼치기/접기
+  // 메뉴 펼치기/접기 (수정된 로직)
   const toggleMenu = (name: string) => {
     if (isCollapsed) {
       setIsCollapsed(false)
-      setOpenMenus(prev => ({ ...prev, [name]: true }))
+      // 사이드바가 접혀있다가 펴질 때는 해당 메뉴만 엽니다.
+      setOpenMenus({ [name]: true })
     } else {
-      setOpenMenus(prev => ({ ...prev, [name]: !prev[name] }))
+      // 기존 상태(...prev)를 복사하지 않고, 클릭한 메뉴의 상태만 새로 설정합니다.
+      // 이렇게 하면 클릭한 메뉴 외의 다른 메뉴들은 모두 닫히게 됩니다(undefined/false).
+      setOpenMenus(prev => ({ [name]: !prev[name] }))
     }
   }
 

@@ -53,6 +53,9 @@ export default function ProductPage() {
   const [products, setProducts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   
+  // [NEW] Active / Total 표시용 상태
+  const [totalProductsDisplay, setTotalProductsDisplay] = useState("0 / 0");
+
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [editingProduct, setEditingProduct] = useState<any>(null)
   const [isSaving, setIsSaving] = useState(false);
@@ -148,6 +151,11 @@ export default function ProductPage() {
           stock_value: totalValue 
         };
       });
+
+      // [NEW] Calculate Active / Total Count
+      const totalCount = calculatedData.length;
+      const activeCount = calculatedData.filter((p: any) => p.is_active).length;
+      setTotalProductsDisplay(`${activeCount} / ${totalCount}`);
 
       const lowStockList = calculatedData.filter((item: any) => {
         const uName = item.product_units?.unit_name || "CTN";
@@ -850,7 +858,8 @@ export default function ProductPage() {
             <div className="p-3 bg-blue-100 rounded-xl"><Package className="text-blue-600 w-6 h-6" /></div>
             <div>
               <p className="text-sm text-slate-500 font-medium">Total Products</p>
-              <h3 className="text-2xl font-bold text-slate-800">{products.length}</h3>
+              {/* [MODIFIED] Show Active / Total */}
+              <h3 className="text-2xl font-bold text-slate-800">{totalProductsDisplay}</h3>
             </div>
           </CardContent>
         </Card>

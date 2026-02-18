@@ -75,6 +75,7 @@ interface ProductMaster {
     current_stock_level_pack: number; 
     default_unit_id?: string;
     unit_name?: string; 
+    is_active?: boolean; // [수정] boolean 타입의 is_active 추가
 }
 interface AllowedProduct { product_id: string; discount_ctn: number; discount_pack: number; }
 interface InvoiceItem { productId: string; unit: string; quantity: number; basePrice: number; discountRate: number; unitPrice: number; defaultUnitName?: string; }
@@ -118,7 +119,6 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
       // 마스터 데이터 로드
       const [custRes, prodRes, userRes, unitRes] = await Promise.all([
         supabase.from("customers").select("id, name, due_date, note, in_charge_delivery"),
-        // [수정] total_pack_ctn 추가
         supabase.from("products").select("*, product_units (unit_name)"), 
         supabase.auth.getUser(),
         supabase.from("product_units").select("id, unit_name") 
@@ -234,10 +234,26 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
 
   // --- Calculations ---
   const productOptions = useMemo(() => {
+    // [수정] 1. Active 상태이거나, 2. 현재 인보이스에 이미 포함된 상품만 필터링
+    const validProducts = allProducts.filter(p => {
+        // Active Product OK
+        if (p.is_active === true) return true;
+        
+        // Inactive여도 현재 items에 포함되어 있으면 OK (기존 데이터 유지)
+        if (items.some(i => i.productId === p.id)) return true;
+
+        return false; // 그 외 Inactive는 제외
+    });
+
     const targetProducts = showAllProducts 
-      ? allProducts 
-      : allProducts.filter(p => allowedProducts.some(ap => ap.product_id === p.id) || items.some(i => i.productId === p.id));
-    return targetProducts.map(p => ({ id: p.id, label: p.product_name, subLabel: `$${p.sell_price_ctn} (CTN) / $${p.sell_price_pack} (PK)` }));
+      ? validProducts 
+      : validProducts.filter(p => allowedProducts.some(ap => ap.product_id === p.id) || items.some(i => i.productId === p.id));
+    
+    return targetProducts.map(p => ({ 
+        id: p.id, 
+        label: p.product_name, 
+        subLabel: `$${p.sell_price_ctn} (CTN) / $${p.sell_price_pack} (PK)` 
+    }));
   }, [allProducts, allowedProducts, showAllProducts, items]);
 
   const customerOptions = useMemo(() => customers.map(c => ({ id: c.id, label: c.name })), [customers]);

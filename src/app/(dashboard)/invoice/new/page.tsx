@@ -19,18 +19,38 @@ const roundAmount = (num: number) => {
   return Math.round((num + Number.EPSILON) * 100) / 100;
 };
 
-// --- [컴포넌트] 검색 가능한 Select ---
+// --- [컴포넌트] 검색 가능한 Select (키보드 네비게이션 추가) ---
 interface Option { id: string; label: string; subLabel?: string; }
 interface SearchableSelectProps { options: Option[]; value: string; onChange: (value: string) => void; placeholder?: string; disabled?: boolean; className?: string; onClick?: () => void; }
+
 function SearchableSelect({ options, value, onChange, placeholder = "Select...", disabled = false, className, onClick }: SearchableSelectProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
+  const [highlightedIndex, setHighlightedIndex] = useState(0); // [NEW] 현재 키보드로 가리키고 있는 위치
+  
   const containerRef = useRef<HTMLDivElement>(null);
+  const optionsRef = useRef<(HTMLDivElement | null)[]>([]); // [NEW] 스크롤 자동 이동을 위한 Ref
+
   const selectedOption = options.find(o => o.id === value);
+  
   const filteredOptions = useMemo(() => {
-    if (!searchTerm) return options.slice(0, 50);
-    return options.filter(option => option.label.toLowerCase().includes(searchTerm.toLowerCase())).slice(0, 50);
+    if (!searchTerm) return options;
+    return options.filter(option => option.label.toLowerCase().includes(searchTerm.toLowerCase()));
   }, [options, searchTerm]);
+
+  // 창이 열리거나 검색어가 바뀔 때마다 하이라이트를 맨 위(0번)로 리셋
+  useEffect(() => {
+    setHighlightedIndex(0);
+  }, [searchTerm, isOpen]);
+
+  // 키보드로 내릴 때 화면을 자동으로 스크롤해서 따라가게 함
+  useEffect(() => {
+    if (isOpen && optionsRef.current[highlightedIndex]) {
+      optionsRef.current[highlightedIndex]?.scrollIntoView({ block: "nearest" });
+    }
+  }, [highlightedIndex, isOpen]);
+
+  // 바깥 클릭 시 닫기
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
@@ -41,19 +61,75 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select...",
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  // [NEW] 키보드 조작 로직
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault(); // 인풋창 안에서 커서가 움직이는 것 방지
+      setHighlightedIndex(prev => (prev < filteredOptions.length - 1 ? prev + 1 : prev));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlightedIndex(prev => (prev > 0 ? prev - 1 : 0));
+    } else if (e.key === "Enter" || e.key === "Tab") {
+      // 엔터나 탭을 누르면 현재 하이라이트된 항목을 확정(선택)함
+      if (filteredOptions[highlightedIndex]) {
+        onChange(filteredOptions[highlightedIndex].id);
+        setIsOpen(false);
+        setSearchTerm("");
+        
+        // 주의: Enter는 기본 이벤트를 막고, Tab은 막지 않아야 자연스럽게 다음 칸으로 포커스가 넘어갑니다.
+        if (e.key === "Enter") {
+          e.preventDefault();
+        }
+      }
+    } else if (e.key === "Escape") {
+      setIsOpen(false);
+    }
+  };
+
   return (
     <div className={`relative ${className}`} ref={containerRef}>
       <div onClick={() => { if (!disabled) { setIsOpen(!isOpen); if (onClick) onClick(); } }} className={`flex items-center justify-between w-full px-3 py-2 text-sm border rounded-md cursor-pointer bg-white transition-all ${disabled ? "bg-slate-100 text-slate-400 cursor-not-allowed" : "hover:border-slate-400 focus:ring-2 focus:ring-slate-900"} ${isOpen ? "ring-2 ring-slate-900 border-slate-900" : "border-slate-200"}`}>
         <span className={`truncate ${!selectedOption && !value ? "text-slate-400" : "text-slate-900 font-medium"}`}>{selectedOption ? selectedOption.label : (value ? "Loading..." : placeholder)}</span>
         <ChevronDown className="w-4 h-4 text-slate-400 opacity-50 shrink-0" />
       </div>
+      
       {isOpen && !disabled && (
-        <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-60 overflow-auto animate-in fade-in zoom-in-95 duration-100">
-          <div className="sticky top-0 p-2 bg-white border-b border-slate-100">
-            <div className="relative"><Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" /><input autoFocus type="text" className="w-full pl-8 pr-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:border-slate-400 placeholder:text-xs" placeholder="Search..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} /></div>
+        <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-60 flex flex-col animate-in fade-in zoom-in-95 duration-100">
+          <div className="sticky top-0 p-2 bg-white border-b border-slate-100 shrink-0">
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+              <input 
+                autoFocus 
+                type="text" 
+                className="w-full pl-8 pr-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:border-slate-400 placeholder:text-xs" 
+                placeholder="Search..." 
+                value={searchTerm} 
+                onChange={(e) => setSearchTerm(e.target.value)} 
+                onKeyDown={handleKeyDown} // <-- 키보드 이벤트 연결
+              />
+            </div>
           </div>
-          <div className="p-1">
-            {filteredOptions.length === 0 ? (<div className="p-3 text-xs text-center text-slate-400">No results found.</div>) : (filteredOptions.map((option) => (<div key={option.id} onClick={() => { onChange(option.id); setIsOpen(false); setSearchTerm(""); }} className={`flex items-center justify-between px-3 py-2 text-sm rounded-md cursor-pointer transition-colors ${option.id === value ? "bg-slate-100 font-bold text-slate-900" : "hover:bg-slate-50 text-slate-700"}`}><div className="flex flex-col"><span>{option.label}</span>{option.subLabel && <span className="text-[10px] text-slate-400 font-normal">{option.subLabel}</span>}</div>{option.id === value && <Check className="w-3.5 h-3.5 text-slate-900" />}</div>)))}
+          <div className="p-1 overflow-y-auto flex-1">
+            {filteredOptions.length === 0 ? (
+              <div className="p-3 text-xs text-center text-slate-400">No results found.</div>
+            ) : (
+              filteredOptions.map((option, index) => (
+                <div 
+                  key={option.id} 
+                  ref={(el) => { optionsRef.current[index] = el; }} // <-- 화면 자동 스크롤을 위한 Ref 연결
+                  onClick={() => { onChange(option.id); setIsOpen(false); setSearchTerm(""); }} 
+                  onMouseEnter={() => setHighlightedIndex(index)} // 마우스로 올렸을 때도 하이라이트 동기화
+                  className={`flex items-center justify-between px-3 py-2 text-sm rounded-md cursor-pointer transition-colors ${index === highlightedIndex ? "bg-slate-100 font-bold text-slate-900" : "hover:bg-slate-50 text-slate-700"}`}
+                >
+                  <div className="flex flex-col">
+                    <span>{option.label}</span>
+                    {option.subLabel && <span className="text-[10px] text-slate-400 font-normal">{option.subLabel}</span>}
+                  </div>
+                  {option.id === value && <Check className="w-3.5 h-3.5 text-slate-900" />}
+                </div>
+              ))
+            )}
           </div>
         </div>
       )}
@@ -74,7 +150,7 @@ interface ProductMaster {
     unit_name?: string; 
     current_stock_level: number;       
     current_stock_level_pack: number;
-    is_active?: boolean; // [수정] boolean 타입으로 변경
+    is_active?: boolean;
 } 
 interface AllowedProduct { product_id: string; discount_ctn: number; discount_pack: number; }
 interface InvoiceItem { productId: string; unit: string; quantity: number; basePrice: number; discountRate: number; unitPrice: number; defaultUnitName?: string; }
@@ -120,18 +196,43 @@ export default function NewInvoicePage() {
   // 1. Initial Load
   useEffect(() => {
     const initData = async () => {
-      const { data: custData } = await supabase.from("customers").select("id, name, due_date, note, in_charge_delivery");
+      // 고객 불러오기 (한도 10000개 설정)
+      const { data: custData } = await supabase.from("customers").select("id, name, due_date, note, in_charge_delivery").limit(10000);
       if (custData) setCustomers(custData.map((c: any) => ({ id: c.id, name: c.name, due_date_term: c.due_date, note: c.note, in_charge_delivery: c.in_charge_delivery })));
       
-      const { data: prodData } = await supabase.from("products").select("*, product_units (unit_name)");
-      if (prodData) {
+      // [수정 완료] 2천 개 넘는 상품을 모두 긁어오기 위한 Pagination Loop 추가
+      let allFetchedProducts: any[] = [];
+      let fetchMore = true;
+      let startRow = 0;
+      const step = 1000;
 
+      while (fetchMore) {
+          const { data, error } = await supabase
+              .from("products")
+              .select("*, product_units (unit_name)")
+              .range(startRow, startRow + step - 1);
+          
+          if (error) {
+              console.error("Error fetching products:", error);
+              break;
+          }
+
+          if (data && data.length > 0) {
+              allFetchedProducts = [...allFetchedProducts, ...data];
+              startRow += step;
+              if (data.length < step) fetchMore = false;
+          } else {
+              fetchMore = false;
+          }
+      }
+
+      if (allFetchedProducts.length > 0) {
           const uMap: Record<string, string> = {};
           const { data: units } = await supabase.from("product_units").select("id, unit_name");
           if(units) units.forEach((u: any) => uMap[u.id] = u.unit_name);
           setUnitMap(uMap);
 
-          const mappedProducts = prodData.map((p: any) => ({
+          const mappedProducts = allFetchedProducts.map((p: any) => ({
               ...p,
               unit_name: p.product_units?.unit_name || "CTN" 
           }));
@@ -159,7 +260,9 @@ export default function NewInvoicePage() {
         calculateDueDate(invoiceDate, customer.due_date_term);
         setCurrentDriverId(customer.in_charge_delivery); 
       }
-      const { data } = await supabase.from("customer_products").select("product_id, custom_price_ctn, custom_price_pack").eq("customer_id", selectedCustomerId);
+      
+      // [수정] 해당 고객의 할당 상품 리스트 (혹시 1000개가 넘을 것을 대비해 한도 해제)
+      const { data } = await supabase.from("customer_products").select("product_id, custom_price_ctn, custom_price_pack").eq("customer_id", selectedCustomerId).limit(10000);
       if (data) setAllowedProducts(data.map((item: any) => ({ product_id: item.product_id, discount_ctn: item.custom_price_ctn || 0, discount_pack: item.custom_price_pack || 0 })));
 
       const { data: payments } = await supabase.from('payments').select('unallocated_amount').eq('customer_id', selectedCustomerId).gt('unallocated_amount', 0);
@@ -209,9 +312,7 @@ export default function NewInvoicePage() {
 
   // Options & Logic
   const productOptions = useMemo(() => {
-
-    // [수정] is_active가 true인 상품만 필터링 (boolean 체크)
-    // is_active가 true인 것만 남김. (null이나 false는 제외)
+    // is_active가 true인 상품만 필터링 (boolean 체크)
     const activeProducts = allProducts.filter(p => p.is_active === true);
 
     const source = showAllProducts 
@@ -484,10 +585,31 @@ export default function NewInvoicePage() {
     setItems([{ productId: "", unit: "CTN", quantity: 1, basePrice: 0, discountRate: 0, unitPrice: 0 }]);
     setShowAllProducts(false); setAutoAddProduct(false); setAvailableCredit(0); setCurrentDriverId(null); 
     setIsPickup(false); setCustomerStats({ totalOverdue: 0, oldestInvoiceDate: null });
+    
+    // [수정 완료] 저장 후 초기화 시에도 2천개 모두 불러오기
     const refreshProducts = async () => {
-        const { data: prodData } = await supabase.from("products").select("*, product_units(unit_name)");
-        if (prodData) {
-            const mapped = prodData.map((p:any) => ({...p, unit_name: p.product_units?.unit_name || "CTN"}));
+        let allFetchedProducts: any[] = [];
+        let fetchMore = true;
+        let startRow = 0;
+        const step = 1000;
+
+        while (fetchMore) {
+            const { data, error } = await supabase
+                .from("products")
+                .select("*, product_units(unit_name)")
+                .range(startRow, startRow + step - 1);
+            
+            if (data && data.length > 0) {
+                allFetchedProducts = [...allFetchedProducts, ...data];
+                startRow += step;
+                if (data.length < step) fetchMore = false;
+            } else {
+                fetchMore = false;
+            }
+        }
+        
+        if (allFetchedProducts.length > 0) {
+            const mapped = allFetchedProducts.map((p:any) => ({...p, unit_name: p.product_units?.unit_name || "CTN"}));
             setAllProducts(mapped);
         }
     };

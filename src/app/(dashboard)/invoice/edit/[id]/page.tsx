@@ -19,29 +19,68 @@ const roundAmount = (num: number) => {
   return Math.round((num + Number.EPSILON) * 100) / 100;
 };
 
-// --- [Components] ---
+// --- [Components] 검색 가능한 Select (키보드 네비게이션 및 50개 제한 해제 적용) ---
 interface Option { id: string; label: string; subLabel?: string; }
 interface SearchableSelectProps { options: Option[]; value: string; onChange: (value: string) => void; placeholder?: string; disabled?: boolean; className?: string; onClick?: () => void; }
 
 function SearchableSelect({ options, value, onChange, placeholder = "Select...", disabled = false, className, onClick }: SearchableSelectProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
+  const [highlightedIndex, setHighlightedIndex] = useState(0); 
+  
   const containerRef = useRef<HTMLDivElement>(null);
+  const optionsRef = useRef<(HTMLDivElement | null)[]>([]); 
+
   const selectedOption = options.find(o => o.id === value);
+  
   const filteredOptions = useMemo(() => {
-    if (!searchTerm) return options.slice(0, 50);
-    return options.filter(option => option.label.toLowerCase().includes(searchTerm.toLowerCase())).slice(0, 50);
+    // 50개 제한(.slice(0, 50)) 제거
+    if (!searchTerm) return options;
+    return options.filter(option => option.label.toLowerCase().includes(searchTerm.toLowerCase()));
   }, [options, searchTerm]);
+
+  useEffect(() => {
+    setHighlightedIndex(0);
+  }, [searchTerm, isOpen]);
+
+  useEffect(() => {
+    if (isOpen && optionsRef.current[highlightedIndex]) {
+      optionsRef.current[highlightedIndex]?.scrollIntoView({ block: "nearest" });
+    }
+  }, [highlightedIndex, isOpen]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        setIsOpen(false); setSearchTerm("");
+        setIsOpen(false);
+        setSearchTerm("");
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault(); 
+      setHighlightedIndex(prev => (prev < filteredOptions.length - 1 ? prev + 1 : prev));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlightedIndex(prev => (prev > 0 ? prev - 1 : 0));
+    } else if (e.key === "Enter" || e.key === "Tab") {
+      if (filteredOptions[highlightedIndex]) {
+        onChange(filteredOptions[highlightedIndex].id);
+        setIsOpen(false);
+        setSearchTerm("");
+        
+        if (e.key === "Enter") {
+          e.preventDefault();
+        }
+      }
+    } else if (e.key === "Escape") {
+      setIsOpen(false);
+    }
+  };
 
   return (
     <div className={`relative ${className}`} ref={containerRef}>
@@ -50,12 +89,41 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select...",
         <ChevronDown className="w-4 h-4 text-slate-400 opacity-50 shrink-0" />
       </div>
       {isOpen && !disabled && (
-        <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-60 overflow-auto animate-in fade-in zoom-in-95 duration-100">
-          <div className="sticky top-0 p-2 bg-white border-b border-slate-100">
-            <div className="relative"><Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" /><input autoFocus type="text" className="w-full pl-8 pr-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:border-slate-400 placeholder:text-xs" placeholder="Search..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} /></div>
+        <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-60 flex flex-col animate-in fade-in zoom-in-95 duration-100">
+          <div className="sticky top-0 p-2 bg-white border-b border-slate-100 shrink-0">
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+              <input 
+                autoFocus 
+                type="text" 
+                className="w-full pl-8 pr-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:border-slate-400 placeholder:text-xs" 
+                placeholder="Search..." 
+                value={searchTerm} 
+                onChange={(e) => setSearchTerm(e.target.value)} 
+                onKeyDown={handleKeyDown} 
+              />
+            </div>
           </div>
-          <div className="p-1">
-            {filteredOptions.length === 0 ? (<div className="p-3 text-xs text-center text-slate-400">No results found.</div>) : (filteredOptions.map((option) => (<div key={option.id} onClick={() => { onChange(option.id); setIsOpen(false); setSearchTerm(""); }} className={`flex items-center justify-between px-3 py-2 text-sm rounded-md cursor-pointer transition-colors ${option.id === value ? "bg-slate-100 font-bold text-slate-900" : "hover:bg-slate-50 text-slate-700"}`}><div className="flex flex-col"><span>{option.label}</span>{option.subLabel && <span className="text-[10px] text-slate-400 font-normal">{option.subLabel}</span>}</div>{option.id === value && <Check className="w-3.5 h-3.5 text-slate-900" />}</div>)))}
+          <div className="p-1 overflow-y-auto flex-1">
+            {filteredOptions.length === 0 ? (
+              <div className="p-3 text-xs text-center text-slate-400">No results found.</div>
+            ) : (
+              filteredOptions.map((option, index) => (
+                <div 
+                  key={option.id} 
+                  ref={(el) => { optionsRef.current[index] = el; }} 
+                  onClick={() => { onChange(option.id); setIsOpen(false); setSearchTerm(""); }} 
+                  onMouseEnter={() => setHighlightedIndex(index)}
+                  className={`flex items-center justify-between px-3 py-2 text-sm rounded-md cursor-pointer transition-colors ${index === highlightedIndex ? "bg-slate-100 font-bold text-slate-900" : "hover:bg-slate-50 text-slate-700"}`}
+                >
+                  <div className="flex flex-col">
+                    <span>{option.label}</span>
+                    {option.subLabel && <span className="text-[10px] text-slate-400 font-normal">{option.subLabel}</span>}
+                  </div>
+                  {option.id === value && <Check className="w-3.5 h-3.5 text-slate-900" />}
+                </div>
+              ))
+            )}
           </div>
         </div>
       )}
@@ -75,7 +143,7 @@ interface ProductMaster {
     current_stock_level_pack: number; 
     default_unit_id?: string;
     unit_name?: string; 
-    is_active?: boolean; // [수정] boolean 타입의 is_active 추가
+    is_active?: boolean;
 }
 interface AllowedProduct { product_id: string; discount_ctn: number; discount_pack: number; }
 interface InvoiceItem { productId: string; unit: string; quantity: number; basePrice: number; discountRate: number; unitPrice: number; defaultUnitName?: string; }
@@ -116,24 +184,15 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
   // 1. 초기 데이터 및 인보이스 로드
   useEffect(() => {
     const initData = async () => {
-      // 마스터 데이터 로드
-      const [custRes, prodRes, userRes, unitRes] = await Promise.all([
-        supabase.from("customers").select("id, name, due_date, note, in_charge_delivery"),
-        supabase.from("products").select("*, product_units (unit_name)"), 
+      // 마스터 데이터 로드 (고객 10,000개 제한 해제 적용)
+      const [custRes, userRes, unitRes] = await Promise.all([
+        supabase.from("customers").select("id, name, due_date, note, in_charge_delivery").limit(10000),
         supabase.auth.getUser(),
-        supabase.from("product_units").select("id, unit_name") 
+        supabase.from("product_units").select("id, unit_name").limit(10000) 
       ]);
 
       if (custRes.data) setCustomers(custRes.data.map((c: any) => ({ id: c.id, name: c.name, due_date_term: c.due_date, note: c.note, in_charge_delivery: c.in_charge_delivery })));
       
-      if (prodRes.data) {
-          const mappedProducts = prodRes.data.map((p: any) => ({
-              ...p,
-              unit_name: p.product_units?.unit_name || "CTN"
-          }));
-          setAllProducts(mappedProducts);
-      }
-
       if (userRes.data.user) {
         const { data: profile } = await supabase.from('profiles').select('display_name').eq('id', userRes.data.user.id).single();
         setCurrentUserName(profile?.display_name || userRes.data.user.email?.split('@')[0] || "Unknown");
@@ -143,6 +202,40 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
       if (unitRes.data) {
           unitRes.data.forEach((u: any) => uMap[u.id] = u.unit_name);
           setUnitMap(uMap);
+      }
+
+      // [수정 완료] 상품 2000개 전체 불러오기 (Pagination Loop)
+      let allFetchedProducts: any[] = [];
+      let fetchMore = true;
+      let startRow = 0;
+      const step = 1000;
+
+      while (fetchMore) {
+          const { data, error } = await supabase
+              .from("products")
+              .select("*, product_units (unit_name)")
+              .range(startRow, startRow + step - 1);
+          
+          if (error) {
+              console.error("Error fetching products:", error);
+              break;
+          }
+
+          if (data && data.length > 0) {
+              allFetchedProducts = [...allFetchedProducts, ...data];
+              startRow += step;
+              if (data.length < step) fetchMore = false;
+          } else {
+              fetchMore = false;
+          }
+      }
+
+      if (allFetchedProducts.length > 0) {
+          const mappedProducts = allFetchedProducts.map((p: any) => ({
+              ...p,
+              unit_name: p.product_units?.unit_name || "CTN"
+          }));
+          setAllProducts(mappedProducts);
       }
 
       // 인보이스 데이터 로드
@@ -166,7 +259,7 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
       setIsPickup(inv.is_pickup || false);
       setCurrentDriverId(inv.driver_id);
 
-      // 아이템 매핑
+      // 아이템 매핑 (루프로 가져온 allFetchedProducts 사용)
       const loadedItems = inv.invoice_items.map((item: any) => {
         let unit = item.unit;
         // Legacy Data Fallback
@@ -175,7 +268,7 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
             unit = match ? match[1] : "CTN";
         }
         
-        const prod = (prodRes.data || []).find((p: any) => p.id === item.product_id);
+        const prod = allFetchedProducts.find((p: any) => p.id === item.product_id);
         const defaultUnitName = prod?.product_units?.unit_name || "CTN";
 
         return {
@@ -207,7 +300,8 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
         setStaffNote(customer.note || "");
       }
 
-      const { data: apData } = await supabase.from("customer_products").select("product_id, custom_price_ctn, custom_price_pack").eq("customer_id", selectedCustomerId);
+      // [수정] 10000개 리밋 추가
+      const { data: apData } = await supabase.from("customer_products").select("product_id, custom_price_ctn, custom_price_pack").eq("customer_id", selectedCustomerId).limit(10000);
       if (apData) setAllowedProducts(apData.map((item: any) => ({ product_id: item.product_id, discount_ctn: item.custom_price_ctn || 0, discount_pack: item.custom_price_pack || 0 })));
 
       const { data: payments } = await supabase.from('payments').select('unallocated_amount').eq('customer_id', selectedCustomerId).gt('unallocated_amount', 0);
@@ -234,7 +328,6 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
 
   // --- Calculations ---
   const productOptions = useMemo(() => {
-    // [수정] 1. Active 상태이거나, 2. 현재 인보이스에 이미 포함된 상품만 필터링
     const validProducts = allProducts.filter(p => {
         // Active Product OK
         if (p.is_active === true) return true;
@@ -242,7 +335,7 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
         // Inactive여도 현재 items에 포함되어 있으면 OK (기존 데이터 유지)
         if (items.some(i => i.productId === p.id)) return true;
 
-        return false; // 그 외 Inactive는 제외
+        return false; 
     });
 
     const targetProducts = showAllProducts 
@@ -318,7 +411,7 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
   const gstTotal = roundAmount(subTotal * 0.1);
   const grandTotal = roundAmount(subTotal + gstTotal);
   
-  // --- [MODIFIED] Stock Check Logic (Updated to account for carton opening) ---
+  // --- Stock Check Logic (Updated to account for carton opening) ---
   const checkStockAvailability = async (itemList: InvoiceItem[]) => {
       const insufficientItems: string[] = [];
 
@@ -363,7 +456,7 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
       return insufficientItems;
   };
 
-  // --- [MODIFIED] Update Inventory Logic (Smart Deduction) ---
+  // --- Update Inventory Logic (Smart Deduction) ---
   const updateInventory = async (itemList: InvoiceItem[], isReturn: boolean) => {
     for (const item of itemList) {
         if (!item.productId) continue;
@@ -559,7 +652,6 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
               <table className="w-full text-sm text-left">
                 <thead className="bg-slate-50 border-b border-slate-200 text-slate-700 font-bold text-xs uppercase">
                   <tr>
-                    {/* [VISUAL 1] # Header added */}
                     <th className="px-4 py-3 w-[3%] text-center text-slate-400">#</th>
                     <th className="px-4 py-3 w-[32%]">Product</th>
                     <th className="px-4 py-3 w-[8%]">Unit</th>
@@ -577,7 +669,6 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
                     
                     return (
                         <tr key={idx} className="hover:bg-slate-50/50">
-                          {/* [VISUAL 2] Row Number added */}
                           <td className="p-2 text-center text-xs text-slate-400 font-bold">{idx + 1}</td>
                           <td className="p-2"><SearchableSelect options={productOptions} value={item.productId} onChange={(val) => handleProductChange(idx, val)} placeholder="Search..." className="w-full min-w-[250px]" onClick={() => handleProductClick(idx)} /></td>
                           <td className="p-2">

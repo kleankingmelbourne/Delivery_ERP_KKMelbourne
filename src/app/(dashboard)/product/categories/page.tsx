@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo } from "react"
 import { createClient } from "@/utils/supabase/client"
 import { 
   Plus, Search, MoreHorizontal, Edit, Trash2, Loader2, 
-  ChevronLeft, ChevronRight, ArrowUpDown, Tag, AlignLeft, Calendar
+  ChevronLeft, ChevronRight, ArrowUpDown, Tag, AlignLeft, Calendar, List
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -26,6 +26,13 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 
 export default function CategoryPage() {
   const supabase = createClient()
@@ -43,7 +50,10 @@ export default function CategoryPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [searchTerm, setSearchTerm] = useState("")
   const [currentPage, setCurrentPage] = useState(1)
-  const itemsPerPage = 10
+  
+  // [NEW] 한 페이지에 표시할 개수 상태 추가
+  const [itemsPerPage, setItemsPerPage] = useState<number | 'all'>(10)
+  
   const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' } | null>(null)
 
   // 폼 데이터 (DB 컬럼: category_name, description)
@@ -168,11 +178,13 @@ export default function CategoryPage() {
     return result
   }, [categories, searchTerm, sortConfig])
 
-  // 페이지네이션
-  const totalPages = Math.ceil(processedData.length / itemsPerPage)
+  // 페이지네이션 로직 적용
+  const currentItemsPerPage = itemsPerPage === 'all' ? processedData.length : itemsPerPage
+  const totalPages = currentItemsPerPage > 0 ? Math.ceil(processedData.length / currentItemsPerPage) : 1
+  
   const paginatedData = processedData.slice(
-    (currentPage - 1) * itemsPerPage,
-    currentPage * itemsPerPage
+    (currentPage - 1) * currentItemsPerPage,
+    currentPage * currentItemsPerPage
   )
 
   // 체크박스 핸들러
@@ -215,7 +227,7 @@ export default function CategoryPage() {
         </div>
       </div>
 
-      {/* 2. 요약 카드 (옵션) */}
+      {/* 2. 요약 카드 */}
       <div className="grid grid-cols-1 md:grid-cols-1 gap-4">
         <Card>
           <CardContent className="pt-6 flex items-center gap-4">
@@ -233,18 +245,50 @@ export default function CategoryPage() {
       {/* 3. 테이블 영역 */}
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
         
-        {/* 필터 영역 */}
-        <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-          <div className="relative w-full max-w-sm">
-            <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
-            <Input 
-              placeholder="Search categories..." 
-              className="pl-9 bg-white"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-            />
+        {/* 필터 및 표시 개수 선택 영역 */}
+        <div className="p-4 border-b border-slate-100 flex flex-col md:flex-row items-center justify-between bg-slate-50/50 gap-4">
+          <div className="flex items-center gap-3 w-full md:w-auto flex-1">
+            
+            {/* [NEW] Row Count Selector */}
+            <div className="w-[130px]">
+                <Select 
+                    value={String(itemsPerPage)} 
+                    onValueChange={(val) => {
+                        setItemsPerPage(val === 'all' ? 'all' : Number(val));
+                        setCurrentPage(1); // 옵션 변경 시 1페이지로 리셋
+                    }}
+                >
+                    <SelectTrigger className="bg-white">
+                        <div className="flex items-center gap-2 text-slate-600">
+                            <List className="w-4 h-4" />
+                            <SelectValue placeholder="Rows" />
+                        </div>
+                    </SelectTrigger>
+                    <SelectContent>
+                        <SelectItem value="10">10 Rows</SelectItem>
+                        <SelectItem value="20">20 Rows</SelectItem>
+                        <SelectItem value="30">30 Rows</SelectItem>
+                        <SelectItem value="all">All ({processedData.length})</SelectItem>
+                    </SelectContent>
+                </Select>
+            </div>
+
+            {/* Search Bar */}
+            <div className="relative w-full md:w-[300px]">
+              <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+              <Input 
+                placeholder="Search categories..." 
+                className="pl-9 bg-white"
+                value={searchTerm}
+                onChange={(e) => {
+                    setSearchTerm(e.target.value);
+                    setCurrentPage(1); // 검색 시 1페이지로 리셋
+                }}
+              />
+            </div>
           </div>
-          <div className="text-sm text-slate-500">
+
+          <div className="text-sm text-slate-500 whitespace-nowrap">
             Showing {paginatedData.length} of {processedData.length}
           </div>
         </div>
@@ -345,15 +389,15 @@ export default function CategoryPage() {
         </div>
 
         {/* 페이지네이션 */}
-        {processedData.length > itemsPerPage && (
-          <div className="p-4 border-t border-slate-200 flex items-center justify-end gap-2">
-            <Button variant="outline" size="sm" onClick={() => setCurrentPage((p) => Math.max(1, p - 1))} disabled={currentPage === 1}>
+        {processedData.length > currentItemsPerPage && (
+          <div className="p-4 border-t border-slate-200 flex items-center justify-end gap-2 bg-slate-50">
+            <Button variant="outline" size="sm" onClick={() => setCurrentPage((p) => Math.max(1, p - 1))} disabled={currentPage === 1} className="bg-white">
               <ChevronLeft className="w-4 h-4" />
             </Button>
-            <span className="text-sm font-medium text-slate-600">
+            <span className="text-sm font-bold text-slate-700 bg-white px-4 py-1.5 border rounded-md shadow-sm">
               Page {currentPage} of {totalPages}
             </span>
-            <Button variant="outline" size="sm" onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages}>
+            <Button variant="outline" size="sm" onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages || totalPages === 0} className="bg-white">
               <ChevronRight className="w-4 h-4" />
             </Button>
           </div>

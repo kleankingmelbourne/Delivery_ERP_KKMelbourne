@@ -169,34 +169,49 @@ export default function DriverDeliveryPage() {
     return () => { supabase.removeChannel(channel); };
   }, [currentUserId]); 
 
-
+  // ✅ [속도 개선 1] 직렬 호출이 아닌 병렬 호출 적용
   const fetchInitialData = async () => {
+      setLoading(true); // 우선 로딩 켜기
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      if (!user) {
+          setLoading(false);
+          return;
+      }
       setCurrentUserId(user.id);
 
-      const { data: profile } = await supabase.from('profiles').select('address, display_name').eq('id', user.id).single();
+      // 1. 배송 데이터는 가장 중요하므로 즉시 가져오기 시작 (await 걸지 않고 병렬로 실행)
+      fetchDeliveries(user.id, true);
+
+      // 2. 프로필과 회사 설정 데이터는 Promise.all 로 동시(병렬)에 가져와서 속도 단축
+      const [profileRes, companyRes] = await Promise.all([
+          supabase.from('profiles').select('address, display_name').eq('id', user.id).single(),
+          supabase.from('company_settings').select('address_line1, address_line2, state, suburb, postcode').maybeSingle()
+      ]);
+
+      const profile = profileRes.data;
+      const company = companyRes.data;
+
       if (profile) {
           if (profile.address) setDriverProfileAddress(profile.address);
           const name = profile.display_name || user.email?.split('@')[0] || "Driver";
           setCurrentUserName(name);
       }
 
-      try {
-        const { data: company } = await supabase.from('company_settings').select('address_line1, address_line2, state, suburb, postcode').maybeSingle(); 
-        if (company) {
-            const parts = [company.address_line1, company.address_line2, company.suburb, company.state, company.postcode].filter(p => p && p.trim() !== "");
-            const fullCompAddr = parts.join(", ");
-            setCompanyAddress(fullCompAddr);
-            if (!profile?.address) setReturnAddress(fullCompAddr);
-        }
-      } catch (e) { console.error("Fetch Company Error:", e); }
+      let fullCompAddr = "";
+      if (company) {
+          const parts = [company.address_line1, company.address_line2, company.suburb, company.state, company.postcode].filter(p => p && p.trim() !== "");
+          fullCompAddr = parts.join(", ");
+          setCompanyAddress(fullCompAddr);
+      }
 
       const savedReturn = localStorage.getItem("returnAddress");
-      if (savedReturn) setReturnAddress(savedReturn);
-      else if (profile?.address) setReturnAddress(profile.address);
-
-      fetchDeliveries(user.id, true);
+      if (savedReturn) {
+          setReturnAddress(savedReturn);
+      } else if (profile?.address) {
+          setReturnAddress(profile.address);
+      } else if (fullCompAddr) {
+          setReturnAddress(fullCompAddr);
+      }
   };
 
   const sortDeliveries = (items: DeliveryItem[]) => {
@@ -207,8 +222,6 @@ export default function DriverDeliveryPage() {
   };
 
   const fetchDeliveries = async (userId: string, isInitialLoad = false) => {
-    setLoading(true);
-
     try {
         const today = getMelbourneDate();
         const { data, error } = await supabase
@@ -219,7 +232,7 @@ export default function DriverDeliveryPage() {
           `)
           .eq('invoice_date', today)  
           .eq('driver_id', userId)   
-          .neq('delivery_run', 0)     
+          .neq('delivery_run', 0)    
           .order('delivery_order', { ascending: true }); 
 
         if (error) console.error("🔥 Fetch Error:", error.message);
@@ -273,7 +286,7 @@ export default function DriverDeliveryPage() {
     } catch (err) {
         console.error(err);
     } finally {
-        setLoading(false);
+        setLoading(false); // 로딩 종료
     }
   };
 
@@ -572,35 +585,52 @@ export default function DriverDeliveryPage() {
 
       {/* List Area (Scrollable with custom scrollbar) */}
       <div className="flex-1 min-h-0 px-4 space-y-3 pb-20 overflow-y-auto custom-scrollbar">
-        {currentList.length === 0 && (
+        
+        {/* ✅ [속도 개선 2] 로딩 중일 때 스켈레톤 애니메이션 보여주기 */}
+        {loading ? (
+            <div className="space-y-3 mt-2">
+                {[1, 2, 3, 4].map((i) => (
+                    <div key={i} className="bg-white p-4 rounded-xl border border-slate-100 flex items-center justify-between opacity-70">
+                        <div className="flex items-center gap-3 flex-1">
+                            <div className="w-8 h-8 rounded-full bg-slate-200 animate-pulse"></div>
+                            <div className="flex-1 space-y-2">
+                                <div className="h-4 bg-slate-200 rounded w-2/3 animate-pulse"></div>
+                                <div className="h-3 bg-slate-200 rounded w-1/2 animate-pulse"></div>
+                            </div>
+                        </div>
+                        <div className="w-10 h-6 bg-slate-100 rounded animate-pulse"></div>
+                    </div>
+                ))}
+            </div>
+        ) : currentList.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-20 text-slate-400 border-2 border-dashed border-slate-200 rounded-2xl">
                 <Package className="w-12 h-12 mb-2 opacity-20" />
                 <span className="text-sm font-medium">No deliveries for this run.</span>
             </div>
+        ) : (
+            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                <SortableContext items={currentList.map(d => d.id)} strategy={verticalListSortingStrategy}>
+                    {currentList.map((item, index) => {
+                        const isActive = isStarted && !item.is_completed && activeItem?.id === item.id;
+                        const isLocked = isStarted && !item.is_completed && !isActive && !isEditing;
+                        const isDone = item.is_completed;
+                        
+                        return (
+                            <SortableItem 
+                                key={item.id} id={item.id} item={item} index={index}
+                                isActive={isActive} isLocked={isLocked} isDone={isDone} isEditing={isEditing} 
+                                isNew={item.delivery_order === 0} 
+                                onComplete={() => handleStartComplete(item.id)}
+                                onNavigate={() => handleNavigate(item.delivery_address)}
+                                onCall={() => window.location.href = `tel:${item.phone}`}
+                            />
+                        );
+                    })}
+                </SortableContext>
+            </DndContext>
         )}
 
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-            <SortableContext items={currentList.map(d => d.id)} strategy={verticalListSortingStrategy}>
-                {currentList.map((item, index) => {
-                    const isActive = isStarted && !item.is_completed && activeItem?.id === item.id;
-                    const isLocked = isStarted && !item.is_completed && !isActive && !isEditing;
-                    const isDone = item.is_completed;
-                    
-                    return (
-                        <SortableItem 
-                            key={item.id} id={item.id} item={item} index={index}
-                            isActive={isActive} isLocked={isLocked} isDone={isDone} isEditing={isEditing} 
-                            isNew={item.delivery_order === 0} 
-                            onComplete={() => handleStartComplete(item.id)}
-                            onNavigate={() => handleNavigate(item.delivery_address)}
-                            onCall={() => window.location.href = `tel:${item.phone}`}
-                        />
-                    );
-                })}
-            </SortableContext>
-        </DndContext>
-
-        {currentList.length > 0 && (
+        {currentList.length > 0 && !loading && (
             <div className="mt-8 pt-4 border-t border-slate-200 opacity-90 pb-8">
                 <div className="text-xs font-bold text-slate-400 uppercase mb-2 tracking-wider flex items-center gap-1">
                     <Home className="w-3 h-3" /> Final Destination
@@ -623,9 +653,8 @@ export default function DriverDeliveryPage() {
   );
 }
 
-// ✅ [수정] SortableItem: 드래그 핸들 분리하여 스크롤 가능하게 수정
+// ✅ [수정 유지] SortableItem: 드래그 핸들 분리하여 스크롤 가능하게 수정
 function SortableItem({ id, item, index, isActive, isLocked, isDone, isEditing, isNew, onComplete, onNavigate, onCall }: any) {
-    // 1. setActivatorNodeRef 추가 (핸들용 Ref)
     const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition } = useSortable({ id });
     const style = { transform: CSS.Transform.toString(transform), transition };
 
@@ -666,7 +695,6 @@ function SortableItem({ id, item, index, isActive, isLocked, isDone, isEditing, 
     }
 
     return (
-        // 2. 메인 div에서 listener 제거 및 touch-none 제거 (스크롤 가능하게)
         <div ref={setNodeRef} style={style} className={`bg-white p-4 rounded-xl border flex items-center justify-between ${isEditing ? "border-blue-200 shadow-sm" : "border-slate-100 opacity-70"}`}>
             <div className="flex items-center gap-3 flex-1 min-w-0">
                 <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${isEditing ? "bg-blue-100 text-blue-600" : "bg-slate-100 text-slate-400"}`}>{index + 1}</div>
@@ -679,7 +707,6 @@ function SortableItem({ id, item, index, isActive, isLocked, isDone, isEditing, 
                 </div>
             </div>
             
-            {/* 3. 드래그 핸들 (아이콘)에만 listener 적용 (여기를 잡고 끌어야 순서 변경됨) */}
             {isEditing ? (
                 <div 
                     ref={setActivatorNodeRef} 

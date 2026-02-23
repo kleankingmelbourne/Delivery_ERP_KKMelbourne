@@ -192,7 +192,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
   const fetchInvoices = async () => {
     setLoading(true);
     
-    let query = supabase.from("invoices").select("*, customers(email)").order("id", { ascending: false });
+    let query = supabase.from("invoices").select("*, customers(email)").order("id", { ascending: false }).limit(10000);
 
     if (filterStatus === "PAID") {
       query = query.eq("status", "Paid");

@@ -22,11 +22,13 @@ export default function DriverRoutePage() {
   const [loading, setLoading] = useState(true);
   const [directionsResponse, setDirectionsResponse] = useState<any>(null);
   const [currentRun, setCurrentRun] = useState(1);
-  const [debugMsg, setDebugMsg] = useState(""); // 디버깅용 메시지
+  
+  // [NEW] 복귀 장소가 실제로 존재하는지 여부 확인
+  const [hasReturnDest, setHasReturnDest] = useState(false);
 
   // Google Maps API 로드
   const { isLoaded } = useJsApiLoader({
-    id: 'google-map-script', // 다른 페이지와 ID 통일
+    id: 'google-map-script',
     googleMapsApiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || "",
     libraries: LIBRARIES
   });
@@ -61,22 +63,16 @@ export default function DriverRoutePage() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { setLoading(false); return; }
 
-    // ---------------------------------------------------------
     // 1. 복귀 주소 (Return Address) 확인
-    // ---------------------------------------------------------
     let finalAddr = "";
-    
-    // 1순위: 로컬 스토리지
     const saved = localStorage.getItem("returnAddress");
     if (saved) finalAddr = saved;
     
-    // 2순위: 프로필
     if (!finalAddr) {
         const { data: profile } = await supabase.from('profiles').select('address').eq('id', user.id).single();
         if (profile?.address) finalAddr = profile.address;
     }
 
-    // 3순위: 회사 설정
     if (!finalAddr) {
         const { data: company } = await supabase
             .from('company_settings')
@@ -95,14 +91,12 @@ export default function DriverRoutePage() {
     let returnCoords: { lat: number; lng: number } | null = null;
     if (finalAddr) {
         returnCoords = await geocodeAddress(finalAddr);
-        console.log("📍 Final Destination Found:", finalAddr, returnCoords);
-    } else {
-        console.log("⚠️ No Final Destination found. Route will end at last delivery.");
     }
 
-    // ---------------------------------------------------------
+    // [NEW] 복귀 장소 유무 상태 업데이트
+    setHasReturnDest(!!returnCoords);
+
     // 2. 배송 데이터 (좌표 포함)
-    // ---------------------------------------------------------
     const today = getMelbourneDate();
     const { data, error } = await supabase
       .from('invoices')
@@ -141,7 +135,6 @@ export default function DriverRoutePage() {
   const calculateRoute = (items: any[], returnDest: { lat: number; lng: number } | null) => {
       if (!isLoaded || !window.google) return;
 
-      // 1. 배송지 Waypoints 생성
       const waypoints: google.maps.DirectionsWaypoint[] = [];
       const validLocations: { lat: number; lng: number }[] = [];
 
@@ -164,14 +157,11 @@ export default function DriverRoutePage() {
           return;
       }
 
-      // 2. 출발지 설정 및 경로 요청
       navigator.geolocation.getCurrentPosition((pos) => {
           const origin = { lat: pos.coords.latitude, lng: pos.coords.longitude };
           requestDirections(origin, waypoints, returnDest);
       }, (err) => {
-          console.warn("Geolocation failed, using first stop as start", err);
           if (validLocations.length > 0) {
-              // 위치 권한 없으면 첫 배송지에서 시작 (Waypoints 목록에서 첫 번째 제거)
               const newOrigin = validLocations[0];
               const newWaypoints = waypoints.slice(1);
               requestDirections(newOrigin, newWaypoints, returnDest);
@@ -181,7 +171,6 @@ export default function DriverRoutePage() {
       });
   };
 
-  // ✅ [핵심 수정] 도착지 및 경유지 설정 로직 강화
   const requestDirections = (
       origin: google.maps.LatLngLiteral, 
       allWaypoints: google.maps.DirectionsWaypoint[], 
@@ -193,26 +182,19 @@ export default function DriverRoutePage() {
       let finalWaypoints: google.maps.DirectionsWaypoint[] = [];
 
       if (returnDest) {
-          // [CASE A] 복귀 주소가 있는 경우 (창고로 복귀)
-          // Waypoints: 모든 배송지 (순서대로)
-          // Destination: 복귀 주소
+          // [Case A] 복귀 장소 있음 -> 모든 경유지 들르고 복귀
           destination = returnDest;
           finalWaypoints = allWaypoints; 
-          console.log("🚗 Route Mode: Return to Base");
       } else {
-          // [CASE B] 복귀 주소가 없는 경우 (마지막 배송지에서 종료)
-          // Waypoints: 마지막 배송지를 제외한 나머지
-          // Destination: 마지막 배송지
+          // [Case B] 복귀 장소 없음 -> 마지막 배송지가 도착지
           if (allWaypoints.length > 0) {
               const lastStop = allWaypoints[allWaypoints.length - 1];
               destination = lastStop.location as google.maps.LatLngLiteral;
               finalWaypoints = allWaypoints.slice(0, -1);
           }
-          console.log("🚛 Route Mode: One-way Trip (No Return Address)");
       }
 
       if (!destination) {
-          console.error("Destination undefined");
           setLoading(false);
           return;
       }
@@ -221,13 +203,11 @@ export default function DriverRoutePage() {
           origin: origin,
           destination: destination,
           waypoints: finalWaypoints,
-          optimizeWaypoints: false, // 배송 순서 유지
+          optimizeWaypoints: false,
           travelMode: window.google.maps.TravelMode.DRIVING
       }, (result: any, status: any) => {
           if (status === window.google.maps.DirectionsStatus.OK) {
               setDirectionsResponse(result);
-          } else {
-              console.error("Maps Directions Error:", status);
           }
           setLoading(false);
       });
@@ -251,12 +231,12 @@ export default function DriverRoutePage() {
               <DirectionsRenderer 
                   directions={directionsResponse} 
                   options={{ 
-                      suppressMarkers: true, 
+                      suppressMarkers: true, // 기본 마커 숨김 (커스텀 마커 사용)
                       preserveViewport: false 
                   }} 
               />
               
-              {/* S: Start */}
+              {/* S: Start (현재 위치) */}
               {directionsResponse.routes[0]?.legs[0]?.start_location && (
                   <Marker 
                     position={directionsResponse.routes[0].legs[0].start_location} 
@@ -264,27 +244,24 @@ export default function DriverRoutePage() {
                   />
               )}
 
-              {/* 1, 2, 3... Stops (경유지 & 도착지) */}
+              {/* Stops Rendering Logic */}
               {directionsResponse.routes[0]?.legs.map((leg: any, idx: number) => {
                   const isLastLeg = idx === directionsResponse.routes[0].legs.length - 1;
                   
-                  // 마지막 지점(도착지) -> F (Final)
-                  if (isLastLeg) {
-                      return (
-                          <Marker 
-                            key="final"
-                            position={leg.end_location} 
-                            label={{ text: "F", color: "white", fontWeight: "bold" }} 
-                          />
-                      );
+                  // [핵심 수정] 라벨 결정 로직
+                  // 1. 복귀 장소(hasReturnDest)가 있고, 마지막 지점(isLastLeg)이면 -> 'F'
+                  // 2. 복귀 장소가 없으면 -> 무조건 숫자 (마지막 배송지도 고객이므로 숫자 표시)
+                  let labelText = `${idx + 1}`;
+                  
+                  if (hasReturnDest && isLastLeg) {
+                      labelText = "F";
                   }
 
-                  // 중간 경유지들 -> 숫자
                   return (
                       <Marker 
                         key={idx} 
                         position={leg.end_location} 
-                        label={{ text: `${idx + 1}`, color: "white", fontWeight: "bold" }} 
+                        label={{ text: labelText, color: "white", fontWeight: "bold" }} 
                       />
                   );
               })}

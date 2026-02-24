@@ -3,14 +3,14 @@
 import React, { useEffect, useState, useRef } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { 
-  Calendar as CalendarIcon, Truck, MoreHorizontal, User, AlertCircle, Loader2, RefreshCw, XCircle, Download, Save, UserPlus, RotateCcw, CheckCircle2, BellRing, Package, Archive, ListChecks 
+  Calendar as CalendarIcon, Truck, MoreHorizontal, User, AlertCircle, Loader2, RefreshCw, XCircle, Download, Save, UserPlus, RotateCcw, CheckCircle2, BellRing, ListChecks 
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { DndContext, pointerWithin, KeyboardSensor, PointerSensor, useSensor, useSensors, DragOverlay, defaultDropAnimationSideEffects, DragStartEvent, DragOverEvent, DragEndEvent, DropAnimation } from "@dnd-kit/core";
+import { DndContext, pointerWithin, KeyboardSensor, PointerSensor, useSensor, useSensors, DragOverlay, defaultDropAnimationSideEffects, DragStartEvent, DragOverEvent, DropAnimation } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
@@ -21,7 +21,7 @@ interface InvoiceItem {
     products: {        
         product_name: string;
         location: string | null; 
-        vendor_product_id: string | null; // ✅ [수정] Vendor ID 추가
+        vendor_product_id: string | null; 
     } | null;
 }
 
@@ -131,7 +131,6 @@ export default function SetDeliveryPage() {
                        delivery_order: newRecord.delivery_order, 
                        current_driver_id: newRecord.is_completed ? newRecord.driver_id : inv.current_driver_id, 
                        current_run: newRecord.is_completed ? displayRun : inv.current_run, 
-                       // [FIX] Update 시 DB값이 0이면 New 유지
                        is_new_arrival: isNew 
                    };
                    
@@ -143,7 +142,6 @@ export default function SetDeliveryPage() {
          }
          if (eventType === 'INSERT') {
              if (newRecord.is_pickup === true) return;
-             // ✅ [수정] Realtime Fetch 쿼리에도 vendor_product_id 추가
              const { data: fetchedInvoice, error } = await supabase.from("invoices").select(`id, invoice_date, created_at, total_amount, driver_id, customer_id, is_completed, is_pickup, delivery_run, delivery_order, customers ( name, in_charge_delivery ), invoice_items ( quantity, unit, products ( product_name, location, vendor_product_id ) )`).eq("id", newRecord.id).single();
              if (error || !fetchedInvoice) return;
              if (!fetchedInvoice.invoice_date || !String(fetchedInvoice.invoice_date).includes(currentDate)) return;
@@ -183,7 +181,6 @@ export default function SetDeliveryPage() {
       const { data: allProfileData } = await supabase.from("profiles").select("id, display_name").eq("status", "active").order("display_name");
       if (allProfileData) setAllStaff(allProfileData);
 
-      // ✅ [수정] 초기 데이터 로드 시 vendor_product_id 추가
       const { data: invoiceData, error: invoiceError } = await supabase.from("invoices").select(`id, invoice_date, created_at, total_amount, driver_id, customer_id, is_completed, is_pickup, delivery_run, delivery_order, customers ( name, in_charge_delivery ), invoice_items ( quantity, unit, products ( product_name, location, vendor_product_id ) )`).eq("invoice_date", selectedDate).neq("status", "Paid").is("is_pickup", false).order("id");
       if (invoiceError) throw invoiceError;
 
@@ -214,7 +211,6 @@ export default function SetDeliveryPage() {
       const initialMap = new Map<string, DisplayInvoice>(); 
       
       const initializedInvoices = invoices.map((inv) => {
-        // [FIX] delivery_run이 0이면 New Arrival
         const isNew = (inv.delivery_run === 0);
         const displayRun = inv.delivery_run === 0 ? 1 : inv.delivery_run;
         if (isNew) newCount++;
@@ -251,7 +247,8 @@ export default function SetDeliveryPage() {
       });
   };
 
-  const handleGeneratePackingList = () => {
+  // ✅ [수정] Picking List -> Excel (with Borders)
+  const handleGeneratePickingList = () => {
     if (selectedColumns.size === 0) return alert("Please select drivers first.");
 
     const targetInvoices = localInvoices.filter(inv => {
@@ -262,7 +259,6 @@ export default function SetDeliveryPage() {
 
     if (targetInvoices.length === 0) return alert("No invoices found in selected drivers.");
 
-    // ✅ [수정] 타입에 vendorProductId 추가
     const combinedItems: Record<string, { name: string, location: string, unit: string, qty: number, vendorProductId: string }> = {};
 
     targetInvoices.forEach(inv => {
@@ -270,7 +266,6 @@ export default function SetDeliveryPage() {
             inv.invoice_items.forEach(item => {
                 const name = item.products?.product_name || "Unknown Item";
                 const location = item.products?.location || "";
-                // ✅ [수정] Vendor ID 추출
                 const vendorProductId = item.products?.vendor_product_id || ""; 
                 
                 let rawUnit = item.unit || "Pack"; 
@@ -312,67 +307,177 @@ export default function SetDeliveryPage() {
     });
     const driverTitle = Array.from(driverNamesSet).join(', ');
 
-    const printWindow = window.open('', '', 'width=800,height=600');
+    // 🚀 새 탭 열기 (스타일 적용 스크립트 포함)
+    const printWindow = window.open('', '', 'width=900,height=700');
     if (!printWindow) return;
 
-    let html = `
+    const itemsHtml = sortedList.map((item, idx) => `
+        <tr class="${idx % 2 === 0 ? 'even' : 'odd'}">
+            <td class="col-loc" style="mso-number-format:'@'">${item.location || '-'}</td>
+            <td class="col-unit" style="text-align:center;">${item.unit}</td>
+            <td class="col-qty" style="text-align:center; font-weight:bold;">${item.qty}</td>
+            <td class="col-id" style="mso-number-format:'@'">${item.vendorProductId || '-'}</td>
+            <td class="col-name">${item.name}</td>
+        </tr>
+    `).join('');
+
+    const htmlContent = `
+      <!DOCTYPE html>
       <html>
         <head>
-          <title>Picking List - ${selectedDate}</title>
+          <title>Picking List - ${driverTitle}</title>
+          <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
           <style>
-            body { font-family: sans-serif; padding: 20px; font-size: 14px; }
-            h1 { text-align: center; margin-bottom: 5px; font-size: 24px; }
-            .meta { text-align: center; margin-bottom: 20px; color: #555; font-size: 14px; }
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; font-size: 14px; background: #f4f4f4; }
+            .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+            h1 { text-align: center; margin-bottom: 5px; font-size: 24px; color: #333; }
+            .meta { text-align: center; margin-bottom: 20px; color: #666; font-size: 14px; }
+            .action-bar { text-align: right; margin-bottom: 20px; display: flex; justify-content: flex-end; gap: 10px; }
+            .btn { padding: 10px 18px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 14px; display: inline-flex; align-items: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: background 0.2s; color: white; }
+            .btn-print { background: #333; }
+            .btn-print:hover { background: #111; }
+            .btn-excel { background: #10b981; }
+            .btn-excel:hover { background: #059669; }
+            
             .summary-box { border: 2px solid #333; padding: 15px; margin-bottom: 20px; background: #f9f9f9; display: flex; justify-content: space-between; align-items: center; border-radius: 8px; }
             .summary-item { font-weight: bold; font-size: 16px; }
-            table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-            th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #ddd; }
-            th { background: #eee; font-weight: bold; border-bottom: 2px solid #333; }
-            tr:nth-child(even) { background-color: #fcfcfc; }
-            .col-loc { width: 12%; font-weight: bold; color: #d32f2f; }
-            .col-unit { width: 8%; text-align: center; color: #666; font-weight: bold; }
-            .col-qty { width: 8%; text-align: center; font-weight: bold; font-size: 1.1em; }
-            .col-id { width: 15%; color: #555; font-size: 0.9em; font-weight: 500; } /* ✅ ID Column Style */
-            .col-name { width: 57%; }
-            @media print { .summary-box { background: none; border: 1px solid #000; } th { background: none !important; } }
+            
+            table { width: 100%; border-collapse: collapse; margin-top: 10px; border: 1px solid #000; }
+            th, td { padding: 10px 12px; text-align: left; border: 1px solid #000; }
+            th { background: #eee; font-weight: bold; color: #333; }
+            
+            tr.even { background-color: #fcfcfc; }
+            .col-loc { width: 15%; font-weight: bold; color: #d32f2f; }
+            .col-unit { width: 10%; text-align: center; color: #555; font-weight: bold; }
+            .col-qty { width: 10%; text-align: center; font-weight: bold; font-size: 1.2em; color: #000; }
+            .col-id { width: 15%; color: #666; font-family: monospace; font-size: 0.95em; }
+            .col-name { width: 50%; font-weight: 500; }
+            
+            @media print {
+                body { background: white; padding: 0; }
+                .container { box-shadow: none; padding: 0; max-width: 100%; }
+                .action-bar { display: none; }
+                .summary-box { background: none; border: 1px solid #000; }
+                th { background: none !important; }
+            }
           </style>
+          <script>
+            function exportToExcel() {
+                // 1. 테이블 원본 복사
+                var originalTable = document.getElementById("pickingTable");
+                var tableClone = originalTable.cloneNode(true);
+                
+                // 2. 제목 및 날짜 행 추가 (엑셀 상단)
+                var titleRow = tableClone.insertRow(0);
+                var titleCell = titleRow.insertCell(0);
+                titleCell.colSpan = 5;
+                titleCell.innerText = "Picking List - ${driverTitle}";
+                
+                var dateRow = tableClone.insertRow(1);
+                var dateCell = dateRow.insertCell(0);
+                dateCell.colSpan = 5;
+                dateCell.innerText = "Date: ${selectedDate} | Generated: ${generatedTime} | Invoices: ${totalInvoices}";
+
+                var emptyRow = tableClone.insertRow(2);
+                emptyRow.insertCell(0).colSpan = 5;
+
+                // 3. 워크북 생성
+                var wb = XLSX.utils.table_to_book(tableClone, {sheet: "Picking List"});
+                var ws = wb.Sheets["Picking List"];
+
+                // 4. [핵심] 테두리 스타일 적용 (데이터 영역만)
+                var range = XLSX.utils.decode_range(ws['!ref']);
+                
+                // 스타일 정의 (검은색 얇은 테두리)
+                var borderStyle = {
+                    top: { style: "thin", color: { rgb: "000000" } },
+                    bottom: { style: "thin", color: { rgb: "000000" } },
+                    left: { style: "thin", color: { rgb: "000000" } },
+                    right: { style: "thin", color: { rgb: "000000" } }
+                };
+
+                // 헤더(Row 3)부터 끝까지 반복
+                for(var R = 3; R <= range.e.r; ++R) {
+                    for(var C = range.s.c; C <= range.e.c; ++C) {
+                        var cell_address = {c:C, r:R};
+                        var cell_ref = XLSX.utils.encode_cell(cell_address);
+                        
+                        // 셀이 존재하지 않으면 빈 셀 객체 생성
+                        if(!ws[cell_ref]) ws[cell_ref] = { t: "s", v: "" };
+                        
+                        if(!ws[cell_ref].s) ws[cell_ref].s = {};
+                        
+                        // 테두리 적용
+                        ws[cell_ref].s.border = borderStyle;
+                        
+                        // 제목/헤더 행 스타일
+                        if (R === 3) {
+                            ws[cell_ref].s.font = { bold: true };
+                            ws[cell_ref].s.fill = { fgColor: { rgb: "EEEEEE" } };
+                            ws[cell_ref].s.alignment = { horizontal: "center", vertical: "center" };
+                        } 
+                        // 데이터 행 스타일 (가운데 정렬 등)
+                        else {
+                            if(C === 1 || C === 2) { // Unit, Qty
+                                ws[cell_ref].s.alignment = { horizontal: "center" };
+                            }
+                        }
+                    }
+                }
+
+                // 5. 제목 스타일 (병합된 셀)
+                var titleRef = XLSX.utils.encode_cell({c:0, r:0});
+                if(ws[titleRef]) {
+                    if(!ws[titleRef].s) ws[titleRef].s = {};
+                    ws[titleRef].s.font = { bold: true, sz: 16 };
+                    ws[titleRef].s.alignment = { horizontal: "center" };
+                }
+                var metaRef = XLSX.utils.encode_cell({c:0, r:1});
+                if(ws[metaRef]) {
+                    if(!ws[metaRef].s) ws[metaRef].s = {};
+                    ws[metaRef].s.alignment = { horizontal: "center" };
+                }
+
+                // 6. 진짜 엑셀 파일 다운로드
+                XLSX.writeFile(wb, "Picking_List_${selectedDate}.xlsx");
+            }
+          </script>
         </head>
         <body>
-          <h1>📦 Picking List - ${driverTitle}</h1>
-          <div class="meta">Date: ${selectedDate}</div>
-          <div class="summary-box">
-             <div class="summary-item">📑 Invoices Selected: ${totalInvoices}</div>
-             <div class="summary-item">🕒 Time: ${generatedTime}</div>
+          <div class="container">
+              <div class="action-bar">
+                  <button class="btn btn-print" onclick="window.print()">🖨️ Print</button>
+                  <button class="btn btn-excel" onclick="exportToExcel()">📊 Open in Excel</button>
+              </div>
+
+              <h1>📦 Picking List - ${driverTitle}</h1>
+              <div class="meta">Date: ${selectedDate}</div>
+              
+              <div class="summary-box">
+                 <div class="summary-item">📑 Invoices: ${totalInvoices}</div>
+                 <div class="summary-item">🕒 Time: ${generatedTime}</div>
+              </div>
+              
+              <table id="pickingTable">
+                <thead>
+                  <tr>
+                    <th class="col-loc">Location</th>
+                    <th class="col-unit">Unit</th>
+                    <th class="col-qty">Qty</th>
+                    <th class="col-id">ID</th> 
+                    <th class="col-name">Product Name</th>
+                  </tr>
+                </thead>
+                <tbody>
+                    ${itemsHtml}
+                </tbody>
+              </table>
           </div>
-          <table>
-            <thead>
-              <tr>
-                <th class="col-loc">Location</th>
-                <th class="col-unit">Unit</th>
-                <th class="col-qty">Qty</th>
-                <th class="col-id">ID</th> <th class="col-name">Product Name</th>
-              </tr>
-            </thead>
-            <tbody>
+        </body>
+      </html>
     `;
 
-    if (sortedList.length === 0) {
-        html += `<tr><td colspan="5" style="text-align:center; padding:20px;">No items found.</td></tr>`;
-    } else {
-        sortedList.forEach(item => {
-            html += `
-                <tr>
-                  <td class="col-loc">${item.location || '-'}</td>
-                  <td class="col-unit">${item.unit}</td>
-                  <td class="col-qty">${item.qty}</td>
-                  <td class="col-id">${item.vendorProductId || '-'}</td> <td class="col-name">${item.name}</td>
-                </tr>
-            `;
-        });
-    }
-
-    html += `</tbody></table><script>window.onload = function() { window.print(); }</script></body></html>`;
-    printWindow.document.write(html);
+    printWindow.document.write(htmlContent);
     printWindow.document.close();
   };
 
@@ -413,8 +518,6 @@ export default function SetDeliveryPage() {
               ...inv, 
               current_driver_id: driverId, 
               current_run: parseInt(runStr) || 1,
-              // [FIX] 이동 시 일단 New 유지 (저장 전까지), 또는 New 해제 가능. 
-              // 여기서는 저장 후 DB run 값에 따라 결정되므로 UI상으로는 false로 두어 깜빡임 방지
               is_new_arrival: false 
           };
       }
@@ -450,20 +553,16 @@ export default function SetDeliveryPage() {
     setIsApplyingDefaults(false);
   };
 
-  // ✅ [수정된 저장 로직] delivery_run 업데이트 -> 0이 아니면 New 뱃지 해제
-  // delivery_order는 건드리지 않음 (Driver App에서 관리)
   const handleSaveChanges = async () => {
     if (!hasChanges) return;
     setIsSaving(true);
     try {
-      // 1. 변경된 인보이스 찾기
       const changedInvoices = localInvoices.filter(localInv => {
           const original = originalInvoicesMap.get(localInv.id);
           if (!original) return true; 
 
           const isDriverChanged = localInv.current_driver_id !== original.current_driver_id;
           const isRunChanged = localInv.current_run !== original.current_run;
-          // New 상태에서 할당된 경우도 변경으로 간주
           const isNewStatusChanged = localInv.is_new_arrival && !!localInv.current_driver_id;
 
           return isDriverChanged || isRunChanged || isNewStatusChanged;
@@ -475,31 +574,24 @@ export default function SetDeliveryPage() {
           return;
       }
 
-      // 2. 업데이트 실행 (delivery_order 제외)
       const updates = changedInvoices.map(inv => {
         const runToSave = inv.current_driver_id ? (inv.current_run || 1) : 0;
-        
         return supabase.from("invoices").update({ 
             driver_id: inv.current_driver_id, 
             delivery_run: runToSave
-            // delivery_order는 업데이트하지 않음
         }).eq("id", inv.id);
       });
 
       await Promise.all(updates);
       setHasChanges(false);
 
-      // 3. 로컬 상태 업데이트
       const newMap = new Map(originalInvoicesMap);
       const updatedLocalInvoices = localInvoices.map(inv => {
           const isChanged = changedInvoices.some(c => c.id === inv.id);
-          
-          // 할당되었으면(run > 0) New가 아님
           const isAssigned = !!inv.current_driver_id;
           
           const updatedInv = { 
               ...inv, 
-              // run이 0이 아니면 New가 아님 (DB 로직 반영)
               is_new_arrival: !isAssigned, 
               delivery_run: isAssigned ? (inv.current_run || 1) : 0
           };
@@ -517,7 +609,7 @@ export default function SetDeliveryPage() {
     } catch (e: any) { alert("Error saving: " + e.message); } finally { setIsSaving(false); }
   };
 
-  const handleExportExcel = () => {
+  const handleExportRunSheet = () => {
     if (localInvoices.length === 0) return alert("No data.");
     const unassignedInvoices = localInvoices.filter(i => !i.current_driver_id);
     interface ExportColumn { header: string; customers: string[]; }
@@ -580,7 +672,6 @@ export default function SetDeliveryPage() {
   return (
     <DndContext sensors={sensors} collisionDetection={pointerWithin} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
       <div className="flex flex-col h-[calc(100vh-65px)] bg-slate-50/50">
-        {/* Top Bar */}
         <div className="h-14 border-b border-slate-200 bg-white px-4 flex items-center justify-between shrink-0 z-10 shadow-sm">
             <div className="flex items-center gap-4">
             <div className="flex items-center gap-2 text-slate-800 font-bold text-base">
@@ -602,9 +693,8 @@ export default function SetDeliveryPage() {
                 </div>
             )}
 
-            {/* ✅ [복구] Picking List 버튼 (선택된 컬럼이 있을 때만 표시) */}
             {selectedColumns.size > 0 && (
-                <Button onClick={handleGeneratePackingList} className="h-8 text-xs px-3 font-bold bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm animate-in fade-in slide-in-from-top-2">
+                <Button onClick={handleGeneratePickingList} className="h-8 text-xs px-3 font-bold bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm animate-in fade-in slide-in-from-top-2">
                     <ListChecks className="w-3.5 h-3.5 mr-1.5" />
                     Picking List ({selectedColumns.size})
                 </Button>
@@ -625,7 +715,7 @@ export default function SetDeliveryPage() {
                 {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
                 Save
             </Button>
-            <Button variant="outline" size="sm" onClick={handleExportExcel} className="h-8 px-2 text-slate-600">
+            <Button variant="outline" size="sm" onClick={handleExportRunSheet} className="h-8 px-2 text-slate-600">
                 <Download className="w-3.5 h-3.5" /> 
             </Button>
             <Button variant="ghost" size="sm" onClick={fetchData} disabled={loading} className="h-8 w-8 p-0">
@@ -700,7 +790,6 @@ function DroppableColumn({
                   <AlertCircle className="w-3.5 h-3.5 text-red-500 shrink-0" />
               ) : (
                   <div className="flex items-center gap-1">
-                      {/* ✅ [복구] 체크박스 */}
                       <input type="checkbox" checked={isChecked} onChange={() => onToggle(id)} className="w-3.5 h-3.5 cursor-pointer accent-emerald-600" />
                   </div>
               )}
@@ -747,7 +836,6 @@ function SortableItem(props: any) {
 
 function SlimInvoiceCard({ invoice, columns, currentColumnId, onMove, isOverlay = false }: { invoice: DisplayInvoice; columns: DriverColumnState[]; currentColumnId: string; onMove: (id: string, colId: string | null) => void; isOverlay?: boolean; }) {
   const isCompleted = invoice.is_completed; 
-  // [FIX] delivery_run 기반으로만 New 판단하도록 수정 (props로 받은 is_new_arrival 활용)
   const isNew = invoice.is_new_arrival;
 
   return (

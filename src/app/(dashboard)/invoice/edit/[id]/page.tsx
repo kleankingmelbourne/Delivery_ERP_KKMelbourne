@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { 
   Plus, Trash2, Save, ArrowLeft, User, Calendar, CreditCard, 
   Calculator, FileText, Lock, Search, ChevronDown, Check,
-  Wallet, Truck, Clock, DollarSign, AlertTriangle, Loader2
+  AlertTriangle, Loader2
 } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -19,11 +19,34 @@ const roundAmount = (num: number) => {
   return Math.round((num + Number.EPSILON) * 100) / 100;
 };
 
-// --- [Components] 검색 가능한 Select (키보드 네비게이션 및 50개 제한 해제 적용) ---
-interface Option { id: string; label: string; subLabel?: string; }
-interface SearchableSelectProps { options: Option[]; value: string; onChange: (value: string) => void; placeholder?: string; disabled?: boolean; className?: string; onClick?: () => void; }
+// --- [Utility] Debounce Hook ---
+function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedValue(value);
+    }, delay);
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [value, delay]);
+  return debouncedValue;
+}
 
-function SearchableSelect({ options, value, onChange, placeholder = "Select...", disabled = false, className, onClick }: SearchableSelectProps) {
+// --- [Components] 검색 가능한 Select (Input 기반 표시 & 키보드/마우스 확인 가능) ---
+interface Option { id: string; label: string; subLabel?: string; }
+interface SearchableSelectProps { 
+    options: Option[]; 
+    value: string; 
+    onChange: (value: string) => void; 
+    placeholder?: string; 
+    disabled?: boolean; 
+    className?: string; 
+    onClick?: () => void;
+    onSearch?: (term: string) => void; 
+}
+
+function SearchableSelect({ options, value, onChange, placeholder = "Select...", disabled = false, className, onClick, onSearch }: SearchableSelectProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [highlightedIndex, setHighlightedIndex] = useState(0); 
@@ -31,17 +54,25 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select...",
   const containerRef = useRef<HTMLDivElement>(null);
   const optionsRef = useRef<(HTMLDivElement | null)[]>([]); 
 
+  const debouncedSearchTerm = useDebounce(searchTerm, 300);
+
+  useEffect(() => {
+      if (onSearch && isOpen) {
+          onSearch(debouncedSearchTerm);
+      }
+  }, [debouncedSearchTerm, isOpen, onSearch]);
+
   const selectedOption = options.find(o => o.id === value);
   
   const filteredOptions = useMemo(() => {
-    // 50개 제한(.slice(0, 50)) 제거
+    if (onSearch) return options; 
     if (!searchTerm) return options;
     return options.filter(option => option.label.toLowerCase().includes(searchTerm.toLowerCase()));
-  }, [options, searchTerm]);
+  }, [options, searchTerm, onSearch]);
 
   useEffect(() => {
     setHighlightedIndex(0);
-  }, [searchTerm, isOpen]);
+  }, [filteredOptions]);
 
   useEffect(() => {
     if (isOpen && optionsRef.current[highlightedIndex]) {
@@ -72,10 +103,7 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select...",
         onChange(filteredOptions[highlightedIndex].id);
         setIsOpen(false);
         setSearchTerm("");
-        
-        if (e.key === "Enter") {
-          e.preventDefault();
-        }
+        if (e.key === "Enter") e.preventDefault();
       }
     } else if (e.key === "Escape") {
       setIsOpen(false);
@@ -84,10 +112,22 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select...",
 
   return (
     <div className={`relative ${className}`} ref={containerRef}>
-      <div onClick={() => { if (!disabled) { setIsOpen(!isOpen); if (onClick) onClick(); } }} className={`flex items-center justify-between w-full px-3 py-2 text-sm border rounded-md cursor-pointer bg-white transition-all ${disabled ? "bg-slate-100 text-slate-400 cursor-not-allowed" : "hover:border-slate-400 focus:ring-2 focus:ring-slate-900"} ${isOpen ? "ring-2 ring-slate-900 border-slate-900" : "border-slate-200"}`}>
-        <span className={`truncate ${!selectedOption && !value ? "text-slate-400" : "text-slate-900 font-medium"}`}>{selectedOption ? selectedOption.label : (value ? "Loading..." : placeholder)}</span>
-        <ChevronDown className="w-4 h-4 text-slate-400 opacity-50 shrink-0" />
+      <div 
+        onClick={() => { if (!disabled) { setIsOpen(!isOpen); if (onClick) onClick(); } }} 
+        className={`flex items-center justify-between w-full px-3 py-2 text-sm border rounded-md cursor-pointer bg-white transition-all ${disabled ? "bg-slate-100 text-slate-400 cursor-not-allowed" : "hover:border-slate-400 focus:ring-2 focus:ring-slate-900"} ${isOpen ? "ring-2 ring-slate-900 border-slate-900" : "border-slate-200"}`}
+      >
+        {/* ✅ [UI 개선] Input ReadOnly 사용 -> 짤린 내용 확인 가능 */}
+        <input 
+            type="text" 
+            readOnly
+            className={`w-full bg-transparent border-none p-0 text-sm truncate cursor-pointer focus:outline-none ${!selectedOption && !value ? "text-slate-400" : "text-slate-900 font-medium"}`}
+            value={selectedOption ? selectedOption.label : ""}
+            placeholder={value ? "Loading..." : placeholder}
+            title={selectedOption ? selectedOption.label : ""} // 툴팁 제공
+        />
+        <ChevronDown className="w-4 h-4 text-slate-400 opacity-50 shrink-0 ml-2" />
       </div>
+      
       {isOpen && !disabled && (
         <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-60 flex flex-col animate-in fade-in zoom-in-95 duration-100">
           <div className="sticky top-0 p-2 bg-white border-b border-slate-100 shrink-0">
@@ -116,11 +156,11 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select...",
                   onMouseEnter={() => setHighlightedIndex(index)}
                   className={`flex items-center justify-between px-3 py-2 text-sm rounded-md cursor-pointer transition-colors ${index === highlightedIndex ? "bg-slate-100 font-bold text-slate-900" : "hover:bg-slate-50 text-slate-700"}`}
                 >
-                  <div className="flex flex-col">
-                    <span>{option.label}</span>
-                    {option.subLabel && <span className="text-[10px] text-slate-400 font-normal">{option.subLabel}</span>}
+                  <div className="flex flex-col truncate">
+                    <span className="truncate">{option.label}</span>
+                    {option.subLabel && <span className="text-[10px] text-slate-400 font-normal truncate">{option.subLabel}</span>}
                   </div>
-                  {option.id === value && <Check className="w-3.5 h-3.5 text-slate-900" />}
+                  {option.id === value && <Check className="w-3.5 h-3.5 text-slate-900 shrink-0" />}
                 </div>
               ))
             )}
@@ -172,19 +212,19 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
   const [showAllProducts, setShowAllProducts] = useState(false); 
   const [autoAddProduct, setAutoAddProduct] = useState(false);
 
-  // 중요: 재고 복구를 위해 원래 아이템들을 저장해둠
   const [originalItems, setOriginalItems] = useState<InvoiceItem[]>([]);
   const [items, setItems] = useState<InvoiceItem[]>([]);
   
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [unitMap, setUnitMap] = useState<Record<string, string>>({});
 
-  // Stats
   const [customerStats, setCustomerStats] = useState<{ totalOverdue: number; oldestInvoiceDate: string | null; }>({ totalOverdue: 0, oldestInvoiceDate: null });
 
   // 1. 초기 데이터 및 인보이스 로드
   useEffect(() => {
     const initData = async () => {
-      // 마스터 데이터 로드 (고객 10,000개 제한 해제 적용)
+      setLoading(true);
+
       const [custRes, userRes, unitRes] = await Promise.all([
         supabase.from("customers").select("id, name, due_date, note, in_charge_delivery").limit(10000),
         supabase.auth.getUser(),
@@ -204,41 +244,6 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
           setUnitMap(uMap);
       }
 
-      // [수정 완료] 상품 2000개 전체 불러오기 (Pagination Loop)
-      let allFetchedProducts: any[] = [];
-      let fetchMore = true;
-      let startRow = 0;
-      const step = 1000;
-
-      while (fetchMore) {
-          const { data, error } = await supabase
-              .from("products")
-              .select("*, product_units (unit_name)")
-              .range(startRow, startRow + step - 1);
-          
-          if (error) {
-              console.error("Error fetching products:", error);
-              break;
-          }
-
-          if (data && data.length > 0) {
-              allFetchedProducts = [...allFetchedProducts, ...data];
-              startRow += step;
-              if (data.length < step) fetchMore = false;
-          } else {
-              fetchMore = false;
-          }
-      }
-
-      if (allFetchedProducts.length > 0) {
-          const mappedProducts = allFetchedProducts.map((p: any) => ({
-              ...p,
-              unit_name: p.product_units?.unit_name || "CTN"
-          }));
-          setAllProducts(mappedProducts);
-      }
-
-      // 인보이스 데이터 로드
       const { data: inv, error: invError } = await supabase
         .from("invoices")
         .select(`*, invoice_items(*)`)
@@ -251,7 +256,6 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
         return;
       }
 
-      // 폼 채우기
       setSelectedCustomerId(inv.customer_id);
       setInvoiceDate(inv.invoice_date);
       setDueDate(inv.due_date);
@@ -259,16 +263,32 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
       setIsPickup(inv.is_pickup || false);
       setCurrentDriverId(inv.driver_id);
 
-      // 아이템 매핑 (루프로 가져온 allFetchedProducts 사용)
+      const productIdsInInvoice = inv.invoice_items.map((item: any) => item.product_id);
+      
+      let initialProducts: any[] = [];
+      if (productIdsInInvoice.length > 0) {
+          const { data: productsData } = await supabase
+              .from("products")
+              .select("*, product_units (unit_name)")
+              .in("id", productIdsInInvoice); 
+          
+          if (productsData) initialProducts = productsData;
+      }
+
+      const mappedProducts = initialProducts.map((p: any) => ({
+          ...p,
+          unit_name: p.product_units?.unit_name || "CTN"
+      }));
+      setAllProducts(mappedProducts);
+
       const loadedItems = inv.invoice_items.map((item: any) => {
         let unit = item.unit;
-        // Legacy Data Fallback
         if (!unit) {
             const match = item.description.match(/\((CTN|PACK)\)$/);
             unit = match ? match[1] : "CTN";
         }
         
-        const prod = allFetchedProducts.find((p: any) => p.id === item.product_id);
+        const prod = initialProducts.find((p: any) => p.id === item.product_id);
         const defaultUnitName = prod?.product_units?.unit_name || "CTN";
 
         return {
@@ -290,7 +310,6 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
     initData();
   }, [invoiceId]);
 
-  // 2. 고객 변경 시
   useEffect(() => {
     if (!selectedCustomerId || loading) return;
 
@@ -300,7 +319,6 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
         setStaffNote(customer.note || "");
       }
 
-      // [수정] 10000개 리밋 추가
       const { data: apData } = await supabase.from("customer_products").select("product_id, custom_price_ctn, custom_price_pack").eq("customer_id", selectedCustomerId).limit(10000);
       if (apData) setAllowedProducts(apData.map((item: any) => ({ product_id: item.product_id, discount_ctn: item.custom_price_ctn || 0, discount_pack: item.custom_price_pack || 0 })));
 
@@ -326,28 +344,36 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
     loadCustomerData();
   }, [selectedCustomerId, customers, loading]);
 
-  // --- Calculations ---
+  const handleSearchProducts = async (term: string) => {
+      if (!term.trim()) return;
+
+      const { data } = await supabase
+          .from("products")
+          .select("*, product_units (unit_name)")
+          .ilike("product_name", `%${term}%`)
+          .limit(20); 
+
+      if (data && data.length > 0) {
+          const newProducts = data.map((p: any) => ({
+              ...p,
+              unit_name: p.product_units?.unit_name || "CTN"
+          }));
+
+          setAllProducts(prev => {
+              const existingIds = new Set(prev.map(p => p.id));
+              const filteredNew = newProducts.filter(p => !existingIds.has(p.id));
+              return [...prev, ...filteredNew];
+          });
+      }
+  };
+
   const productOptions = useMemo(() => {
-    const validProducts = allProducts.filter(p => {
-        // Active Product OK
-        if (p.is_active === true) return true;
-        
-        // Inactive여도 현재 items에 포함되어 있으면 OK (기존 데이터 유지)
-        if (items.some(i => i.productId === p.id)) return true;
-
-        return false; 
-    });
-
-    const targetProducts = showAllProducts 
-      ? validProducts 
-      : validProducts.filter(p => allowedProducts.some(ap => ap.product_id === p.id) || items.some(i => i.productId === p.id));
-    
-    return targetProducts.map(p => ({ 
+    return allProducts.map(p => ({ 
         id: p.id, 
         label: p.product_name, 
         subLabel: `$${p.sell_price_ctn} (CTN) / $${p.sell_price_pack} (PK)` 
     }));
-  }, [allProducts, allowedProducts, showAllProducts, items]);
+  }, [allProducts]);
 
   const customerOptions = useMemo(() => customers.map(c => ({ id: c.id, label: c.name })), [customers]);
 
@@ -411,14 +437,12 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
   const gstTotal = roundAmount(subTotal * 0.1);
   const grandTotal = roundAmount(subTotal + gstTotal);
   
-  // --- Stock Check Logic (Updated to account for carton opening) ---
   const checkStockAvailability = async (itemList: InvoiceItem[]) => {
       const insufficientItems: string[] = [];
 
       for (const item of itemList) {
           if (!item.productId) continue;
 
-          // 최신 재고 정보 가져오기 (total_pack_ctn 포함)
           const { data: product } = await supabase
               .from('products')
               .select('id, product_name, current_stock_level, current_stock_level_pack, total_pack_ctn')
@@ -430,7 +454,6 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
               let currentPack = product.current_stock_level_pack || 0;
               const packsPerCtn = product.total_pack_ctn || 1;
               
-              // 1. [가상 복구] 기존 인보이스의 수량을 먼저 더해줌
               const originalItem = originalItems.find(oi => 
                   oi.productId === item.productId && oi.unit === item.unit
               );
@@ -439,13 +462,11 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
                   else currentPack += originalItem.quantity;
               }
 
-              // 2. [가상 차감] - 부족 시 Auto Unpack 시뮬레이션
               if (item.unit === "CTN") {
                   if (currentCtn < item.quantity) {
                       insufficientItems.push(`${product.product_name} (${item.unit})`);
                   }
               } else {
-                  // PACK
                   const totalAvailablePacks = currentPack + (currentCtn * packsPerCtn);
                   if (totalAvailablePacks < item.quantity) {
                       insufficientItems.push(`${product.product_name} (${item.unit})`);
@@ -456,7 +477,6 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
       return insufficientItems;
   };
 
-  // --- Update Inventory Logic (Smart Deduction) ---
   const updateInventory = async (itemList: InvoiceItem[], isReturn: boolean) => {
     for (const item of itemList) {
         if (!item.productId) continue;
@@ -470,25 +490,20 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
         const qty = item.quantity; 
 
         if (isReturn) {
-            // [재고 복구] - 단순히 수량 복구
             if (item.unit === 'CTN') currentCtn += qty;
             else currentPack += qty;
         } else {
-            // [재고 차감] - 스마트 차감 (Auto Unpack)
             if (item.unit === 'CTN') { 
                 currentCtn -= qty; 
             } else { 
-                // Unit is PACK
                 if (currentPack >= qty) {
                     currentPack -= qty;
                 } else {
-                    // Pack 부족 -> Carton 확인
                     if (currentCtn > 0) {
-                        currentCtn -= 1; // Open 1 carton
-                        currentPack += packsPerCtn; // Add packs from carton
-                        currentPack -= qty; // Deduct needed packs
+                        currentCtn -= 1; 
+                        currentPack += packsPerCtn; 
+                        currentPack -= qty; 
                     } else {
-                        // Carton도 없으면 그냥 마이너스
                         currentPack -= qty;
                     }
                 }
@@ -505,7 +520,6 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
     setLoading(true);
     const validItems = items.filter(item => item.productId);
     
-    // Credit Memo가 아니면 체크
     if (grandTotal >= 0) {
         const insufficientItems = await checkStockAvailability(validItems);
         if (insufficientItems.length > 0) {
@@ -518,12 +532,10 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
     try {
       const selectedCustomer = customers.find(c => c.id === selectedCustomerId);
 
-      // 1. 기존 재고 복구 (Revert Original Items) - Return Mode
       if (originalItems.length > 0) {
         await updateInventory(originalItems, true); 
       }
 
-      // 2. 인보이스 업데이트
       const { error: invError } = await supabase.from("invoices").update({
         customer_id: selectedCustomerId,
         invoice_to: selectedCustomer?.name || "",
@@ -540,7 +552,6 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
 
       if (invError) throw invError;
 
-      // 3. 아이템 재작성
       await supabase.from("invoice_items").delete().eq("invoice_id", invoiceId);
 
       const itemsData = validItems.map(item => {
@@ -562,13 +573,11 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
         const { error: itemError } = await supabase.from("invoice_items").insert(itemsData);
         if (itemError) throw itemError;
 
-        // 4. 새 재고 차감 (Apply New Items) - Deduction Mode
         await updateInventory(validItems, false); 
       }
 
       await supabase.from("customers").update({ note: staffNote }).eq("id", selectedCustomerId);
 
-      // 5. Custom Price Auto Update
       if (autoAddProduct && validItems.length > 0) {
         const updatesMap = new Map<string, { ctn: number, pack: number }>();
         allowedProducts.forEach(ap => updatesMap.set(ap.product_id, { ctn: ap.discount_ctn, pack: ap.discount_pack }));
@@ -631,7 +640,6 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
             </div>
             <div className="flex items-center space-x-2"><Checkbox id="pickup" checked={isPickup} onCheckedChange={(c) => setIsPickup(!!c)} /><label htmlFor="pickup" className="text-sm font-bold text-slate-700">Customer Pick Up</label></div>
             
-            {/* Items Options */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-4 border-t border-slate-100">
                <label className="text-xs font-bold text-slate-500 uppercase">Items</label>
                <div className="flex items-center gap-6">
@@ -649,10 +657,12 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
             </div>
 
             <div className="border border-slate-200 rounded-lg"> 
-              <table className="w-full text-sm text-left">
+              {/* ✅ [Fixed] 테이블 레이아웃 고정 */}
+              <table className="w-full text-sm text-left table-fixed">
                 <thead className="bg-slate-50 border-b border-slate-200 text-slate-700 font-bold text-xs uppercase">
                   <tr>
                     <th className="px-4 py-3 w-[3%] text-center text-slate-400">#</th>
+                    {/* ✅ [Fixed] 32% 고정 */}
                     <th className="px-4 py-3 w-[32%]">Product</th>
                     <th className="px-4 py-3 w-[8%]">Unit</th>
                     <th className="px-4 py-3 w-[10%] text-right bg-slate-100/50">Base</th>
@@ -670,7 +680,18 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
                     return (
                         <tr key={idx} className="hover:bg-slate-50/50">
                           <td className="p-2 text-center text-xs text-slate-400 font-bold">{idx + 1}</td>
-                          <td className="p-2"><SearchableSelect options={productOptions} value={item.productId} onChange={(val) => handleProductChange(idx, val)} placeholder="Search..." className="w-full min-w-[250px]" onClick={() => handleProductClick(idx)} /></td>
+                          <td className="p-2">
+                            {/* ✅ [Fixed] w-full 사용, min-w 제거 */}
+                            <SearchableSelect 
+                                options={productOptions} 
+                                value={item.productId} 
+                                onChange={(val) => handleProductChange(idx, val)} 
+                                placeholder="Search product..." 
+                                className="w-full" 
+                                onClick={() => handleProductClick(idx)} 
+                                onSearch={handleSearchProducts}
+                            />
+                          </td>
                           <td className="p-2">
                               <select 
                                 className={`w-full p-2 border border-slate-200 rounded text-center font-medium outline-none text-xs ${!isCtnOrPack && item.productId ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : 'bg-slate-50'}`} 

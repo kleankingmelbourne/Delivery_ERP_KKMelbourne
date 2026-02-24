@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { 
   Plus, Trash2, Save, ArrowLeft, User, Calendar, CreditCard, 
   Calculator, FileText, RefreshCw, Lock, Search, ChevronDown, Check,
-  Wallet, Truck, Clock, DollarSign, AlertTriangle
+  AlertTriangle, Loader2
 } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -19,38 +19,67 @@ const roundAmount = (num: number) => {
   return Math.round((num + Number.EPSILON) * 100) / 100;
 };
 
-// --- [컴포넌트] 검색 가능한 Select (키보드 네비게이션 추가) ---
-interface Option { id: string; label: string; subLabel?: string; }
-interface SearchableSelectProps { options: Option[]; value: string; onChange: (value: string) => void; placeholder?: string; disabled?: boolean; className?: string; onClick?: () => void; }
+// --- [Utility] Debounce Hook ---
+function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedValue(value);
+    }, delay);
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [value, delay]);
+  return debouncedValue;
+}
 
-function SearchableSelect({ options, value, onChange, placeholder = "Select...", disabled = false, className, onClick }: SearchableSelectProps) {
+// --- [Components] 검색 가능한 Select (Input 기반 표시) ---
+interface Option { id: string; label: string; subLabel?: string; }
+interface SearchableSelectProps { 
+    options: Option[]; 
+    value: string; 
+    onChange: (value: string) => void; 
+    placeholder?: string; 
+    disabled?: boolean; 
+    className?: string; 
+    onClick?: () => void;
+    onSearch?: (term: string) => void; 
+}
+
+function SearchableSelect({ options, value, onChange, placeholder = "Select...", disabled = false, className, onClick, onSearch }: SearchableSelectProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
-  const [highlightedIndex, setHighlightedIndex] = useState(0); // [NEW] 현재 키보드로 가리키고 있는 위치
+  const [highlightedIndex, setHighlightedIndex] = useState(0); 
   
   const containerRef = useRef<HTMLDivElement>(null);
-  const optionsRef = useRef<(HTMLDivElement | null)[]>([]); // [NEW] 스크롤 자동 이동을 위한 Ref
+  const optionsRef = useRef<(HTMLDivElement | null)[]>([]); 
+
+  const debouncedSearchTerm = useDebounce(searchTerm, 300);
+
+  useEffect(() => {
+      if (onSearch && isOpen) {
+          onSearch(debouncedSearchTerm);
+      }
+  }, [debouncedSearchTerm, isOpen, onSearch]);
 
   const selectedOption = options.find(o => o.id === value);
   
   const filteredOptions = useMemo(() => {
+    if (onSearch) return options; 
     if (!searchTerm) return options;
     return options.filter(option => option.label.toLowerCase().includes(searchTerm.toLowerCase()));
-  }, [options, searchTerm]);
+  }, [options, searchTerm, onSearch]);
 
-  // 창이 열리거나 검색어가 바뀔 때마다 하이라이트를 맨 위(0번)로 리셋
   useEffect(() => {
     setHighlightedIndex(0);
-  }, [searchTerm, isOpen]);
+  }, [filteredOptions]);
 
-  // 키보드로 내릴 때 화면을 자동으로 스크롤해서 따라가게 함
   useEffect(() => {
     if (isOpen && optionsRef.current[highlightedIndex]) {
       optionsRef.current[highlightedIndex]?.scrollIntoView({ block: "nearest" });
     }
   }, [highlightedIndex, isOpen]);
 
-  // 바깥 클릭 시 닫기
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
@@ -62,25 +91,19 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select...",
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // [NEW] 키보드 조작 로직
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown") {
-      e.preventDefault(); // 인풋창 안에서 커서가 움직이는 것 방지
+      e.preventDefault(); 
       setHighlightedIndex(prev => (prev < filteredOptions.length - 1 ? prev + 1 : prev));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setHighlightedIndex(prev => (prev > 0 ? prev - 1 : 0));
     } else if (e.key === "Enter" || e.key === "Tab") {
-      // 엔터나 탭을 누르면 현재 하이라이트된 항목을 확정(선택)함
       if (filteredOptions[highlightedIndex]) {
         onChange(filteredOptions[highlightedIndex].id);
         setIsOpen(false);
         setSearchTerm("");
-        
-        // 주의: Enter는 기본 이벤트를 막고, Tab은 막지 않아야 자연스럽게 다음 칸으로 포커스가 넘어갑니다.
-        if (e.key === "Enter") {
-          e.preventDefault();
-        }
+        if (e.key === "Enter") e.preventDefault();
       }
     } else if (e.key === "Escape") {
       setIsOpen(false);
@@ -89,9 +112,20 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select...",
 
   return (
     <div className={`relative ${className}`} ref={containerRef}>
-      <div onClick={() => { if (!disabled) { setIsOpen(!isOpen); if (onClick) onClick(); } }} className={`flex items-center justify-between w-full px-3 py-2 text-sm border rounded-md cursor-pointer bg-white transition-all ${disabled ? "bg-slate-100 text-slate-400 cursor-not-allowed" : "hover:border-slate-400 focus:ring-2 focus:ring-slate-900"} ${isOpen ? "ring-2 ring-slate-900 border-slate-900" : "border-slate-200"}`}>
-        <span className={`truncate ${!selectedOption && !value ? "text-slate-400" : "text-slate-900 font-medium"}`}>{selectedOption ? selectedOption.label : (value ? "Loading..." : placeholder)}</span>
-        <ChevronDown className="w-4 h-4 text-slate-400 opacity-50 shrink-0" />
+      <div 
+        onClick={() => { if (!disabled) { setIsOpen(!isOpen); if (onClick) onClick(); } }} 
+        className={`flex items-center justify-between w-full px-3 py-2 text-sm border rounded-md cursor-pointer bg-white transition-all ${disabled ? "bg-slate-100 text-slate-400 cursor-not-allowed" : "hover:border-slate-400 focus:ring-2 focus:ring-slate-900"} ${isOpen ? "ring-2 ring-slate-900 border-slate-900" : "border-slate-200"}`}
+      >
+        {/* ✅ [수정] span 대신 input readOnly 사용 -> 짤린 내용 툴팁 & 깔끔한 표시 */}
+        <input 
+            type="text" 
+            readOnly
+            className={`w-full bg-transparent border-none p-0 text-sm truncate cursor-pointer focus:outline-none ${!selectedOption && !value ? "text-slate-400" : "text-slate-900 font-medium"}`}
+            value={selectedOption ? selectedOption.label : ""}
+            placeholder={value ? "Loading..." : placeholder}
+            title={selectedOption ? selectedOption.label : ""} // 마우스 올리면 전체 내용 보임
+        />
+        <ChevronDown className="w-4 h-4 text-slate-400 opacity-50 shrink-0 ml-2" />
       </div>
       
       {isOpen && !disabled && (
@@ -106,7 +140,7 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select...",
                 placeholder="Search..." 
                 value={searchTerm} 
                 onChange={(e) => setSearchTerm(e.target.value)} 
-                onKeyDown={handleKeyDown} // <-- 키보드 이벤트 연결
+                onKeyDown={handleKeyDown} 
               />
             </div>
           </div>
@@ -117,16 +151,16 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select...",
               filteredOptions.map((option, index) => (
                 <div 
                   key={option.id} 
-                  ref={(el) => { optionsRef.current[index] = el; }} // <-- 화면 자동 스크롤을 위한 Ref 연결
+                  ref={(el) => { optionsRef.current[index] = el; }} 
                   onClick={() => { onChange(option.id); setIsOpen(false); setSearchTerm(""); }} 
-                  onMouseEnter={() => setHighlightedIndex(index)} // 마우스로 올렸을 때도 하이라이트 동기화
+                  onMouseEnter={() => setHighlightedIndex(index)}
                   className={`flex items-center justify-between px-3 py-2 text-sm rounded-md cursor-pointer transition-colors ${index === highlightedIndex ? "bg-slate-100 font-bold text-slate-900" : "hover:bg-slate-50 text-slate-700"}`}
                 >
-                  <div className="flex flex-col">
-                    <span>{option.label}</span>
-                    {option.subLabel && <span className="text-[10px] text-slate-400 font-normal">{option.subLabel}</span>}
+                  <div className="flex flex-col truncate">
+                    <span className="truncate">{option.label}</span>
+                    {option.subLabel && <span className="text-[10px] text-slate-400 font-normal truncate">{option.subLabel}</span>}
                   </div>
-                  {option.id === value && <Check className="w-3.5 h-3.5 text-slate-900" />}
+                  {option.id === value && <Check className="w-3.5 h-3.5 text-slate-900 shrink-0" />}
                 </div>
               ))
             )}
@@ -172,6 +206,7 @@ export default function NewInvoicePage() {
   const [isPickup, setIsPickup] = useState(false);
   const [customerStats, setCustomerStats] = useState<{ totalOverdue: number; oldestInvoiceDate: string | null; }>({ totalOverdue: 0, oldestInvoiceDate: null });
   
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [unitMap, setUnitMap] = useState<Record<string, string>>({});
 
   const getTodayLocal = () => {
@@ -196,49 +231,14 @@ export default function NewInvoicePage() {
   // 1. Initial Load
   useEffect(() => {
     const initData = async () => {
-      // 고객 불러오기 (한도 10000개 설정)
       const { data: custData } = await supabase.from("customers").select("id, name, due_date, note, in_charge_delivery").limit(10000);
       if (custData) setCustomers(custData.map((c: any) => ({ id: c.id, name: c.name, due_date_term: c.due_date, note: c.note, in_charge_delivery: c.in_charge_delivery })));
       
-      // [수정 완료] 2천 개 넘는 상품을 모두 긁어오기 위한 Pagination Loop 추가
-      let allFetchedProducts: any[] = [];
-      let fetchMore = true;
-      let startRow = 0;
-      const step = 1000;
+      const uMap: Record<string, string> = {};
+      const { data: units } = await supabase.from("product_units").select("id, unit_name");
+      if(units) units.forEach((u: any) => uMap[u.id] = u.unit_name);
+      setUnitMap(uMap);
 
-      while (fetchMore) {
-          const { data, error } = await supabase
-              .from("products")
-              .select("*, product_units (unit_name)")
-              .range(startRow, startRow + step - 1);
-          
-          if (error) {
-              console.error("Error fetching products:", error);
-              break;
-          }
-
-          if (data && data.length > 0) {
-              allFetchedProducts = [...allFetchedProducts, ...data];
-              startRow += step;
-              if (data.length < step) fetchMore = false;
-          } else {
-              fetchMore = false;
-          }
-      }
-
-      if (allFetchedProducts.length > 0) {
-          const uMap: Record<string, string> = {};
-          const { data: units } = await supabase.from("product_units").select("id, unit_name");
-          if(units) units.forEach((u: any) => uMap[u.id] = u.unit_name);
-          setUnitMap(uMap);
-
-          const mappedProducts = allFetchedProducts.map((p: any) => ({
-              ...p,
-              unit_name: p.product_units?.unit_name || "CTN" 
-          }));
-          setAllProducts(mappedProducts);
-      }
-      
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
         const { data: profile } = await supabase.from('profiles').select('display_name').eq('id', user.id).single();
@@ -251,8 +251,15 @@ export default function NewInvoicePage() {
   // 2. Customer Select
   useEffect(() => {
     if (!selectedCustomerId) {
-      setAllowedProducts([]); setStaffNote(""); setAvailableCredit(0); setCurrentDriverId(null); setCustomerStats({ totalOverdue: 0, oldestInvoiceDate: null }); return;
+      setAllowedProducts([]); 
+      setStaffNote(""); 
+      setAvailableCredit(0); 
+      setCurrentDriverId(null); 
+      setCustomerStats({ totalOverdue: 0, oldestInvoiceDate: null }); 
+      setAllProducts([]); 
+      return;
     }
+
     const loadCustomerData = async () => {
       const customer = customers.find(c => c.id === selectedCustomerId);
       if (customer) {
@@ -261,9 +268,31 @@ export default function NewInvoicePage() {
         setCurrentDriverId(customer.in_charge_delivery); 
       }
       
-      // [수정] 해당 고객의 할당 상품 리스트 (혹시 1000개가 넘을 것을 대비해 한도 해제)
-      const { data } = await supabase.from("customer_products").select("product_id, custom_price_ctn, custom_price_pack").eq("customer_id", selectedCustomerId).limit(10000);
-      if (data) setAllowedProducts(data.map((item: any) => ({ product_id: item.product_id, discount_ctn: item.custom_price_ctn || 0, discount_pack: item.custom_price_pack || 0 })));
+      const { data: apData } = await supabase.from("customer_products").select("product_id, custom_price_ctn, custom_price_pack").eq("customer_id", selectedCustomerId).limit(10000);
+      
+      let allowedProductIds: string[] = [];
+      if (apData) {
+          const mappedAllowed = apData.map((item: any) => ({ product_id: item.product_id, discount_ctn: item.custom_price_ctn || 0, discount_pack: item.custom_price_pack || 0 }));
+          setAllowedProducts(mappedAllowed);
+          allowedProductIds = mappedAllowed.map(ap => ap.product_id);
+      }
+
+      if (allowedProductIds.length > 0) {
+          const { data: productsData } = await supabase
+              .from("products")
+              .select("*, product_units (unit_name)")
+              .in("id", allowedProductIds);
+          
+          if (productsData) {
+              const mappedProducts = productsData.map((p: any) => ({
+                  ...p,
+                  unit_name: p.product_units?.unit_name || "CTN"
+              }));
+              setAllProducts(mappedProducts);
+          }
+      } else {
+          setAllProducts([]); 
+      }
 
       const { data: payments } = await supabase.from('payments').select('unallocated_amount').eq('customer_id', selectedCustomerId).gt('unallocated_amount', 0);
       if (payments && payments.length > 0) {
@@ -287,7 +316,29 @@ export default function NewInvoicePage() {
     loadCustomerData();
   }, [selectedCustomerId, customers]);
 
-  // EOM Logic
+  const handleSearchProducts = async (term: string) => {
+      if (!term.trim()) return;
+
+      const { data } = await supabase
+          .from("products")
+          .select("*, product_units (unit_name)")
+          .ilike("product_name", `%${term}%`)
+          .limit(20); 
+
+      if (data && data.length > 0) {
+          const newProducts = data.map((p: any) => ({
+              ...p,
+              unit_name: p.product_units?.unit_name || "CTN"
+          }));
+
+          setAllProducts(prev => {
+              const existingIds = new Set(prev.map(p => p.id));
+              const filteredNew = newProducts.filter(p => !existingIds.has(p.id));
+              return [...prev, ...filteredNew];
+          });
+      }
+  };
+
   const calculateDueDate = (startDateStr: string, term: string | null) => {
     if (!term) { setDueDate(startDateStr); return; }
     const termClean = term.replace(/\./g, "").toUpperCase().replace(/\s/g, "");
@@ -310,21 +361,13 @@ export default function NewInvoicePage() {
     if (customer) calculateDueDate(newDate, customer.due_date_term);
   };
 
-  // Options & Logic
   const productOptions = useMemo(() => {
-    // is_active가 true인 상품만 필터링 (boolean 체크)
-    const activeProducts = allProducts.filter(p => p.is_active === true);
-
-    const source = showAllProducts 
-        ? activeProducts 
-        : activeProducts.filter(p => allowedProducts.some(ap => ap.product_id === p.id));
-
-    return source.map(p => ({ 
+    return allProducts.map(p => ({ 
         id: p.id, 
         label: p.product_name, 
         subLabel: `$${p.sell_price_ctn} (CTN) / $${p.sell_price_pack} (PK)` 
     }));
-  }, [allProducts, allowedProducts, showAllProducts]);
+  }, [allProducts]);
 
   const customerOptions = useMemo(() => customers.map(c => ({ id: c.id, label: c.name })), [customers]);
 
@@ -387,14 +430,10 @@ export default function NewInvoicePage() {
   const gstTotal = roundAmount(subTotal * 0.1);
   const grandTotal = roundAmount(subTotal + gstTotal);
   
-  // --- Stock Check Logic ---
   const checkStockAvailability = async (itemList: InvoiceItem[]) => {
       const insufficientItems: string[] = [];
-      
       for (const item of itemList) {
           if (!item.productId) continue;
-
-          // 최신 재고 정보 가져오기
           const { data: product } = await supabase
               .from('products')
               .select('id, product_name, current_stock_level, current_stock_level_pack, total_pack_ctn')
@@ -406,13 +445,11 @@ export default function NewInvoicePage() {
               const currentPack = product.current_stock_level_pack || 0;
               const packsPerCtn = product.total_pack_ctn || 1;
 
-              // [재고 체크] Pack인 경우, Ctn을 까서 충당 가능한지까지 확인
               if (item.unit === "CTN") {
                   if (currentCtn < item.quantity) {
                       insufficientItems.push(`${product.product_name} (${item.unit})`);
                   }
               } else {
-                  // PACK
                   const totalAvailablePacks = currentPack + (currentCtn * packsPerCtn);
                   if (totalAvailablePacks < item.quantity) {
                       insufficientItems.push(`${product.product_name} (${item.unit})`);
@@ -423,7 +460,6 @@ export default function NewInvoicePage() {
       return insufficientItems;
   };
 
-  // --- Update Inventory Logic ---
   const updateInventory = async (itemList: InvoiceItem[], isReturn: boolean) => {
     for (const item of itemList) {
         if (!item.productId) continue;
@@ -436,14 +472,11 @@ export default function NewInvoicePage() {
         const qty = item.quantity; 
 
         if (isReturn) {
-            // [반품/삭제] 단순히 더해줌
             if (item.unit === 'CTN') { currentCtn += qty; } else { currentPack += qty; }
         } else {
-            // [출고/생성] 차감 로직
             if (item.unit === 'CTN') { 
                 currentCtn -= qty; 
             } else { 
-                // PACK 차감 로직 (부족하면 CTN 오픈)
                 if (currentPack >= qty) {
                     currentPack -= qty;
                 } else {
@@ -461,8 +494,6 @@ export default function NewInvoicePage() {
     }
   };
 
-
-  // Credit Memo Logic
   const handleCreditMemoCreation = async (redirect: boolean) => {
     try {
         const { data: lastCr } = await supabase.from('invoices').select('id').ilike('id', 'CR-%').order('id', { ascending: false }).limit(1).single();
@@ -585,35 +616,7 @@ export default function NewInvoicePage() {
     setItems([{ productId: "", unit: "CTN", quantity: 1, basePrice: 0, discountRate: 0, unitPrice: 0 }]);
     setShowAllProducts(false); setAutoAddProduct(false); setAvailableCredit(0); setCurrentDriverId(null); 
     setIsPickup(false); setCustomerStats({ totalOverdue: 0, oldestInvoiceDate: null });
-    
-    // [수정 완료] 저장 후 초기화 시에도 2천개 모두 불러오기
-    const refreshProducts = async () => {
-        let allFetchedProducts: any[] = [];
-        let fetchMore = true;
-        let startRow = 0;
-        const step = 1000;
-
-        while (fetchMore) {
-            const { data, error } = await supabase
-                .from("products")
-                .select("*, product_units(unit_name)")
-                .range(startRow, startRow + step - 1);
-            
-            if (data && data.length > 0) {
-                allFetchedProducts = [...allFetchedProducts, ...data];
-                startRow += step;
-                if (data.length < step) fetchMore = false;
-            } else {
-                fetchMore = false;
-            }
-        }
-        
-        if (allFetchedProducts.length > 0) {
-            const mapped = allFetchedProducts.map((p:any) => ({...p, unit_name: p.product_units?.unit_name || "CTN"}));
-            setAllProducts(mapped);
-        }
-    };
-    refreshProducts();
+    setAllProducts([]); 
   };
 
   return (
@@ -645,10 +648,12 @@ export default function NewInvoicePage() {
                 </div>
             </div>
             <div className="border border-slate-200 rounded-lg"> 
-              <table className="w-full text-sm text-left">
+              {/* ✅ [Fixed] 테이블 폭 고정 */}
+              <table className="w-full text-sm text-left table-fixed">
                 <thead className="bg-slate-50 border-b border-slate-200 text-slate-700 font-bold text-xs uppercase">
                   <tr>
                     <th className="px-4 py-3 w-[3%] text-center text-slate-400">#</th>
+                    {/* ✅ 32% 제한 */}
                     <th className="px-4 py-3 w-[32%]">Product</th>
                     <th className="px-4 py-3 w-[8%]">Unit</th>
                     <th className="px-4 py-3 w-[10%] text-right bg-slate-100/50">Base</th>
@@ -666,7 +671,18 @@ export default function NewInvoicePage() {
                     return (
                         <tr key={idx} className="hover:bg-slate-50/50">
                           <td className="p-2 text-center text-xs text-slate-400 font-bold">{idx + 1}</td>
-                          <td className="p-2"><SearchableSelect options={productOptions} value={item.productId} onChange={(val) => handleProductChange(idx, val)} placeholder="Search product..." className="w-full min-w-[250px]" onClick={() => handleProductClick(idx)} /></td>
+                          <td className="p-2">
+                            {/* ✅ [Fixed] w-full 사용 및 검색 기능 연결 */}
+                            <SearchableSelect 
+                                options={productOptions} 
+                                value={item.productId} 
+                                onChange={(val) => handleProductChange(idx, val)} 
+                                placeholder="Search product..." 
+                                className="w-full" 
+                                onClick={() => handleProductClick(idx)} 
+                                onSearch={handleSearchProducts}
+                            />
+                          </td>
                           <td className="p-2">
                               <select 
                                 className={`w-full p-2 border border-slate-200 rounded text-center font-medium outline-none text-xs ${!isCtnOrPack && item.productId ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : 'bg-slate-50'}`} 
@@ -712,7 +728,7 @@ export default function NewInvoicePage() {
             <div className="space-y-3 pt-2 border-t border-slate-100">
               <div className="flex justify-between text-sm text-slate-600"><span>Subtotal</span><span>${subTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span></div>
               <div className="flex justify-between text-sm text-slate-600"><span>GST (10%)</span><span>${gstTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span></div>
-              <div className="flex justify-between font-bold text-slate-900 pt-3 border-t border-dashed border-slate-200"><span>Total Amount</span><span className={grandTotal < 0 ? "text-red-600" : ""}>${grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span></div>
+              <div className="flex justify-between text-xl font-black text-slate-900 pt-3 border-t border-dashed border-slate-200"><span>Total Amount</span><span className={grandTotal < 0 ? "text-red-600" : ""}>${grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span></div>
               
               <div className="flex justify-between font-bold pt-3 border-t border-slate-100">
                 <span className="text-slate-500">Customer Credit</span>

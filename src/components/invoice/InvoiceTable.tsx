@@ -3,12 +3,12 @@
 import React, { useEffect, useState, useRef, useMemo } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { 
-  Plus, Search, MoreHorizontal, FileText, 
-  CreditCard, Printer, Trash2, Eye, Edit,
+  Plus, Search, MoreHorizontal, Printer, Trash2, Edit,
   ChevronLeft, ChevronRight, X, CheckSquare, Box,
-  Download, FileDown, ChevronDown, ChevronUp, Mail,
+  Download, ChevronDown, ChevronUp, Mail,
   AlertCircle, Truck, CheckCircle2, Circle, Package, DollarSign,
-  Calculator, Receipt, FileStack, Image as ImageIcon, Layers 
+  Calculator, Receipt, FileStack, Image as ImageIcon, Layers, 
+  CreditCard 
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -18,7 +18,7 @@ import {
   downloadBulkPdf, 
   printBulkPdf, 
   downloadPickingSummary, 
-  downloadPackingListPdf, // [추가] Packing List 다운로드 함수 임포트
+  downloadPackingListPdf, 
 } from "@/utils/downloadPdf"; 
 
 import EmailSendDialog from "@/components/email/EmailSendDialog";
@@ -54,6 +54,10 @@ interface Invoice {
   is_completed?: boolean;
   is_pickup?: boolean; 
   proof_url?: string; 
+  
+  // [NEW] Join된 드라이버 정보
+  driver?: { display_name: string } | null; 
+  customers?: { email: string } | null;
 
   [key: string]: any;
 }
@@ -75,15 +79,6 @@ interface InvoiceTableProps {
   title: string;
 }
 
-const INITIAL_WIDTHS = {
-  checkbox: 50, id: 100, invoice_to: 250, invoice_date: 120,
-  due_date: 120, 
-  total_amount: 140, 
-  driver_id: 150, 
-  is_completed: 110, 
-  status: 100, actions: 100,
-};
-
 type TabType = 'ALL' | 'INVOICE' | 'CREDIT';
 
 export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps) {
@@ -93,7 +88,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [loading, setLoading] = useState(true);
   
-  const [driversMap, setDriversMap] = useState<Record<string, string>>({});
+  // [삭제] driversMap은 이제 필요 없음 (Join으로 해결)
 
   // ------------------------------------------------------------------
   // 날짜 및 Today 로직
@@ -113,7 +108,6 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     docNumber: string;
   } | null>(null);
 
-  // [NEW] 배송 증명 사진 모달 상태
   const [viewProofUrl, setViewProofUrl] = useState<string | null>(null);
 
   useEffect(() => {
@@ -131,23 +125,22 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
 
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState("10"); 
+  const [totalCount, setTotalCount] = useState(0); // [NEW] 전체 데이터 개수
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const [colWidths, setColWidths] = useState(INITIAL_WIDTHS);
-  const resizingRef = useRef<{ key: string; startX: number; startWidth: number } | null>(null);
 
   const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(new Set());
   const [detailsCache, setDetailsCache] = useState<Record<string, InvoiceItem[]>>({});
   const [loadingRows, setLoadingRows] = useState<Set<string>>(new Set());
 
-  // 데이터 로딩 트리거
+  // 데이터 로딩 트리거 (페이지, 필터 변경 시)
   useEffect(() => { 
     if (startDate && endDate) { 
         fetchInvoices(); 
     }
-  }, [filterStatus, startDate, endDate]); 
+  }, [filterStatus, startDate, endDate, currentPage, pageSize, activeTab, searchTerm]); 
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -159,41 +152,23 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  // 검색어나 탭이 바뀌면 1페이지로 리셋
   useEffect(() => {
     setCurrentPage(1);
     setSelectedIds(new Set()); 
     setExpandedRowIds(new Set()); 
-  }, [searchTerm, startDate, endDate, pageSize, activeTab]); 
+  }, [searchTerm, startDate, endDate, activeTab]); // pageSize 제외 (페이지 크기 변경 시 현재 페이지 유지 혹은 리셋 선택 가능)
 
-  // 리사이징 로직
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!resizingRef.current) return;
-      const { key, startX, startWidth } = resizingRef.current;
-      const diff = e.clientX - startX;
-      requestAnimationFrame(() => {
-        // @ts-ignore
-        setColWidths((prev) => ({ ...prev, [key]: Math.max(50, startWidth + diff) }));
-      });
-    };
-    const handleMouseUp = () => {
-      resizingRef.current = null;
-      document.body.style.cursor = "default";
-    };
-    document.addEventListener("mousemove", handleMouseMove);
-    document.addEventListener("mouseup", handleMouseUp);
-    return () => {
-      document.removeEventListener("mousemove", handleMouseMove);
-      document.removeEventListener("mouseup", handleMouseUp);
-    };
-  }, []);
-
-  // 데이터 Fetching
+  // ✅ [핵심] Server-Side Pagination Fetching
   const fetchInvoices = async () => {
     setLoading(true);
     
-    let query = supabase.from("invoices").select("*, customers(email)").order("id", { ascending: false }).limit(10000);
+    // 1. 기본 쿼리 구성 (드라이버 정보까지 한 번에 Join)
+    let query = supabase
+        .from("invoices")
+        .select("*, customers(email), driver:driver_id(display_name)", { count: 'exact' });
 
+    // 2. 필터링
     if (filterStatus === "PAID") {
       query = query.eq("status", "Paid");
     } else if (filterStatus === "UNPAID") {
@@ -203,26 +178,35 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     if (startDate) query = query.gte("invoice_date", startDate);
     if (endDate) query = query.lte("invoice_date", `${endDate}T23:59:59`);
 
-    const { data, error } = await query;
-    if (!error && data) {
-      setInvoices(data);
+    // 탭 필터 (DB 레벨에서 처리)
+    if (activeTab === 'INVOICE') {
+        // Invoice만 (CR로 시작하지 않음)
+        query = query.not('id', 'ilike', 'CR-%').neq('status', 'Credit');
+    } else if (activeTab === 'CREDIT') {
+        // Credit만
+        query = query.or('status.eq.Credit,id.ilike.CR-%');
+    }
 
-      const driverIds = Array.from(new Set(data.map((inv: Invoice) => inv.driver_id).filter(Boolean))) as string[];
-      
-      if (driverIds.length > 0) {
-        const { data: profiles } = await supabase
-          .from("profiles")
-          .select("id, display_name")
-          .in("id", driverIds);
-        
-        if (profiles) {
-          const map: Record<string, string> = {};
-          profiles.forEach(p => {
-            map[p.id] = p.display_name || "Unknown";
-          });
-          setDriversMap(map);
-        }
-      }
+    // 검색어 필터 (DB 레벨에서 처리)
+    if (searchTerm) {
+        query = query.or(`invoice_to.ilike.%${searchTerm}%,id.ilike.%${searchTerm}%`);
+    }
+
+    // 3. 정렬 및 페이지네이션 (범위 지정)
+    const limit = pageSize === "all" ? 10000 : parseInt(pageSize);
+    const from = (currentPage - 1) * limit;
+    const to = from + limit - 1;
+
+    query = query.order("id", { ascending: false }).range(from, to);
+
+    const { data, error, count } = await query;
+
+    if (!error && data) {
+      // Driver 정보 매핑 필요 없음 (이미 data 안에 driver 객체로 들어옴)
+      setInvoices(data);
+      if (count !== null) setTotalCount(count);
+    } else {
+        console.error(error);
     }
     setLoading(false);
   };
@@ -245,7 +229,6 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     router.push(`/payment/new?customerId=${customerId}`);
   };
 
-  // [추가] Packing List 다운로드 핸들러
   const handlePackingList = async (id: string) => {
     setOpenMenuId(null);
     await downloadPackingListPdf(id);
@@ -268,49 +251,24 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     }
   };
 
-  const filteredInvoices = useMemo(() => {
-    return invoices.filter(inv => {
-      const matchesSearch = inv.invoice_to?.toLowerCase().includes(searchTerm.toLowerCase()) || inv.id.toLowerCase().includes(searchTerm.toLowerCase());
-      
-      const isCredit = inv.id.startsWith("CR-") || inv.status === "Credit";
-      let matchesTab = true;
+  // filteredInvoices / paginatedInvoices 로직 제거 (DB에서 이미 페이징된 데이터를 받으므로 invoices가 곧 현재 페이지 데이터임)
 
-      if (activeTab === 'INVOICE') {
-        matchesTab = !isCredit; 
-      } else if (activeTab === 'CREDIT') {
-        matchesTab = isCredit; 
-      }
-
-      return matchesSearch && matchesTab;
-    });
-  }, [invoices, searchTerm, activeTab]);
-
-  const paginatedInvoices = useMemo(() => {
-    if (pageSize === "all") return filteredInvoices;
-    const limit = parseInt(pageSize);
-    const startIndex = (currentPage - 1) * limit;
-    return filteredInvoices.slice(startIndex, startIndex + limit);
-  }, [filteredInvoices, currentPage, pageSize]);
-
-  const totalPages = pageSize === "all" ? 1 : Math.ceil(filteredInvoices.length / parseInt(pageSize));
+  const totalPages = pageSize === "all" ? 1 : Math.ceil(totalCount / parseInt(pageSize));
 
   const pageTotal = useMemo(() => {
-    return paginatedInvoices.reduce((sum, inv) => sum + (inv.total_amount || 0), 0);
-  }, [paginatedInvoices]);
-
-  const tabCounts = useMemo(() => {
-    const creditCount = invoices.filter(inv => inv.id.startsWith("CR-") || inv.status === "Credit").length;
-    return {
-      all: invoices.length,
-      credit: creditCount,
-      invoice: invoices.length - creditCount
-    };
+    return invoices.reduce((sum, inv) => sum + (inv.total_amount || 0), 0);
   }, [invoices]);
 
+  // tabCounts는 DB 카운트 쿼리를 별도로 날려야 정확하지만, 
+  // 성능을 위해 현재 화면 로딩된 것 기준이 아니라, 별도 useEffect로 가볍게 카운트만 가져오는 게 좋습니다.
+  // 여기서는 편의상 전체 카운트를 표시하거나, 생략할 수 있습니다. 
+  // (현재 구조 유지: 성능 최적화를 위해 탭 카운트는 일단 전체 카운트인 totalCount로 대체하거나 별도 로직 필요)
+  // 일단 UX 유지를 위해 간단한 카운트만 표시 (완벽한 숫자는 아님)
+  
   const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newSelected = new Set(selectedIds);
-    if (e.target.checked) { paginatedInvoices.forEach(inv => newSelected.add(inv.id)); } 
-    else { paginatedInvoices.forEach(inv => newSelected.delete(inv.id)); }
+    if (e.target.checked) { invoices.forEach(inv => newSelected.add(inv.id)); } 
+    else { invoices.forEach(inv => newSelected.delete(inv.id)); }
     setSelectedIds(newSelected);
   };
   const handleSelectOne = (id: string) => {
@@ -318,46 +276,34 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     if (newSelected.has(id)) newSelected.delete(id); else newSelected.add(id);
     setSelectedIds(newSelected);
   };
-  const isAllSelected = paginatedInvoices.length > 0 && paginatedInvoices.every(inv => selectedIds.has(inv.id));
+  const isAllSelected = invoices.length > 0 && invoices.every(inv => selectedIds.has(inv.id));
 
-  // --- [NEW] Show/Hide Details Handler ---
+  // --- Show/Hide Details Handler ---
   const handleDetailView = async (type: 'show' | 'hide') => {
       if (type === 'hide') {
           setExpandedRowIds(new Set());
       } else {
-          // Show All Logic
-          const allIds = paginatedInvoices.map(inv => inv.id);
+          const allIds = invoices.map(inv => inv.id);
           const newExpanded = new Set(allIds);
-          
-          // 1. 이미 캐시된 항목 확인
           const missingIds = allIds.filter(id => !detailsCache[id]);
           
           if (missingIds.length > 0) {
-              setLoadingRows(new Set(missingIds)); // 로딩 표시
-              
-              // 2. 한 번에 데이터 가져오기 (Bulk Fetch)
+              setLoadingRows(new Set(missingIds)); 
               const { data: items, error } = await supabase
                   .from("invoice_items")
                   .select("id, invoice_id, description, quantity, unit_price, amount, unit, base_price, discount")
                   .in("invoice_id", missingIds);
 
               if (!error && items) {
-                  // 3. 데이터를 invoice_id 별로 그룹화하여 캐시에 저장
                   const newCache = { ...detailsCache };
                   items.forEach((item: any) => {
-                      if (!newCache[item.invoice_id]) {
-                          newCache[item.invoice_id] = [];
-                      }
+                      if (!newCache[item.invoice_id]) newCache[item.invoice_id] = [];
                       newCache[item.invoice_id].push(item);
                   });
-                  // 아이템이 없는 인보이스도 빈 배열로 처리 (로딩 해제 위해)
-                  missingIds.forEach(id => {
-                      if (!newCache[id]) newCache[id] = [];
-                  });
-                  
+                  missingIds.forEach(id => { if (!newCache[id]) newCache[id] = []; });
                   setDetailsCache(newCache);
               }
-              setLoadingRows(new Set()); // 로딩 해제
+              setLoadingRows(new Set()); 
           }
           setExpandedRowIds(newExpanded);
       }
@@ -397,92 +343,44 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     setLoading(false); 
   };
   
-  // 단일 삭제: 재고 원복 + Credit Revert 로직
+  // 단일 삭제
   const handleDelete = async (id: string) => { 
     if(!confirm("Are you sure you want to delete this? This will restore stock.")) return; 
     setLoading(true); 
     try { 
-      // 1. Credit Note 관련 삭제 및 연결된 인보이스 원상복귀
       if (id.startsWith("CR-")) {
-          // 1-1. 이 Credit이 어디에 쓰였는지 조회
-          const { data: allocations } = await supabase
-              .from("payment_allocations")
-              .select("invoice_id, amount")
-              .eq("payment_id", id); // Credit Note의 ID가 payment_id로 저장됨
-
+          const { data: allocations } = await supabase.from("payment_allocations").select("invoice_id, amount").eq("payment_id", id);
           if (allocations && allocations.length > 0) {
               for (const alloc of allocations) {
-                  // 1-2. 대상 인보이스 정보 조회
-                  const { data: targetInv } = await supabase
-                      .from("invoices")
-                      .select("id, total_amount, paid_amount")
-                      .eq("id", alloc.invoice_id)
-                      .single();
-
+                  const { data: targetInv } = await supabase.from("invoices").select("id, total_amount, paid_amount").eq("id", alloc.invoice_id).single();
                   if (targetInv) {
-                      // 1-3. paid_amount 차감 (음수 방지)
                       const newPaid = Math.max(0, (targetInv.paid_amount || 0) - alloc.amount);
-                      
-                      // 1-4. 상태 재계산
                       let newStatus = "Unpaid";
-                      if (newPaid >= targetInv.total_amount && targetInv.total_amount > 0) {
-                          newStatus = "Paid";
-                      } else if (newPaid > 0) {
-                          newStatus = "Partial";
-                      }
-
-                      // 1-5. 대상 인보이스 업데이트
-                      await supabase
-                          .from("invoices")
-                          .update({ paid_amount: newPaid, status: newStatus })
-                          .eq("id", targetInv.id);
+                      if (newPaid >= targetInv.total_amount && targetInv.total_amount > 0) newStatus = "Paid";
+                      else if (newPaid > 0) newStatus = "Partial";
+                      await supabase.from("invoices").update({ paid_amount: newPaid, status: newStatus }).eq("id", targetInv.id);
                   }
               }
           }
-
-          // 1-6. 할당 내역 및 Payment(Credit) 기록 삭제
           await supabase.from("payment_allocations").delete().eq("payment_id", id);
           await supabase.from("payments").delete().eq("id", id);
       }
 
-      // 2. 재고 원복 로직 (기존 유지)
-      const { data: itemsToDelete } = await supabase
-          .from("invoice_items")
-          .select("product_id, quantity, unit")
-          .eq("invoice_id", id);
-
+      const { data: itemsToDelete } = await supabase.from("invoice_items").select("product_id, quantity, unit").eq("invoice_id", id);
       if (itemsToDelete && itemsToDelete.length > 0) {
           for (const item of itemsToDelete) {
               if (!item.product_id) continue;
-
-              const { data: product } = await supabase
-                  .from("products")
-                  .select("current_stock_level, current_stock_level_pack")
-                  .eq("id", item.product_id)
-                  .single();
-
+              const { data: product } = await supabase.from("products").select("current_stock_level, current_stock_level_pack").eq("id", item.product_id).single();
               if (product) {
                   let currentCtn = product.current_stock_level || 0;
                   let currentPack = product.current_stock_level_pack || 0;
-
-                  if (item.unit === "CTN") {
-                      currentCtn += item.quantity;
-                  } else {
-                      currentPack += item.quantity;
-                  }
-
-                  await supabase
-                      .from("products")
-                      .update({ 
-                          current_stock_level: currentCtn,
-                          current_stock_level_pack: currentPack
-                      })
-                      .eq("id", item.product_id);
+                  if (item.unit === "CTN") currentCtn += item.quantity;
+                  else currentPack += item.quantity;
+                  await supabase.from("products").update({ current_stock_level: currentCtn, current_stock_level_pack: currentPack }).eq("id", item.product_id);
               }
           }
       }
 
-      // 3. 아이템 및 인보이스 삭제
       await supabase.from("invoice_items").delete().eq("invoice_id", id); 
       await supabase.from("invoices").delete().eq("id", id); 
       
@@ -497,7 +395,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     } 
   };
 
-  // 일괄 삭제: 재고 원복 + Credit Revert 로직
+  // 일괄 삭제
   const handleBulkDelete = async () => { 
     if (!confirm(`Delete ${selectedIds.size} invoices? This will restore stock.`)) return; 
     setLoading(true);
@@ -505,83 +403,44 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
         const ids = Array.from(selectedIds);
         const creditIds = ids.filter(id => id.startsWith("CR-"));
         
-        // 1. Credit Note 처리
         if (creditIds.length > 0) {
-            // 1-1. 할당 내역 조회
-            const { data: allocations } = await supabase
-                .from("payment_allocations")
-                .select("invoice_id, amount, payment_id")
-                .in("payment_id", creditIds);
-
+            const { data: allocations } = await supabase.from("payment_allocations").select("invoice_id, amount, payment_id").in("payment_id", creditIds);
             if (allocations && allocations.length > 0) {
-                // 1-2. 각 할당 내역에 대해 인보이스 원상복귀
                 for (const alloc of allocations) {
-                    const { data: targetInv } = await supabase
-                        .from("invoices")
-                        .select("id, total_amount, paid_amount")
-                        .eq("id", alloc.invoice_id)
-                        .single();
-
+                    const { data: targetInv } = await supabase.from("invoices").select("id, total_amount, paid_amount").eq("id", alloc.invoice_id).single();
                     if (targetInv) {
                         const newPaid = Math.max(0, (targetInv.paid_amount || 0) - alloc.amount);
                         let newStatus = "Unpaid";
                         if (newPaid >= targetInv.total_amount && targetInv.total_amount > 0) newStatus = "Paid";
                         else if (newPaid > 0) newStatus = "Partial";
-
-                        await supabase
-                            .from("invoices")
-                            .update({ paid_amount: newPaid, status: newStatus })
-                            .eq("id", targetInv.id);
+                        await supabase.from("invoices").update({ paid_amount: newPaid, status: newStatus }).eq("id", targetInv.id);
                     }
                 }
             }
-
-            // 1-3. 할당 및 Payment 삭제
             await supabase.from("payment_allocations").delete().in("payment_id", creditIds);
             await supabase.from("payments").delete().in("id", creditIds);
         }
 
-        // 2. 재고 원복 로직
-        const { data: allItemsToDelete } = await supabase
-            .from("invoice_items")
-            .select("product_id, quantity, unit")
-            .in("invoice_id", ids);
-
+        const { data: allItemsToDelete } = await supabase.from("invoice_items").select("product_id, quantity, unit").in("invoice_id", ids);
         if (allItemsToDelete && allItemsToDelete.length > 0) {
             const stockUpdates: Record<string, { ctn: number, pack: number }> = {};
-
             for (const item of allItemsToDelete) {
                 if (!item.product_id) continue;
-                if (!stockUpdates[item.product_id]) {
-                    stockUpdates[item.product_id] = { ctn: 0, pack: 0 };
-                }
-                if (item.unit === "CTN") {
-                    stockUpdates[item.product_id].ctn += item.quantity;
-                } else {
-                    stockUpdates[item.product_id].pack += item.quantity;
-                }
+                if (!stockUpdates[item.product_id]) stockUpdates[item.product_id] = { ctn: 0, pack: 0 };
+                if (item.unit === "CTN") stockUpdates[item.product_id].ctn += item.quantity;
+                else stockUpdates[item.product_id].pack += item.quantity;
             }
-
             for (const [prodId, adjustment] of Object.entries(stockUpdates)) {
-                const { data: product } = await supabase
-                    .from("products")
-                    .select("current_stock_level, current_stock_level_pack")
-                    .eq("id", prodId)
-                    .single();
-
+                const { data: product } = await supabase.from("products").select("current_stock_level, current_stock_level_pack").eq("id", prodId).single();
                 if (product) {
-                    await supabase
-                        .from("products")
-                        .update({
-                            current_stock_level: (product.current_stock_level || 0) + adjustment.ctn,
-                            current_stock_level_pack: (product.current_stock_level_pack || 0) + adjustment.pack
-                        })
-                        .eq("id", prodId);
+                    await supabase.from("products").update({
+                        current_stock_level: (product.current_stock_level || 0) + adjustment.ctn,
+                        current_stock_level_pack: (product.current_stock_level_pack || 0) + adjustment.pack
+                    }).eq("id", prodId);
                 }
             }
         }
 
-        // 3. 데이터 삭제
         await supabase.from("invoice_items").delete().in("invoice_id", ids);
         const { error } = await supabase.from("invoices").delete().in("id", ids); 
         
@@ -618,37 +477,14 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
   };
   const clearDates = () => { setStartDate(""); setEndDate(""); };
   
-  // @ts-ignore
-  const startResizing = (key: keyof typeof INITIAL_WIDTHS, e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); resizingRef.current = { key, startX: e.clientX, startWidth: colWidths[key] }; document.body.style.cursor = "col-resize"; };
-  
-  const measureTextWidth = (text: string, font = "14px sans-serif") => { const canvas = document.createElement("canvas"); const context = canvas.getContext("2d"); return context ? (context.font = font, context.measureText(text).width) : 0; };
-  
-  // @ts-ignore
-  const autoFitColumn = (key: keyof typeof INITIAL_WIDTHS) => { 
-    let maxContentWidth = 0; 
-    paginatedInvoices.forEach(inv => { 
-      let text = ""; 
-      if (key === 'total_amount') text = formatCurrency(inv[key] || 0); 
-      else if (key === 'status') text = inv.status; 
-      else if (inv[key]) text = String(inv[key]); 
-      const width = measureTextWidth(text); 
-      if (width > maxContentWidth) maxContentWidth = width; 
-    }); 
-    // @ts-ignore
-    setColWidths(prev => ({ ...prev, [key]: Math.min(Math.max(80, maxContentWidth + 40), 600) })); 
-  };
-  
-  const Resizer = ({ colKey }: { colKey: keyof typeof INITIAL_WIDTHS }) => ( <div className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-blue-400 z-10 select-none group-hover:bg-slate-200/50" onMouseDown={(e) => startResizing(colKey, e)} onDoubleClick={() => autoFitColumn(colKey)} /> );
-
   return (
-    <div className="p-6 max-w-[1600px] mx-auto min-h-screen pb-20 space-y-6" onClick={() => setOpenMenuId(null)}>
-      {/* 1. Header (Button Removed) */}
+    <div className="p-6 w-full max-w-full mx-auto min-h-screen pb-20 space-y-6" onClick={() => setOpenMenuId(null)}>
+      {/* 1. Header */}
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 tracking-tight">{title}</h1>
           <p className="text-slate-500 text-sm mt-1">Manage {title.toLowerCase()}, track payments & reporting.</p>
         </div>
-        {/* Create Invoice 버튼은 아래로 이동됨 */}
       </div>
 
       {/* 2. Bulk Actions */}
@@ -667,34 +503,20 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
         </div>
       )}
 
-      {/* 3. [UPDATED] Tabs (Left) + Create Button (Right) */}
+      {/* 3. Tabs & Create Button */}
       <div className="flex flex-col md:flex-row items-center justify-between gap-4">
-        {/* Tab Group */}
         <div className="flex items-center gap-1 bg-slate-100/80 p-1 rounded-xl w-fit border border-slate-200">
-            <button 
-            onClick={() => setActiveTab('ALL')}
-            className={`px-4 py-2 text-sm font-bold rounded-lg transition-all flex items-center gap-2 ${activeTab === 'ALL' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'}`}
-            >
-            <FileStack className="w-4 h-4"/>
-            All <span className="text-xs opacity-60 bg-slate-100 px-1.5 py-0.5 rounded-full ml-1 border border-slate-200">{tabCounts.all}</span>
+            <button onClick={() => setActiveTab('ALL')} className={`px-4 py-2 text-sm font-bold rounded-lg transition-all flex items-center gap-2 ${activeTab === 'ALL' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'}`}>
+            <FileStack className="w-4 h-4"/> All 
             </button>
-            <button 
-            onClick={() => setActiveTab('INVOICE')}
-            className={`px-4 py-2 text-sm font-bold rounded-lg transition-all flex items-center gap-2 ${activeTab === 'INVOICE' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'}`}
-            >
-            <Receipt className="w-4 h-4"/>
-            Invoices <span className="text-xs opacity-60 bg-slate-100 px-1.5 py-0.5 rounded-full ml-1 border border-slate-200">{tabCounts.invoice}</span>
+            <button onClick={() => setActiveTab('INVOICE')} className={`px-4 py-2 text-sm font-bold rounded-lg transition-all flex items-center gap-2 ${activeTab === 'INVOICE' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'}`}>
+            <Receipt className="w-4 h-4"/> Invoices 
             </button>
-            <button 
-            onClick={() => setActiveTab('CREDIT')}
-            className={`px-4 py-2 text-sm font-bold rounded-lg transition-all flex items-center gap-2 ${activeTab === 'CREDIT' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'}`}
-            >
-            <CreditCard className="w-4 h-4"/>
-            Credit Notes <span className="text-xs opacity-60 bg-slate-100 px-1.5 py-0.5 rounded-full ml-1 border border-slate-200">{tabCounts.credit}</span>
+            <button onClick={() => setActiveTab('CREDIT')} className={`px-4 py-2 text-sm font-bold rounded-lg transition-all flex items-center gap-2 ${activeTab === 'CREDIT' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'}`}>
+            <CreditCard className="w-4 h-4"/> Credit Notes 
             </button>
         </div>
 
-        {/* Create Button (Moved Here) */}
         <Link href="/invoice/new">
           <button className="bg-slate-900 text-white px-5 py-2.5 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-slate-800 transition-all shadow-md active:scale-95">
             <Plus className="w-4 h-4" /> Create Invoice
@@ -704,34 +526,24 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
 
       {/* 4. Filters & Total */}
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col lg:flex-row items-center justify-between gap-4">
-        
-        {/* Left Side: Date, Search, Total */}
         <div className="flex flex-1 flex-col sm:flex-row items-center gap-3 w-full">
-          
-          {/* Date Picker */}
           <div className="flex items-center gap-2 bg-slate-50 p-1 rounded-lg border border-slate-200">
             <input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} className="pl-2 bg-transparent text-sm w-32"/>
             <span className="text-slate-400">-</span>
             <input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)} className="pl-2 bg-transparent text-sm w-32"/>
             <button onClick={clearDates}><X className="w-4 h-4"/></button>
           </div>
-
-          {/* Search Bar */}
           <div className="relative flex-1 w-full max-w-sm">
             <Search className="absolute left-3 top-2 w-4 h-4 text-slate-400"/>
             <input type="text" value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} placeholder="Search..." className="w-full pl-10 pr-4 py-2 text-sm border border-slate-200 rounded-lg"/>
           </div>
-
-          {/* Total Badge */}
           <div className="flex items-center gap-2 px-3 py-2 bg-slate-900 text-white rounded-lg shadow-sm whitespace-nowrap">
             <Calculator className="w-4 h-4 opacity-70" />
-            <span className="text-xs font-medium opacity-80 uppercase">Total:</span>
+            <span className="text-xs font-medium opacity-80 uppercase">Page Total:</span>
             <span className="text-sm font-bold">{formatCurrency(pageTotal)}</span>
           </div>
-
         </div>
 
-        {/* Right Side: Page Size & Detail Toggle */}
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
             <span className="text-xs font-bold text-slate-500 uppercase">Show:</span>
@@ -739,11 +551,9 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
               <option value="5">5 Rows</option>
               <option value="10">10 Rows</option>
               <option value="30">30 Rows</option>
-              <option value="all">All ({filteredInvoices.length})</option>
+              <option value="all">All ({totalCount})</option>
             </select>
           </div>
-
-          {/* [NEW] Detail View Toggle */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
                 <button className="flex items-center gap-2 h-9 px-3 border border-slate-200 rounded-lg text-sm font-medium hover:bg-slate-50">
@@ -764,38 +574,31 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
         </div>
       </div>
 
-      {/* Table */}
+      {/* 5. Fixed Table */}
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm min-h-[400px] flex flex-col justify-between">
-        
-        {/* pb-40 추가: 스크롤 여백 확보 */}
-        <div className="overflow-x-auto pb-40">
+        <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse table-fixed">
             <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-500 text-xs uppercase font-bold tracking-wide whitespace-nowrap">
               <tr>
-                <th className="px-6 py-4" style={{ width: colWidths.checkbox }}><input type="checkbox" checked={isAllSelected} onChange={handleSelectAll} className="w-4 h-4"/></th>
-                <th className="px-6 py-4 relative group" style={{width:colWidths.id}}>Invoice # <Resizer colKey="id"/></th>
-                <th className="px-6 py-4 relative group" style={{width:colWidths.invoice_to}}>Customer <Resizer colKey="invoice_to"/></th>
-                <th className="px-6 py-4 relative group" style={{width:colWidths.invoice_date}}>Date <Resizer colKey="invoice_date"/></th>
-                <th className="px-6 py-4 relative group" style={{width:colWidths.due_date}}>Due Date <Resizer colKey="due_date"/></th>
-                
-                <th className="px-6 py-4 text-right relative group" style={{width:colWidths.total_amount}}>Total <Resizer colKey="total_amount"/></th>
-                
-                <th className="px-6 py-4 text-center relative group" style={{width:colWidths.driver_id}}>Delivery By <Resizer colKey="driver_id"/></th>
-                <th className="px-6 py-4 text-center relative group" style={{width:colWidths.is_completed}}>Delivered? <Resizer colKey="is_completed"/></th>
-
-                <th className="px-6 py-4 text-center relative group" style={{width:colWidths.status}}>Status <Resizer colKey="status"/></th>
-                <th className="px-6 py-4 text-center relative group" style={{width:colWidths.actions}}>Actions <Resizer colKey="actions"/></th>
+                <th className="px-6 py-4 w-[4%]"><input type="checkbox" checked={isAllSelected} onChange={handleSelectAll} className="w-4 h-4"/></th>
+                <th className="px-6 py-4 w-[8%]">Invoice #</th>
+                <th className="px-6 py-4 w-[20%]">Customer</th>
+                <th className="px-6 py-4 w-[9%]">Date</th>
+                <th className="px-6 py-4 w-[9%]">Due Date</th>
+                <th className="px-6 py-4 w-[10%] text-right">Total</th>
+                <th className="px-6 py-4 w-[12%] text-center">Delivery By</th>
+                <th className="px-6 py-4 w-[10%] text-center">Delivered?</th>
+                <th className="px-6 py-4 w-[8%] text-center">Status</th>
+                <th className="px-6 py-4 w-[10%] text-center">Actions</th>
               </tr>
             </thead>
             <tbody className="text-sm">
               {loading ? <tr><td colSpan={10} className="p-20 text-center animate-pulse">Loading...</td></tr> : 
-                paginatedInvoices.map(inv => {
+                invoices.map(inv => {
                   const isExpanded = expandedRowIds.has(inv.id);
                   const isOverdue = inv.status !== "Paid" && inv.status !== "Credit" && inv.due_date < today;
                   const isCredit = inv.status === "Credit" || inv.id.startsWith("CR-");
-                  
-                  const driverName = inv.driver_id ? (driversMap[inv.driver_id] || "Unknown") : null;
-                  
+                  const driverName = inv.driver?.display_name || "Unknown";
                   const balanceDue = (inv.total_amount || 0) - (inv.paid_amount || 0);
 
                   return (
@@ -833,7 +636,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
                                  <Package className="w-3.5 h-3.5" />
                                  <span className="text-xs">Pick Up</span>
                              </div>
-                          ) : driverName ? (
+                          ) : inv.driver_id ? (
                              <div className="flex items-center justify-center gap-1.5 text-slate-700 font-medium">
                                  <Truck className="w-3.5 h-3.5 text-slate-400" />
                                  <span className="truncate max-w-[100px]" title={driverName}>{driverName}</span>
@@ -843,10 +646,8 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
                           )}
                         </td>
 
-                        {/* [MODIFIED] Delivered? Column */}
                         <td className="px-6 py-4 text-center">
                           {inv.is_completed || inv.is_pickup ? (
-                             // proof_url이 있으면 클릭 가능한 버튼으로 렌더링
                              inv.proof_url ? (
                                <button 
                                  onClick={(e) => { e.stopPropagation(); setViewProofUrl(inv.proof_url!); }}
@@ -878,8 +679,6 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
                               <button onClick={(e)=>{e.stopPropagation(); setOpenMenuId(openMenuId===inv.id?null:inv.id)}} className="p-2 hover:bg-slate-200 rounded-full"><MoreHorizontal className="w-4 h-4"/></button>
                               {openMenuId === inv.id && (
                                 <div ref={menuRef} className="absolute right-0 top-10 w-48 bg-white border shadow-xl z-50 py-1" onClick={e=>e.stopPropagation()}>
-                                  
-                                  {/* Receive Payment 버튼 (Credit 아닐 때만) */}
                                   {!isCredit && (
                                      <button 
                                        onClick={() => handlePaymentRedirect(inv.customer_id || "")} 
@@ -888,20 +687,12 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
                                        <DollarSign className="w-4 h-4"/> Receive Payment
                                      </button>
                                   )}
-
-                                  {/* Email Action */}
                                   <button onClick={()=>handleEmail(inv)} className="w-full px-4 py-2 text-sm hover:bg-slate-50 flex gap-2"><Mail className="w-4 h-4 text-purple-600"/> Email Invoice</button>
-                                  
                                   <button onClick={()=>handlePrint(inv.id)} className="w-full px-4 py-2 text-sm hover:bg-slate-50 flex gap-2"><Printer className="w-4 h-4"/> Print</button>
                                   <button onClick={()=>handleDownload(inv.id)} className="w-full px-4 py-2 text-sm hover:bg-slate-50 flex gap-2"><Download className="w-4 h-4"/> PDF</button>
-                                  
-                                  {/* [추가] Packing List 버튼 */}
                                   <button onClick={()=>handlePackingList(inv.id)} className="w-full px-4 py-2 text-sm hover:bg-slate-50 flex gap-2"><Package className="w-4 h-4 text-orange-600"/> Packing List</button>
-
                                   <div className="border-t my-1"></div>
-                                  
                                   <button onClick={()=>handleEdit(inv.id)} className="w-full px-4 py-2 text-sm hover:bg-slate-50 flex gap-2"><Edit className="w-4 h-4"/> Edit</button>
-                                  
                                   <button onClick={()=>handleDelete(inv.id)} className="w-full px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex gap-2"><Trash2 className="w-4 h-4"/> Delete</button>
                                 </div>
                               )}
@@ -975,22 +766,22 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
            </table>
          </div>
          
-         {filteredInvoices.length > 0 && pageSize !== "all" && (
+         {invoices.length > 0 && pageSize !== "all" && (
            <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50">
-             <span className="text-xs text-slate-500 font-medium">Showing <strong className="text-slate-900">{(currentPage - 1) * parseInt(pageSize) + 1}</strong> to <strong className="text-slate-900">{Math.min(currentPage * parseInt(pageSize), filteredInvoices.length)}</strong> of <strong className="text-slate-900">{filteredInvoices.length}</strong></span>
+             <span className="text-xs text-slate-500 font-medium">Showing <strong className="text-slate-900">{(currentPage - 1) * parseInt(pageSize) + 1}</strong> to <strong className="text-slate-900">{Math.min(currentPage * parseInt(pageSize), totalCount)}</strong> of <strong className="text-slate-900">{totalCount}</strong></span>
              <div className="flex items-center gap-2"><button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="p-2 border rounded-lg hover:bg-white disabled:opacity-50"><ChevronLeft className="w-4 h-4 text-slate-600" /></button><span className="text-sm font-bold text-slate-700 px-2">{currentPage} / {totalPages}</span><button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="p-2 border rounded-lg hover:bg-white disabled:opacity-50"><ChevronRight className="w-4 h-4 text-slate-600" /></button></div>
            </div>
          )}
        </div>
 
-       {/* [NEW] Email Send Dialog */}
+       {/* Email Send Dialog */}
        <EmailSendDialog 
          open={!!emailTarget} 
          onOpenChange={(open) => !open && setEmailTarget(null)}
          data={emailTarget as any}
        />
 
-      {/* [NEW] Proof Image Modal */}
+      {/* Proof Image Modal */}
       {viewProofUrl && (
         <div className="fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={() => setViewProofUrl(null)}>
           <div className="relative max-w-4xl w-full max-h-[90vh] flex flex-col items-center" onClick={e => e.stopPropagation()}>

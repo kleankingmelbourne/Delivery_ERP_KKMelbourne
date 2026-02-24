@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { 
   X, Save, Eye, EyeOff, CheckCircle2, XCircle, 
@@ -32,9 +32,6 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
   const [isSameAddress, setIsSameAddress] = useState(false);
   const [groupOptions, setGroupOptions] = useState<{id: number, name: string}[]>([]);
   const [staffOptions, setStaffOptions] = useState<{id: string, name: string}[]>([]);
-
-  // Shadcn 스타일
-  const inputClassName = "flex h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm ring-offset-white file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-slate-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-950 disabled:cursor-not-allowed disabled:opacity-50";
 
   // --- Google Maps States ---
   const [suggestions, setSuggestions] = useState<any[]>([]);
@@ -118,7 +115,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
       }
       
       setShowPassword(false);
-      setSuggestions([]); // 초기화
+      setSuggestions([]); 
       setActiveSearchField(null);
     }
   }, [isOpen, customerData]);
@@ -174,86 +171,81 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
         setFormData(prev => ({ ...prev, delivery_address: description }));
     }
 
-    // Server Action 호출
-    const details = await getPlaceDetails(placeId);
-    
-    if (details) {
-        // console.log(`📍 ${field.toUpperCase()} Selected Details:`, details);
-
-        if (field === 'billing') {
-            setFormData(prev => ({
-                ...prev,
-                address: details.address,
-                suburb: details.suburb,
-                state: details.state,
-                postcode: details.postcode,
-                lat: details.lat, 
-                lng: details.lng  
-            }));
-        } else {
-            setFormData(prev => ({
-                ...prev,
-                delivery_address: details.address,
-                delivery_suburb: details.suburb,
-                delivery_state: details.state,
-                delivery_postcode: details.postcode,
-                delivery_lat: details.lat, 
-                delivery_lng: details.lng  
-            }));
+    try {
+        const details = await getPlaceDetails(placeId);
+        if (details) {
+            if (field === 'billing') {
+                setFormData(prev => ({
+                    ...prev,
+                    address: details.address,
+                    suburb: details.suburb,
+                    state: details.state,
+                    postcode: details.postcode,
+                    lat: details.lat, 
+                    lng: details.lng  
+                }));
+            } else {
+                setFormData(prev => ({
+                    ...prev,
+                    delivery_address: details.address,
+                    delivery_suburb: details.suburb,
+                    delivery_state: details.state,
+                    delivery_postcode: details.postcode,
+                    delivery_lat: details.lat, 
+                    delivery_lng: details.lng  
+                }));
+            }
         }
+    } catch (e) {
+        console.error("Map Details Error:", e);
     }
   };
 
   const handleSubmit = async () => {
+    // 1. 필수값 체크: 이름
     if (!formData.name) return alert("Customer Name is required.");
+
+    // [NEW] 2. 필수값 체크: 비밀번호 (신규 고객일 때만 체크)
+    if (!customerData?.id && (!formData.password || formData.password.trim() === "")) {
+        return alert("Password is required for new customers.");
+    }
+
     setLoading(true);
+    
     try {
       // ---------------------------------------------------------------
-      // [NEW] 좌표 자동 보정 로직 (Auto-Correction)
-      // 사용자가 드롭다운을 클릭하지 않고 타이핑만 했을 경우를 대비해, 
-      // 저장 직전에 주소 텍스트로 좌표를 다시 한 번 검색합니다.
+      // 좌표 자동 보정 로직
       // ---------------------------------------------------------------
-      
       let finalLat = formData.lat;
       let finalLng = formData.lng;
       let finalDeliveryLat = formData.delivery_lat;
       let finalDeliveryLng = formData.delivery_lng;
 
-      // 1. Billing Address 좌표가 없으면 검색 시도
-      if ((!finalLat || !finalLng) && formData.address.length > 5) {
-          // console.log("⚠️ Billing coordinates missing. Attempting auto-fetch...");
-          const suggestions = await getPlaceSuggestions(formData.address);
-          if (suggestions.length > 0) {
-              const details = await getPlaceDetails(suggestions[0].place_id);
-              if (details && details.lat) {
-                  finalLat = details.lat;
-                  finalLng = details.lng;
-                  // console.log("✅ Billing coordinates auto-fetched:", finalLat, finalLng);
+      try {
+          if ((!finalLat || !finalLng) && formData.address.length > 5) {
+              const suggestions = await getPlaceSuggestions(formData.address);
+              if (suggestions.length > 0) {
+                  const details = await getPlaceDetails(suggestions[0].place_id);
+                  if (details && details.lat) { finalLat = details.lat; finalLng = details.lng; }
               }
           }
-      }
-
-      // 2. Delivery Address 좌표가 없으면 검색 시도 (Billing과 다를 경우)
-      if (!isSameAddress && (!finalDeliveryLat || !finalDeliveryLng) && formData.delivery_address.length > 5) {
-          // console.log("⚠️ Delivery coordinates missing. Attempting auto-fetch...");
-          const suggestions = await getPlaceSuggestions(formData.delivery_address);
-          if (suggestions.length > 0) {
-              const details = await getPlaceDetails(suggestions[0].place_id);
-              if (details && details.lat) {
-                  finalDeliveryLat = details.lat;
-                  finalDeliveryLng = details.lng;
-                  // console.log("✅ Delivery coordinates auto-fetched:", finalDeliveryLat, finalDeliveryLng);
+          if (!isSameAddress && (!finalDeliveryLat || !finalDeliveryLng) && formData.delivery_address.length > 5) {
+              const suggestions = await getPlaceSuggestions(formData.delivery_address);
+              if (suggestions.length > 0) {
+                  const details = await getPlaceDetails(suggestions[0].place_id);
+                  if (details && details.lat) { finalDeliveryLat = details.lat; finalDeliveryLng = details.lng; }
               }
           }
+      } catch (mapError) {
+          console.warn("Map Auto-fetch failed, continuing save:", mapError);
       }
-      // ---------------------------------------------------------------
 
+      // 3. 최종 데이터 구성
       const finalDeliveryData = isSameAddress ? {
         delivery_address: formData.address,
         delivery_suburb: formData.suburb,
         delivery_state: formData.state,
         delivery_postcode: formData.postcode,
-        // 같은 주소면 좌표도 복사 (Billing 좌표가 방금 업데이트 되었을 수 있으므로 final 변수 사용)
         delivery_lat: finalLat, 
         delivery_lng: finalLng  
       } : {
@@ -265,12 +257,14 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
         delivery_lng: finalDeliveryLng
       };
 
-      const { id, password, customer_groups, profiles, ...restData } = formData as any;
+      // ID 제외 및 데이터 정제
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { id, password, customer_groups, profiles, created_at, ...restData } = formData as any;
       
       const payload: any = {
         ...restData, 
-        lat: finalLat, // 보정된 좌표 사용
-        lng: finalLng, // 보정된 좌표 사용
+        lat: finalLat, 
+        lng: finalLng, 
         ...finalDeliveryData,
         credit_limit: formData.credit_limit ? Number(formData.credit_limit) : null,
         group_id: formData.group_id ? Number(formData.group_id) : null,
@@ -278,36 +272,47 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
         in_charge_delivery: formData.in_charge_delivery || null,
       };
 
-      if (formData.password) payload.password = formData.password; 
-
-      // console.log("🚀 [FINAL SUBMIT] Payload:", {
-      //     address: payload.address,
-      //     lat: payload.lat,
-      //     lng: payload.lng,
-      //     delivery_lat: payload.delivery_lat,
-      //     delivery_lng: payload.delivery_lng
-      // });
+      if (formData.password && formData.password.trim() !== "") {
+          payload.password = formData.password; 
+      }
 
       let error;
+      
+      // 4. DB 요청
       if (customerData?.id) {
-        const { error: updateError } = await supabase.from("customers").update({ ...payload, created_at: undefined }).eq("id", customerData.id);
+        // [UPDATE]
+        const { error: updateError } = await supabase
+            .from("customers")
+            .update(payload)
+            .eq("id", customerData.id);
         error = updateError;
       } else {
-        const { error: insertError } = await supabase.from("customers").insert({ ...payload, password: formData.password, created_at: new Date().toISOString() });
+        // [INSERT]
+        const { error: insertError } = await supabase
+            .from("customers")
+            .insert({ ...payload, created_at: new Date().toISOString() });
         error = insertError;
       }
 
       if (error) {
-        console.error("Supabase Error:", error);
         throw error;
       }
 
-      alert(customerData ? "Customer updated!" : "Customer added!");
+      alert(customerData ? "Customer updated!" : "Customer added successfully!");
       onSuccess();
       onClose();
+
     } catch (e: any) {
-      console.error(e);
-      alert("Failed: " + (e.message || "Unknown error"));
+      console.error("🔥 Submission Failed:", e);
+      let errorMessage = e.message || e.details || JSON.stringify(e);
+      
+      if (errorMessage.includes("customers_pkey")) {
+          errorMessage = "System ID Error: Database sequence is out of sync. Please contact admin.";
+      } else if (errorMessage.includes("customers_email_key")) {
+          errorMessage = "This email is already registered.";
+      }
+
+      alert("Failed to save: " + errorMessage);
     } finally {
       setLoading(false);
     }
@@ -330,7 +335,21 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
               <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider border-b pb-2">Account Settings</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 <div className="space-y-2"><Label className="text-xs text-slate-500">Customer ID</Label><div className="h-10 px-3 flex items-center bg-slate-100 border border-slate-200 rounded-md text-sm text-slate-400 font-mono select-none">{customerData ? customerData.id.slice(0, 8) + "..." : "Auto-generated"}</div></div>
-                <div className="space-y-2"><Label className="text-xs font-bold text-slate-700">Password</Label><div className="relative"><Input type={showPassword ? "text" : "password"} value={formData.password} onChange={(e) => handleChange("password", e.target.value)} className="pr-10" placeholder={customerData ? "(Keep current)" : "Enter password"} /><button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">{showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}</button></div></div>
+                <div className="space-y-2">
+                    <Label className="text-xs font-bold text-slate-700">Password {!customerData && <span className="text-red-500">*</span>}</Label>
+                    <div className="relative">
+                        <Input 
+                            type={showPassword ? "text" : "password"} 
+                            value={formData.password} 
+                            onChange={(e) => handleChange("password", e.target.value)} 
+                            className="pr-10" 
+                            placeholder={customerData ? "(Keep current)" : "Enter password"} 
+                        />
+                        <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
+                            {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                    </div>
+                </div>
                 <div className="space-y-2 flex flex-col"><Label className="text-xs font-bold text-slate-700 mb-1">Login Permission</Label><Button type="button" variant="outline" onClick={() => handleChange("login_permit", !formData.login_permit)} className={`justify-start gap-2 h-10 border ${formData.login_permit ? "bg-green-50 border-green-200 text-green-700" : "bg-slate-50 border-slate-200 text-slate-500"}`}>{formData.login_permit ? <><CheckCircle2 className="w-4 h-4" /> Allowed</> : <><XCircle className="w-4 h-4" /> Denied</>}</Button></div>
                 <div className="space-y-2 flex flex-col"><Label className="text-xs font-bold text-slate-700 mb-1">Order Status</Label><Button type="button" variant="outline" onClick={() => handleChange("disable_order", !formData.disable_order)} className={`justify-start gap-2 h-10 border ${formData.disable_order ? "bg-red-50 border-red-200 text-red-700" : "bg-blue-50 border-blue-200 text-blue-700"}`}>{formData.disable_order ? <><Ban className="w-4 h-4" /> Order Blocked</> : <><ShieldCheck className="w-4 h-4" /> Order Active</>}</Button></div>
               </div>

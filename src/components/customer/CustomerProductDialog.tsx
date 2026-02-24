@@ -20,7 +20,7 @@ interface Product {
   sell_price_ctn: number;  
   sell_price_pack: number; 
   buy_price: number;
-  unit_name?: string; // [NEW] 단위 확인을 위해 추가
+  unit_name?: string;
 }
 
 interface ProductItem extends Product {
@@ -30,15 +30,19 @@ interface ProductItem extends Product {
   is_new?: boolean;
 }
 
+// [NEW] 1. 안전한 숫자 변환 헬퍼 (화면 표시용)
+const safeFixed = (val: any) => {
+    const num = Number(val);
+    if (isNaN(num)) return "0.00";
+    return num.toFixed(2);
+};
+
 export default function CustomerProductDialog({ isOpen, onClose, customerId, customerName }: CustomerProductDialogProps) {
   const supabase = createClient();
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   
-  // [1] 내 아이템 리스트 내 검색어
   const [localSearchTerm, setLocalSearchTerm] = useState("");
-  
-  // [2] 전체 상품 추가 검색 상태
   const [globalSearchTerm, setGlobalSearchTerm] = useState("");
   const [globalSearchResults, setGlobalSearchResults] = useState<Product[]>([]);
   const [searchingGlobal, setSearchingGlobal] = useState(false);
@@ -54,10 +58,8 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
     }
   }, [isOpen, customerId]);
 
-  // 1. [초기 로딩] 이 고객이 사용 중인 아이템만 불러오기
   const fetchMyItems = async () => {
     setLoading(true);
-    
     const { data: customData } = await supabase
       .from("customer_products")
       .select("*")
@@ -70,8 +72,6 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
     }
 
     const productIds = customData.map(c => c.product_id);
-    
-    // [MODIFIED] product_units (unit_name) 추가 조회
     const { data: productsData } = await supabase
       .from("products")
       .select(`
@@ -87,7 +87,6 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
         const custom = customData.find((c: any) => c.product_id === prod.id);
         return {
           ...prod,
-          // Unit Name Flattening
           unit_name: prod.product_units?.unit_name || "",
           table_id: custom?.id,
           custom_price_ctn: custom?.custom_price_ctn ?? "", 
@@ -99,16 +98,14 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
     setLoading(false);
   };
 
-  // 2. [전체 상품 검색] 입력할 때마다 실행
   const handleGlobalSearch = async (term: string) => {
     setGlobalSearchTerm(term);
     if (term.length < 2) {
-        setGlobalSearchResults([]); // 검색어 짧으면 결과 초기화
+        setGlobalSearchResults([]);
         return; 
     }
 
     setSearchingGlobal(true);
-    // [MODIFIED] product_units (unit_name) 추가 조회
     const { data: searchResults } = await supabase
       .from("products")
       .select(`
@@ -120,7 +117,6 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
       .limit(10);
 
     if (searchResults) {
-        // 이미 내 리스트에 있는 상품은 제외하고 보여줌
         const existingIds = new Set(items.map(i => i.id));
         const filtered = searchResults
             .filter((p: any) => !existingIds.has(p.id))
@@ -133,7 +129,6 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
     setSearchingGlobal(false);
   };
 
-  // 3. [상품 추가] 검색 결과에서 선택하여 리스트에 추가
   const handleAddItem = (product: Product) => {
     const newItem: ProductItem = {
         ...product,
@@ -142,32 +137,26 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
         custom_price_pack: "" as const,
         is_new: true
     };
-    setItems(prev => [newItem, ...prev]); // 리스트 맨 앞에 추가
-    setGlobalSearchTerm(""); // 검색창 비우기
-    setGlobalSearchResults([]); // 결과창 닫기
+    setItems(prev => [newItem, ...prev]);
+    setGlobalSearchTerm("");
+    setGlobalSearchResults([]);
   };
 
-  // 4. [삭제 기능]
   const handleDeleteItem = async (index: number, tableId?: string) => {
     if (!confirm("Are you sure you want to remove this item?")) return;
 
-    // 1. 이미 저장된 데이터라면 DB에서 삭제
     if (tableId) {
-        setLoading(true); // 잠시 로딩 표시 (선택사항)
+        setLoading(true);
         const { error } = await supabase
             .from("customer_products")
             .delete()
             .eq("id", tableId);
-        
         setLoading(false);
-
         if (error) {
             alert("Failed to delete: " + error.message);
             return;
         }
     }
-
-    // 2. State에서 제거 (저장 안 된 아이템은 여기서만 제거됨)
     setItems(prev => prev.filter((_, i) => i !== index));
   };
 
@@ -191,7 +180,6 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
   const handleSave = async () => {
     setSaving(true);
     const upsertData = items
-      .filter(item => item.custom_price_ctn !== "" || item.custom_price_pack !== "")
       .map(item => ({
         id: item.table_id || crypto.randomUUID(), 
         customer_id: customerId,
@@ -219,12 +207,13 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
     setSaving(false);
   };
 
-  const calculateFinalPrice = (basePrice: number, discountRate: number | "") => {
-    if (!basePrice || discountRate === "" || discountRate === 0) return basePrice;
-    return basePrice * (1 - (Number(discountRate) / 100));
+  // [NEW] 2. 계산 로직 안전장치 (null 방어)
+  const calculateFinalPrice = (basePrice: any, discountRate: number | "") => {
+    const price = Number(basePrice) || 0; // null이면 0으로 변환
+    if (discountRate === "" || discountRate === 0) return price;
+    return price * (1 - (Number(discountRate) / 100));
   };
 
-  // 내 아이템 필터링
   const displayItems = items.filter(item => {
     const term = localSearchTerm.toLowerCase();
     const name = item.product_name?.toLowerCase() || "";
@@ -261,10 +250,9 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
           </div>
         </div>
 
-        {/* Search Bars Container */}
+        {/* Search Bars */}
         <div className="px-8 py-4 bg-white border-b border-slate-100 space-y-3 sticky top-0 z-20">
           
-          {/* 1. Local Filter (내 리스트 검색) */}
           <div className="relative w-full">
             <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400"/>
             <Input 
@@ -275,7 +263,6 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
             />
           </div>
 
-          {/* 2. Global Add Search (전체 상품 추가) */}
           <div className="relative w-full">
             <div className="relative">
                 <Globe className="absolute left-3 top-3 w-4 h-4 text-blue-500"/>
@@ -305,7 +292,6 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
                                     <div className="flex flex-col">
                                         <div className="flex items-center gap-2">
                                             <span className="font-bold text-slate-700 text-sm">{prod.product_name}</span>
-                                            {/* 단위 표시 */}
                                             <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded border border-slate-200">
                                                 {prod.unit_name || "UNIT"}
                                             </span>
@@ -313,7 +299,8 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
                                         <div className="flex items-center gap-2 text-xs text-slate-400">
                                             <span className="font-mono bg-slate-100 px-1 rounded">{prod.product_barcode}</span>
                                             <span>•</span>
-                                            <span>Cost: ${prod.buy_price.toFixed(2)}</span>
+                                            {/* [NEW] safeFixed 적용 */}
+                                            <span>Cost: ${safeFixed(prod.buy_price)}</span>
                                         </div>
                                     </div>
                                     <Button 
@@ -341,7 +328,6 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
                 <th className="px-6 py-4 w-[25%] border-b">Product Info</th>
                 <th className="px-4 py-4 w-[8%] border-b text-right bg-slate-50/50 text-slate-600 border-r border-slate-100">Cost</th>
                 
-                {/* CTN Group */}
                 <th className="px-2 py-3 w-[25%] bg-blue-50/30 text-center border-r border-b border-blue-100">
                   <span className="text-blue-700">CARTON (CTN)</span>
                   <div className="flex justify-center gap-6 mt-1.5 px-2 text-[10px] text-slate-400 font-normal tracking-wide">
@@ -351,7 +337,6 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
                   </div>
                 </th>
 
-                {/* PACK Group */}
                 <th className="px-2 py-3 w-[25%] bg-amber-50/30 text-center border-b border-amber-100">
                   <span className="text-amber-700">PACK (PK)</span>
                   <div className="flex justify-center gap-6 mt-1.5 px-2 text-[10px] text-slate-400 font-normal tracking-wide">
@@ -380,7 +365,6 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
                 </tr>
               ) : displayItems.map((item, index) => {
                 
-                // [MODIFIED] Unit Check
                 const unitName = item.unit_name?.toLowerCase() || "";
                 const isCarton = unitName.includes('ctn') || unitName.includes('carton');
 
@@ -392,13 +376,11 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
 
                 return (
                   <tr key={item.id} className={`hover:bg-slate-50/80 transition-colors ${item.is_new ? "bg-green-50/20" : ""}`}>
-                    {/* Code */}
                     <td className="px-6 py-4 font-mono text-xs text-slate-500 border-b border-slate-50">
                       {item.product_barcode}
                       {item.is_new && <span className="block mt-1 text-[9px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded w-fit font-bold">NEW</span>}
                     </td>
                     
-                    {/* Product Name & Cost */}
                     <td className="px-6 py-4 border-b border-slate-50">
                         <div className="font-bold text-slate-700 text-sm">{item.product_name}</div>
                         <div className="text-xs text-slate-400 mt-1 flex items-center gap-1">
@@ -406,22 +388,21 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
                         </div>
                     </td>
 
-                    {/* Cost Column */}
                     <td className="px-4 py-4 text-right border-b border-r border-slate-100 bg-slate-50/30">
                         <span className="font-mono text-xs text-slate-600 font-bold">
-                            ${item.buy_price?.toFixed(2) || "0.00"}
+                            {/* [NEW] safeFixed 적용 */}
+                            ${safeFixed(item.buy_price)}
                         </span>
                     </td>
                     
-                    {/* CTN Inputs */}
                     <td className={`px-2 py-4 border-r border-b border-slate-50 ${!isCarton ? 'bg-slate-50 opacity-60' : hasCtnRate ? "bg-blue-50/10" : ""}`}>
                       <div className="flex items-center gap-3 justify-center">
                         <span className="text-xs text-slate-400 w-16 text-right font-mono">
-                          ${item.sell_price_ctn?.toFixed(2) || "0.00"}
+                          {/* [NEW] safeFixed 적용 */}
+                          ${safeFixed(item.sell_price_ctn)}
                         </span>
                         
                         <div className="relative w-20">
-                          {/* [MODIFIED] Disable if not carton */}
                           <Input 
                             type="number" 
                             disabled={!isCarton}
@@ -440,16 +421,17 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
                         </div>
                         
                         <div className={`w-16 text-right font-bold text-sm ${!isCarton ? "text-slate-300 decoration-slate-300 line-through" : hasCtnRate ? "text-blue-600" : "text-slate-300"}`}>
-                          ${resultCtn.toFixed(2)}
+                          {/* [NEW] safeFixed 적용 */}
+                          ${safeFixed(resultCtn)}
                         </div>
                       </div>
                     </td>
 
-                    {/* PACK Inputs */}
                     <td className={`px-2 py-4 border-b border-slate-50 ${hasPackRate ? "bg-amber-50/10" : ""}`}>
                       <div className="flex items-center gap-3 justify-center">
                         <span className="text-xs text-slate-400 w-16 text-right font-mono">
-                          ${item.sell_price_pack?.toFixed(2) || "0.00"}
+                          {/* [NEW] safeFixed 적용 */}
+                          ${safeFixed(item.sell_price_pack)}
                         </span>
                         
                         <div className="relative w-20">
@@ -464,12 +446,12 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
                         </div>
 
                         <div className={`w-16 text-right font-bold text-sm ${hasPackRate ? "text-amber-600" : "text-slate-300"}`}>
-                          ${resultPack.toFixed(2)}
+                          {/* [NEW] safeFixed 적용 */}
+                          ${safeFixed(resultPack)}
                         </div>
                       </div>
                     </td>
 
-                    {/* [MODIFIED] Delete Action */}
                     <td className="px-2 py-4 border-b border-slate-50 text-center">
                         <Button 
                             size="icon" 

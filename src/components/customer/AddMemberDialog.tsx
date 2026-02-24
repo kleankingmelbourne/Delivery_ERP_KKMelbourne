@@ -5,7 +5,6 @@ import { createClient } from "@/utils/supabase/client";
 import { X, Search, UserPlus, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"; // UI 컴포넌트가 없다면 기본 div로 구현 (아래는 기본 div 방식)
 
 interface AddMemberDialogProps {
   isOpen: boolean;
@@ -22,7 +21,6 @@ export default function AddMemberDialog({ isOpen, onClose, onSuccess, groupId, g
   const [customers, setCustomers] = useState<any[]>([]);
   const [addingId, setAddingId] = useState<string | null>(null);
 
-  // 다이얼로그가 열릴 때, 그룹이 없는 고객들을 불러옴
   useEffect(() => {
     if (isOpen) {
       fetchAvailableCustomers();
@@ -32,27 +30,35 @@ export default function AddMemberDialog({ isOpen, onClose, onSuccess, groupId, g
 
   const fetchAvailableCustomers = async () => {
     setLoading(true);
-    // group_id가 현재 그룹이 아닌 고객들 (NULL이거나 다른 그룹)
-    const { data } = await supabase
+    
+    // [수정 포인트 1] 
+    // 그룹에 속하지 않은(Unassigned) 고객만 불러오려면 .is("group_id", null) 사용
+    // 만약 다른 그룹에 있는 사람도 뺏어오고 싶다면 로직이 달라져야 하지만, 기본적으로는 null인 사람을 찾습니다.
+    const { data, error } = await supabase
       .from("customers")
       .select("id, name, email, company, group_id")
-      .neq("group_id", groupId) // 이미 이 그룹인 사람은 제외
+      .is("group_id", null) // ✅ 수정됨: group_id가 NULL인(그룹 없는) 사람만 조회
       .order("name")
-      .limit(50); // 성능을 위해 50명만 일단 로드 (검색으로 찾도록 유도)
+      .limit(50);
       
+    if (error) {
+        console.error("Error fetching customers:", error);
+    }
+
     if (data) setCustomers(data);
     setLoading(false);
   };
 
   const handleSearch = async (term: string) => {
     setSearchTerm(term);
-    if (term.length < 2) return; // 2글자 이상일 때만 검색
+    if (term.length < 2) return;
 
+    // [수정 포인트 2] 검색 시에도 그룹이 없는 사람 중에서 검색
     const { data } = await supabase
       .from("customers")
       .select("id, name, email, company, group_id")
-      .neq("group_id", groupId) // 현재 그룹 제외
-      .or(`name.ilike.%${term}%,email.ilike.%${term}%,company.ilike.%${term}%`)
+      .is("group_id", null) // ✅ 수정됨: 그룹 없는 사람 중에서
+      .or(`name.ilike.%${term}%,email.ilike.%${term}%,company.ilike.%${term}%`) // 이름/이메일/회사 검색
       .limit(20);
 
     if (data) setCustomers(data);
@@ -60,7 +66,7 @@ export default function AddMemberDialog({ isOpen, onClose, onSuccess, groupId, g
 
   const addMember = async (customerId: string) => {
     setAddingId(customerId);
-    // 해당 고객의 group_id를 현재 그룹 ID로 업데이트
+    
     const { error } = await supabase
       .from("customers")
       .update({ group_id: groupId })
@@ -71,7 +77,7 @@ export default function AddMemberDialog({ isOpen, onClose, onSuccess, groupId, g
     } else {
       // 리스트에서 제거 (즉각 반응)
       setCustomers(prev => prev.filter(c => c.id !== customerId));
-      onSuccess(); // 부모 컴포넌트 새로고침 알림
+      onSuccess(); 
     }
     setAddingId(null);
   };
@@ -109,7 +115,9 @@ export default function AddMemberDialog({ isOpen, onClose, onSuccess, groupId, g
           {loading && customers.length === 0 ? (
             <div className="py-10 text-center text-slate-400"><Loader2 className="w-6 h-6 animate-spin mx-auto"/></div>
           ) : customers.length === 0 ? (
-            <div className="py-10 text-center text-slate-400 text-sm">No available customers found.</div>
+            <div className="py-10 text-center text-slate-400 text-sm">
+                {searchTerm ? "No customers found matching search." : "No available customers found (everyone is already in a group)."}
+            </div>
           ) : (
             <div className="space-y-1">
               {customers.map(customer => (

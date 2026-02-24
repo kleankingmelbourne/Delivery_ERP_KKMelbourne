@@ -60,6 +60,73 @@ const getMelbourneDate = () => {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Australia/Melbourne' });
 };
 
+// [NEW] 이미지에 날짜/시간을 합성하는 함수
+const addTimestampToImage = (file: File): Promise<File> => {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (readerEvent) => {
+      const img = new Image();
+      img.src = readerEvent.target?.result as string;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        if (!ctx) {
+          resolve(file); // 캔버스 지원 안되면 원본 반환
+          return;
+        }
+
+        // 캔버스 크기를 이미지 크기와 동일하게 설정
+        canvas.width = img.width;
+        canvas.height = img.height;
+
+        // 이미지 그리기
+        ctx.drawImage(img, 0, 0);
+
+        // 날짜 시간 텍스트 설정 (Melbourne Time)
+        const dateStr = new Date().toLocaleString('en-AU', { 
+          timeZone: 'Australia/Melbourne',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false
+        }); // 예: 24/02/2026, 14:30
+
+        // 폰트 크기 동적 설정 (이미지 너비의 4%)
+        const fontSize = Math.floor(img.width * 0.04); 
+        ctx.font = `bold ${fontSize}px sans-serif`;
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'bottom';
+
+        // 텍스트 스타일 (흰색 글씨 + 검은색 테두리)
+        ctx.fillStyle = '#ffffff';
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = fontSize / 5;
+        
+        const x = img.width - (fontSize / 2);
+        const y = img.height - (fontSize / 2);
+
+        // 테두리 그리고 글씨 그리기
+        ctx.strokeText(dateStr, x, y);
+        ctx.fillText(dateStr, x, y);
+
+        // 캔버스를 다시 파일로 변환
+        canvas.toBlob((blob) => {
+          if (blob) {
+            const newFile = new File([blob], file.name, { type: file.type, lastModified: Date.now() });
+            resolve(newFile);
+          } else {
+            resolve(file);
+          }
+        }, file.type);
+      };
+    };
+  });
+};
+
 const LIBRARIES: ("places" | "geometry")[] = ["places", "geometry"];
 
 export default function DriverDeliveryPage() {
@@ -169,9 +236,8 @@ export default function DriverDeliveryPage() {
     return () => { supabase.removeChannel(channel); };
   }, [currentUserId]); 
 
-  // ✅ [속도 개선 1] 직렬 호출이 아닌 병렬 호출 적용
   const fetchInitialData = async () => {
-      setLoading(true); // 우선 로딩 켜기
+      setLoading(true); 
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
           setLoading(false);
@@ -179,10 +245,8 @@ export default function DriverDeliveryPage() {
       }
       setCurrentUserId(user.id);
 
-      // 1. 배송 데이터는 가장 중요하므로 즉시 가져오기 시작 (await 걸지 않고 병렬로 실행)
       fetchDeliveries(user.id, true);
 
-      // 2. 프로필과 회사 설정 데이터는 Promise.all 로 동시(병렬)에 가져와서 속도 단축
       const [profileRes, companyRes] = await Promise.all([
           supabase.from('profiles').select('address, display_name').eq('id', user.id).single(),
           supabase.from('company_settings').select('address_line1, address_line2, state, suburb, postcode').maybeSingle()
@@ -286,7 +350,7 @@ export default function DriverDeliveryPage() {
     } catch (err) {
         console.error(err);
     } finally {
-        setLoading(false); // 로딩 종료
+        setLoading(false); 
     }
   };
 
@@ -397,7 +461,19 @@ export default function DriverDeliveryPage() {
       setIsDestinationModalOpen(false);
   };
   const handleStartComplete = (id: string) => { setTargetId(id); fileInputRef.current?.click(); };
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => { const file = e.target.files?.[0]; if (file) { setSelectedFile(file); setPreviewUrl(URL.createObjectURL(file)); } };
+  
+  // ✅ [수정] 파일 선택 시 이미지를 변환(날짜 합성)하고 미리보기 설정
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => { 
+    const file = e.target.files?.[0]; 
+    if (file) { 
+        // 1. 이미지에 날짜/시간 찍기
+        const stampedFile = await addTimestampToImage(file);
+        
+        // 2. 변환된 이미지로 state 설정
+        setSelectedFile(stampedFile); 
+        setPreviewUrl(URL.createObjectURL(stampedFile)); 
+    } 
+  };
   
   const handleConfirmUpload = async () => {
     if (!selectedFile || !targetId) return;
@@ -410,6 +486,7 @@ export default function DriverDeliveryPage() {
             initialQuality: 0.7 
         };
 
+        // 날짜가 찍힌 이미지(selectedFile)를 압축
         const compressedFile = await imageCompression(selectedFile, options);
         console.log(`Resize: ${(selectedFile.size/1024).toFixed(2)}kb -> ${(compressedFile.size/1024).toFixed(2)}kb`);
 
@@ -586,7 +663,6 @@ export default function DriverDeliveryPage() {
       {/* List Area (Scrollable with custom scrollbar) */}
       <div className="flex-1 min-h-0 px-4 space-y-3 pb-20 overflow-y-auto custom-scrollbar">
         
-        {/* ✅ [속도 개선 2] 로딩 중일 때 스켈레톤 애니메이션 보여주기 */}
         {loading ? (
             <div className="space-y-3 mt-2">
                 {[1, 2, 3, 4].map((i) => (
@@ -653,7 +729,6 @@ export default function DriverDeliveryPage() {
   );
 }
 
-// ✅ [수정 유지] SortableItem: 드래그 핸들 분리하여 스크롤 가능하게 수정
 function SortableItem({ id, item, index, isActive, isLocked, isDone, isEditing, isNew, onComplete, onNavigate, onCall }: any) {
     const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition } = useSortable({ id });
     const style = { transform: CSS.Transform.toString(transform), transition };

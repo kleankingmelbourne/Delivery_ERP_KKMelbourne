@@ -43,7 +43,7 @@ export interface InvoiceData {
 }
 
 const styles = StyleSheet.create({
-  page: { padding: 30, fontSize: 9, fontFamily: 'Helvetica', color: '#333' },
+  page: { padding: 30, fontSize: 9, fontFamily: 'NotoSansKR', color: '#333' },
   topSection: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20, alignItems: 'flex-start' },
   topLeftColumn: { flexDirection: 'column', width: '55%' },
   topRightColumn: { flexDirection: 'column', width: '40%', alignItems: 'flex-end' },

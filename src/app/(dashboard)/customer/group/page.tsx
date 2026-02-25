@@ -103,9 +103,36 @@ export default function CustomerGroupPage() {
 
   const handleRemoveMember = async (customerId: string) => {
     if (!confirm("Remove this customer from the group?")) return;
-    const { error } = await supabase.from("customers").update({ group_id: null }).eq("id", customerId);
-    if (error) alert("Failed: " + error.message);
-    else fetchData();
+
+    // 1. [백업] 에러 발생 시 되돌리기 위해 현재 상태 저장
+    const prevCustomers = [...customers];
+    const prevGroups = [...groups];
+
+    // 2. [즉시 반영] 서버 기다리지 않고 화면부터 갱신 (Optimistic Update)
+    
+    // 2-1. 고객 리스트에서 해당 고객의 group_id를 null로 변경 -> 리스트에서 즉시 사라짐
+    setCustomers(current => current.map(c => 
+      c.id === customerId ? { ...c, group_id: null } : c
+    ));
+
+    // 2-2. 상단 그룹 카드나 리스트의 '멤버 수(Count)'도 즉시 -1 처리
+    setGroups(current => current.map(g => 
+      g.id === Number(selectedGroupId) ? { ...g, count: (g.count || 1) - 1 } : g
+    ));
+
+    // 3. [백그라운드] 서버 요청 전송
+    const { error } = await supabase
+      .from("customers")
+      .update({ group_id: null })
+      .eq("id", customerId);
+
+    // 4. [롤백] 만약 서버 에러가 나면 원상복구
+    if (error) {
+      console.error(error);
+      alert("Failed to remove member. Please try again.");
+      setCustomers(prevCustomers);
+      setGroups(prevGroups);
+    }
   };
 
   const handleEditGroup = () => {

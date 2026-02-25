@@ -1,6 +1,6 @@
 "use client";
 
-import { pdf } from '@react-pdf/renderer';
+import { pdf, Font } from '@react-pdf/renderer';
 import { saveAs } from 'file-saver';
 import { createClient } from '@/utils/supabase/client';
 import InvoiceDocument, { InvoiceData } from '@/components/pdf/InvoiceDocument';
@@ -9,6 +9,11 @@ import { BulkInvoiceDocument } from '@/components/pdf/BulkInvoiceDocument';
 import StatementDocument, { StatementData, StatementTransaction, StatementAgeing } from '@/components/pdf/StatementDocument';
 import QuotationDocument, { QuotationData } from '@/components/pdf/QuotationDocument';
 import PurchaseOrderDocument, { PurchaseOrderData } from '@/components/pdf/PurchaseOrderDocument';
+
+Font.register({
+  family: 'NotoSansKR',
+  src: '/font/NotoSansKR-Medium.ttf', // public 폴더 경로와 일치해야 함
+});
 
 // ==================================================================
 // 1. INVOICE & CREDIT MEMO SECTION

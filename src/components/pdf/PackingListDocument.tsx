@@ -4,7 +4,7 @@ import { format } from 'date-fns';
 import { InvoiceData } from './InvoiceDocument';
 
 const styles = StyleSheet.create({
-  page: { padding: 40, fontFamily: 'Helvetica', fontSize: 10, color: '#333', lineHeight: 1.5 },
+  page: { padding: 40, fontFamily: 'NotoSansKR', fontSize: 10, color: '#333', lineHeight: 1.5 },
   
   // Header
   header: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 },

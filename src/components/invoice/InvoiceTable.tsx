@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useRef, useMemo } from "react";
+import React, { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { 
   Plus, Search, MoreHorizontal, Printer, Trash2, Edit,
@@ -33,6 +33,9 @@ import {
 const roundAmount = (num: number) => {
   return Math.round((num + Number.EPSILON) * 100) / 100;
 };
+
+// --- [Utility] Currency Format ---
+const formatCurrency = (amount: number) => new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(roundAmount(amount));
 
 // --- 타입 정의 ---
 interface Invoice {
@@ -88,8 +91,6 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [loading, setLoading] = useState(true);
   
-  // [삭제] driversMap은 이제 필요 없음 (Join으로 해결)
-
   // ------------------------------------------------------------------
   // 날짜 및 Today 로직
   // ------------------------------------------------------------------
@@ -125,7 +126,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
 
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState("10"); 
-  const [totalCount, setTotalCount] = useState(0); // [NEW] 전체 데이터 개수
+  const [totalCount, setTotalCount] = useState(0); 
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
@@ -135,12 +136,98 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
   const [detailsCache, setDetailsCache] = useState<Record<string, InvoiceItem[]>>({});
   const [loadingRows, setLoadingRows] = useState<Set<string>>(new Set());
 
-  // 데이터 로딩 트리거 (페이지, 필터 변경 시)
-  useEffect(() => { 
-    if (startDate && endDate) { 
-        fetchInvoices(); 
+  // ✅ [최적화 1] 쿼리 생성 로직 분리 (재사용 위해)
+  const buildQuery = useCallback((isCountQuery: boolean = false) => {
+    // 1. 기본 쿼리
+    let query = supabase.from("invoices") as any;
+
+    if (isCountQuery) {
+        query = query.select("id", { count: 'exact', head: true }); // 데이터 안 가져오고 개수만
+    } else {
+        query = query.select(`
+        id,
+        invoice_to,
+        invoice_date,
+        due_date,
+        total_amount,
+        paid_amount,
+        status,
+        is_pickup,
+        is_completed,
+        proof_url,
+        customer_id,
+        driver_id,
+        driver:driver_id ( display_name )
+      `);
     }
-  }, [filterStatus, startDate, endDate, currentPage, pageSize, activeTab, searchTerm]); 
+
+    // 2. 필터링
+    if (filterStatus === "PAID") {
+      query = query.eq("status", "Paid");
+    } else if (filterStatus === "UNPAID") {
+      query = query.in("status", ["Unpaid", "Partial"]);
+    }
+
+    if (startDate) query = query.gte("invoice_date", startDate);
+    if (endDate) query = query.lte("invoice_date", `${endDate}T23:59:59`);
+
+    // 탭 필터
+    if (activeTab === 'INVOICE') {
+        query = query.not('id', 'ilike', 'CR-%').neq('status', 'Credit');
+    } else if (activeTab === 'CREDIT') {
+        query = query.or('status.eq.Credit,id.ilike.CR-%');
+    }
+
+    // 검색어 필터
+    if (searchTerm) {
+        query = query.or(`invoice_to.ilike.%${searchTerm}%,id.ilike.%${searchTerm}%`);
+    }
+
+    return query;
+  }, [supabase, filterStatus, startDate, endDate, activeTab, searchTerm]);
+
+  // ✅ [최적화 2] 전체 카운트만 따로 가져오기 (필터 바뀔 때만 실행)
+  useEffect(() => {
+    const fetchCount = async () => {
+        if (!startDate || !endDate) return;
+        const query = buildQuery(true);
+        const { count, error } = await query;
+        if (!error && count !== null) {
+            setTotalCount(count);
+        }
+    };
+    fetchCount();
+  }, [buildQuery, startDate, endDate]); // 페이지 변경 시에는 실행 안 됨!
+
+  // ✅ [최적화 3] 데이터 리스트 가져오기 (페이지 바뀔 때도 실행)
+  const fetchInvoices = useCallback(async () => {
+    if (!startDate || !endDate) return;
+    
+    setLoading(true);
+    
+    let query = buildQuery(false);
+
+    // 정렬 및 페이지네이션
+    const limit = pageSize === "all" ? 10000 : parseInt(pageSize);
+    const from = (currentPage - 1) * limit;
+    const to = from + limit - 1;
+
+    query = query.order("id", { ascending: false }).range(from, to);
+
+    const { data, error } = await query;
+
+    if (!error && data) {
+      setInvoices(data);
+    } else {
+        console.error(error);
+    }
+    setLoading(false);
+  }, [buildQuery, currentPage, pageSize, startDate, endDate]);
+
+  // 데이터 로딩 트리거
+  useEffect(() => { 
+    fetchInvoices(); 
+  }, [fetchInvoices]); 
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -157,72 +244,45 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     setCurrentPage(1);
     setSelectedIds(new Set()); 
     setExpandedRowIds(new Set()); 
-  }, [searchTerm, startDate, endDate, activeTab]); // pageSize 제외 (페이지 크기 변경 시 현재 페이지 유지 혹은 리셋 선택 가능)
-
-  // ✅ [핵심] Server-Side Pagination Fetching
-  const fetchInvoices = async () => {
-    setLoading(true);
-    
-    // 1. 기본 쿼리 구성 (드라이버 정보까지 한 번에 Join)
-    let query = supabase
-        .from("invoices")
-        .select("*, customers(email), driver:driver_id(display_name)", { count: 'exact' });
-
-    // 2. 필터링
-    if (filterStatus === "PAID") {
-      query = query.eq("status", "Paid");
-    } else if (filterStatus === "UNPAID") {
-      query = query.in("status", ["Unpaid", "Partial"]);
-    }
-
-    if (startDate) query = query.gte("invoice_date", startDate);
-    if (endDate) query = query.lte("invoice_date", `${endDate}T23:59:59`);
-
-    // 탭 필터 (DB 레벨에서 처리)
-    if (activeTab === 'INVOICE') {
-        // Invoice만 (CR로 시작하지 않음)
-        query = query.not('id', 'ilike', 'CR-%').neq('status', 'Credit');
-    } else if (activeTab === 'CREDIT') {
-        // Credit만
-        query = query.or('status.eq.Credit,id.ilike.CR-%');
-    }
-
-    // 검색어 필터 (DB 레벨에서 처리)
-    if (searchTerm) {
-        query = query.or(`invoice_to.ilike.%${searchTerm}%,id.ilike.%${searchTerm}%`);
-    }
-
-    // 3. 정렬 및 페이지네이션 (범위 지정)
-    const limit = pageSize === "all" ? 10000 : parseInt(pageSize);
-    const from = (currentPage - 1) * limit;
-    const to = from + limit - 1;
-
-    query = query.order("id", { ascending: false }).range(from, to);
-
-    const { data, error, count } = await query;
-
-    if (!error && data) {
-      // Driver 정보 매핑 필요 없음 (이미 data 안에 driver 객체로 들어옴)
-      setInvoices(data);
-      if (count !== null) setTotalCount(count);
-    } else {
-        console.error(error);
-    }
-    setLoading(false);
-  };
+  }, [searchTerm, startDate, endDate, activeTab]); 
 
   // --- Handlers ---
   
   const handleEmail = (invoice: Invoice) => {
-    setOpenMenuId(null);
-    setEmailTarget({
-      id: invoice.id,
-      type: 'invoice',
-      customerName: invoice.invoice_to || "Customer",
-      customerEmail: invoice.customers?.email || "",
-      docNumber: invoice.id,
-    });
-  };
+  setOpenMenuId(null); // 1. 드롭다운 메뉴 닫기
+
+  // 2. [즉시 실행] 가지고 있는 정보로 다이얼로그 먼저 띄움! (이메일 없으면 빈칸)
+  setEmailTarget({
+    id: invoice.id,
+    type: 'invoice',
+    customerName: invoice.invoice_to || "Customer",
+    customerEmail: invoice.customers?.email || "", 
+    docNumber: invoice.id,
+  });
+
+  // 3. [백그라운드] 이메일이 비어있다면, 뒤에서 몰래 가져와서 채워 넣기
+  if (!invoice.customers?.email && invoice.customer_id) {
+    
+    // 별도의 비동기 흐름 시작 (await로 기다리지 않음)
+    (async () => {
+      const { data } = await supabase
+          .from('customers')
+          .select('email')
+          .eq('id', invoice.customer_id)
+          .single();
+      
+      if (data && data.email) {
+          // 4. 데이터를 가져오면 열려있는 다이얼로그의 상태를 업데이트 (쓱- 채워짐)
+          setEmailTarget((prev) => {
+            // 만약 그 사이에 사용자가 창을 닫았거나 다른 걸 눌렀으면 무시
+            if (!prev || prev.id !== invoice.id) return prev;
+            
+            return { ...prev, customerEmail: data.email };
+          });
+      }
+    })();
+  }
+};
 
   const handlePaymentRedirect = (customerId: string) => {
     if (!customerId) return alert("Customer information is missing.");
@@ -242,16 +302,57 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     } else {
       newExpanded.add(invoiceId);
       setExpandedRowIds(newExpanded);
-      if (!detailsCache[invoiceId]) {
-        setLoadingRows(prev => new Set(prev).add(invoiceId));
-        const { data: items, error } = await supabase.from("invoice_items").select("id, description, quantity, unit_price, amount, unit, base_price, discount").eq("invoice_id", invoiceId);
-        if (!error && items) setDetailsCache(prev => ({ ...prev, [invoiceId]: items }));
+      
+      const targetInvoice = invoices.find(inv => inv.id === invoiceId);
+      const isDetailsLoaded = targetInvoice && 'memo' in targetInvoice;
+
+      // ✅ [최적화 4] 이미 캐시된 데이터가 있으면 요청 안 함
+      if (!detailsCache[invoiceId] || !isDetailsLoaded) {
+      setLoadingRows(prev => new Set(prev).add(invoiceId));
+
+      // 1. 병렬 요청 (품목 가져오기 + 상세 정보 가져오기)
+      const [itemsRes, detailsRes] = await Promise.all([
+        // A. 품목 가져오기
+        supabase.from("invoice_items").select("*").eq("invoice_id", invoiceId),
+        
+        // B. 아까 안 가져온 상세 정보 가져오기
+        // (paid_amount, subtotal, gst_total, memo, created_who, updated_who, 고객 이메일 등)
+        supabase.from("invoices")
+          .select("subtotal, gst_total, memo, created_who, updated_who")
+          .eq("id", invoiceId)
+          .single()
+      ]);
+
+      // 2. 데이터 업데이트
+      if (!itemsRes.error && itemsRes.data) {
+          setDetailsCache(prev => ({ ...prev, [invoiceId]: itemsRes.data }));
+      }
+
+      if (!detailsRes.error && detailsRes.data) {
+          // ✅ [핵심] 기존 invoices 리스트에 새로 가져온 상세 정보를 합쳐줌 (Merge)
+          setInvoices(prev => prev.map(inv => {
+            if (inv.id === invoiceId) {
+                // Supabase가 customers를 배열로 반환할 가능성에 대비해 any로 받아 처리
+                const newData = detailsRes.data as any;
+                
+                // customers가 배열이면 첫 번째 객체를, 아니면 그대로 사용
+                const safeCustomer = Array.isArray(newData.customers) 
+                    ? newData.customers[0] 
+                    : newData.customers;
+
+                return { 
+                    ...inv, 
+                    ...newData,
+                    customers: safeCustomer // Invoice 인터페이스(객체)에 맞게 주입
+                };
+            }
+            return inv;
+          }));
+      }
         setLoadingRows(prev => { const next = new Set(prev); next.delete(invoiceId); return next; });
       }
     }
   };
-
-  // filteredInvoices / paginatedInvoices 로직 제거 (DB에서 이미 페이징된 데이터를 받으므로 invoices가 곧 현재 페이지 데이터임)
 
   const totalPages = pageSize === "all" ? 1 : Math.ceil(totalCount / parseInt(pageSize));
 
@@ -259,12 +360,6 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     return invoices.reduce((sum, inv) => sum + (inv.total_amount || 0), 0);
   }, [invoices]);
 
-  // tabCounts는 DB 카운트 쿼리를 별도로 날려야 정확하지만, 
-  // 성능을 위해 현재 화면 로딩된 것 기준이 아니라, 별도 useEffect로 가볍게 카운트만 가져오는 게 좋습니다.
-  // 여기서는 편의상 전체 카운트를 표시하거나, 생략할 수 있습니다. 
-  // (현재 구조 유지: 성능 최적화를 위해 탭 카운트는 일단 전체 카운트인 totalCount로 대체하거나 별도 로직 필요)
-  // 일단 UX 유지를 위해 간단한 카운트만 표시 (완벽한 숫자는 아님)
-  
   const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newSelected = new Set(selectedIds);
     if (e.target.checked) { invoices.forEach(inv => newSelected.add(inv.id)); } 
@@ -385,6 +480,9 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
       await supabase.from("invoices").delete().eq("id", id); 
       
       fetchInvoices(); 
+      // 삭제 후 전체 카운트도 갱신 필요
+      setTotalCount(prev => Math.max(0, prev - 1));
+      
       alert("Deleted successfully and stock/status restored.");
     } catch (e: any) { 
       console.error(e);
@@ -449,6 +547,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
         alert("Deleted and stock/status restored."); 
         setSelectedIds(new Set()); 
         fetchInvoices(); 
+        setTotalCount(prev => Math.max(0, prev - ids.length));
     } catch (e: any) {
         console.error(e);
         alert("Failed: " + e.message);
@@ -464,8 +563,6 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
       router.push(`/invoice/edit/${id}`);
     }
   };
-  
-  const formatCurrency = (amount: number) => new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(roundAmount(amount));
   
   const renderStatus = (status: string) => {
     switch (status) {

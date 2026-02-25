@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { 
   ArrowLeft, User, Calendar, CreditCard, 
   DollarSign, Wallet, FileText, Check, ChevronDown, Loader2,
-  AlertCircle, RefreshCw 
+  AlertCircle, RefreshCw, Search
 } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -17,17 +17,57 @@ import { Checkbox } from "@/components/ui/checkbox";
 const roundAmount = (num: number) => Math.round((num + Number.EPSILON) * 100) / 100;
 const formatCurrency = (amount: number) => new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD" }).format(amount);
 
-// --- Components (SearchableSelect) ---
+// --- Components (SearchableSelect: 키보드/마우스/자동선택 완벽 구현) ---
 interface Option { id: string; label: string; subLabel?: string; }
-function SearchableSelect({ options, value, onChange, placeholder, className }: any) {
+interface SearchableSelectProps {
+    options: Option[];
+    value: string;
+    onChange: (value: string) => void;
+    placeholder?: string;
+    className?: string;
+}
+
+function SearchableSelect({ options, value, onChange, placeholder, className }: SearchableSelectProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
+  const [highlightedIndex, setHighlightedIndex] = useState(0); 
+  
   const containerRef = useRef<HTMLDivElement>(null);
-  const selectedOption = options.find((o:any) => o.id === value);
+  const listRef = useRef<HTMLDivElement>(null);
+  const optionsRef = useRef<(HTMLDivElement | null)[]>([]); 
+  
+  // 입력 방식 추적 (mouse | keyboard) - 스크롤 충돌 방지
+  const inputMethod = useRef<"mouse" | "keyboard">("keyboard");
+  const mouseCoords = useRef({ x: 0, y: 0 });
+
+  const selectedOption = options.find(o => o.id === value);
+  
+  // 로컬 필터링 (최대 50개 제한)
   const filteredOptions = useMemo(() => {
     if (!searchTerm) return options.slice(0, 50);
-    return options.filter((o:any) => o.label.toLowerCase().includes(searchTerm.toLowerCase())).slice(0, 50);
+    const lowerTerm = searchTerm.toLowerCase();
+    return options.filter(option => 
+        option.label.toLowerCase().includes(lowerTerm) || 
+        (option.subLabel && option.subLabel.toLowerCase().includes(lowerTerm))
+    ).slice(0, 50);
   }, [options, searchTerm]);
+
+  // ✅ [핵심 1] 검색어가 변경되면 무조건 0번 인덱스(맨 위)를 가리킴
+  useEffect(() => {
+    setHighlightedIndex(0);
+    inputMethod.current = "keyboard"; // 키보드 모드로 강제 전환 (자동 하이라이트 시각화)
+    if (listRef.current) listRef.current.scrollTop = 0; // 스크롤도 맨 위로
+  }, [searchTerm]);
+
+  // ✅ [핵심 2] 키보드 조작 시에만 자동 스크롤
+  useEffect(() => {
+    if (isOpen && inputMethod.current === "keyboard") {
+        const item = optionsRef.current[highlightedIndex];
+        if (item) {
+            item.scrollIntoView({ block: "nearest" });
+        }
+    }
+  }, [highlightedIndex, isOpen]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -37,24 +77,85 @@ function SearchableSelect({ options, value, onChange, placeholder, className }: 
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    inputMethod.current = "keyboard"; // 키보드 사용 중임을 명시
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault(); 
+      setHighlightedIndex(prev => (prev < filteredOptions.length - 1 ? prev + 1 : prev));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlightedIndex(prev => (prev > 0 ? prev - 1 : 0));
+    } else if (e.key === "Enter" || e.key === "Tab") {
+      // ✅ [핵심 3] 엔터 키 누르면 현재 하이라이트된 아이템 선택
+      if (filteredOptions[highlightedIndex]) {
+        e.preventDefault();
+        onChange(filteredOptions[highlightedIndex].id);
+        setIsOpen(false);
+        setSearchTerm("");
+      }
+    } else if (e.key === "Escape") {
+      setIsOpen(false);
+    }
+  };
+
   return (
     <div className={`relative ${className}`} ref={containerRef}>
-      <div onClick={() => setIsOpen(!isOpen)} className={`flex items-center justify-between w-full px-3 py-2 text-sm border rounded-md cursor-pointer bg-white ${isOpen ? "ring-2 ring-slate-900 border-slate-900" : "border-slate-200"}`}>
-        <span className={`truncate ${!selectedOption && !value ? "text-slate-400" : "text-slate-900 font-medium"}`}>{selectedOption ? selectedOption.label : placeholder}</span>
+      <div 
+        onClick={() => setIsOpen(!isOpen)} 
+        className={`flex items-center justify-between w-full px-3 py-2 text-sm border rounded-md cursor-pointer bg-white ${isOpen ? "ring-2 ring-slate-900 border-slate-900" : "border-slate-200"}`}
+      >
+        <span className={`truncate ${!selectedOption && !value ? "text-slate-400" : "text-slate-900 font-medium"}`}>
+            {selectedOption ? selectedOption.label : placeholder}
+        </span>
         <ChevronDown className="w-4 h-4 text-slate-400 opacity-50" />
       </div>
+      
       {isOpen && (
-        <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-60 overflow-auto">
-          <div className="sticky top-0 p-2 bg-white border-b border-slate-100">
-            <input autoFocus type="text" className="w-full px-2 py-1 text-sm border rounded bg-slate-50 focus:outline-none" placeholder="Search..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
+        <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-60 flex flex-col">
+          <div className="sticky top-0 p-2 bg-white border-b border-slate-100 shrink-0">
+            <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                <input 
+                    autoFocus 
+                    type="text" 
+                    className="w-full pl-8 pr-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:border-slate-400 placeholder:text-xs" 
+                    placeholder="Search..." 
+                    value={searchTerm} 
+                    onChange={e => setSearchTerm(e.target.value)} 
+                    onKeyDown={handleKeyDown} 
+                />
+            </div>
           </div>
-          <div className="p-1">
-            {filteredOptions.map((opt:any) => (
-              <div key={opt.id} onClick={() => { onChange(opt.id); setIsOpen(false); setSearchTerm(""); }} className={`flex justify-between px-3 py-2 text-sm rounded cursor-pointer ${opt.id === value ? "bg-slate-100 font-bold" : "hover:bg-slate-50"}`}>
-                <div>{opt.label}{opt.subLabel && <span className="block text-[10px] text-slate-400 font-normal">{opt.subLabel}</span>}</div>
-                {opt.id === value && <Check className="w-3.5 h-3.5" />}
-              </div>
-            ))}
+          <div className="p-1 overflow-y-auto flex-1" ref={listRef}>
+            {filteredOptions.length === 0 ? (
+                <div className="p-3 text-xs text-center text-slate-400">No results found.</div>
+            ) : (
+                filteredOptions.map((opt, index) => (
+                <div 
+                    key={opt.id} 
+                    ref={(el) => { optionsRef.current[index] = el; }}
+                    onClick={() => { onChange(opt.id); setIsOpen(false); setSearchTerm(""); }} 
+                    
+                    // 마우스 이동 감지 (스크롤 튐 방지)
+                    onMouseMove={(e) => {
+                        if (mouseCoords.current.x !== e.clientX || mouseCoords.current.y !== e.clientY) {
+                            inputMethod.current = "mouse"; 
+                            setHighlightedIndex(index);
+                            mouseCoords.current = { x: e.clientX, y: e.clientY };
+                        }
+                    }}
+
+                    className={`flex justify-between px-3 py-2 text-sm rounded cursor-pointer ${index === highlightedIndex ? "bg-slate-100 font-bold text-slate-900" : "hover:bg-slate-50 text-slate-700"}`}
+                >
+                    <div className="flex flex-col truncate">
+                        <span>{opt.label}</span>
+                        {opt.subLabel && <span className="text-[10px] text-slate-400 font-normal">{opt.subLabel}</span>}
+                    </div>
+                    {opt.id === value && <Check className="w-3.5 h-3.5 text-slate-900 shrink-0" />}
+                </div>
+                ))
+            )}
           </div>
         </div>
       )}
@@ -207,39 +308,33 @@ function PaymentFormContent() {
     setAllocations(prev => ({ ...prev, [invoiceId]: numVal }));
   };
 
-  // [NEW] 개별 체크박스 자동 계산 로직
+  // 개별 체크박스 자동 계산 로직
   const handleCheckboxChange = (invoiceId: string, isChecked: boolean) => {
     if (autoAllocate) setAutoAllocate(false); // 수동 조작 시 전체 자동 끄기
 
     if (!isChecked) {
-        // 체크 해제 시: 해당 할당액 0으로 초기화
         setAllocations(prev => {
             const next = { ...prev };
-            delete next[invoiceId]; // 혹은 next[invoiceId] = 0;
+            delete next[invoiceId];
             return next;
         });
         return;
     }
 
-    // 체크 선택 시: 계산 로직
     const targetInvoice = unpaidInvoices.find(inv => inv.id === invoiceId);
     if (!targetInvoice) return;
 
-    // 1. 현재 이 인보이스를 제외한 다른 곳에 쓰인 돈 계산
     const usedElsewhere = Object.entries(allocations)
         .filter(([key]) => key !== invoiceId)
         .reduce((sum, [, val]) => sum + val, 0);
     
-    // 2. 현재 남은 가용 자금
     const currentRemaining = roundAmount(totalFundsAvailable - usedElsewhere);
 
     if (currentRemaining <= 0) {
-        // 남은 돈이 없으면 0원 할당 (체크는 되지만 금액은 0)
         setAllocations(prev => ({ ...prev, [invoiceId]: 0 }));
         return;
     }
 
-    // 3. 할당할 금액 결정 (Min: 남은 돈 vs 인보이스 잔액)
     const amountToAllocate = Math.min(currentRemaining, targetInvoice.balance);
     
     setAllocations(prev => ({ ...prev, [invoiceId]: roundAmount(amountToAllocate) }));
@@ -345,7 +440,6 @@ function PaymentFormContent() {
         const inv = unpaidInvoices.find(i => i.id === invoiceId);
         if (inv) {
           const newPaid = roundAmount(inv.paid_amount + allocatedAmt);
-          // 0.01 미만 차이는 오차로 보고 완전 결제로 처리
           const isFullyPaid = Math.abs(inv.total_amount - newPaid) < 0.01;
           const newStatus = isFullyPaid ? 'Paid' : 'Partial';
           
@@ -354,11 +448,9 @@ function PaymentFormContent() {
             status: newStatus
           }).eq('id', invoiceId);
 
-          // [NEW] 만약 완납(Fully Paid)되었다면, 증거 사진 삭제 (bucket: delivery_proofs)
           if (isFullyPaid) {
             console.log(`Invoice ${invoiceId} is fully paid. Attempting to delete proof...`);
             try {
-              // 1. 파일 목록 조회 (파일명에 invoiceId가 포함된 파일 검색)
               const { data: files, error: listError } = await supabase
                 .storage
                 .from('delivery-proofs')
@@ -367,11 +459,7 @@ function PaymentFormContent() {
               if (listError) {
                 console.error("List files error:", listError);
               } else if (files && files.length > 0) {
-                // 정확한 매칭을 위해 필터링 (선택 사항이지만 권장)
-                // 예: ID가 'INV-1'인데 'INV-10'이 검색되는 것 방지
                 const targetFiles = files.filter(f => f.name.startsWith(invoiceId + "_")); 
-                // 또는 단순하게 files 전체를 삭제해도 됩니다 (파일명을 유니크하게 지었다면).
-                
                 const filesToRemove = targetFiles.length > 0 ? targetFiles.map(f => f.name) : files.map(f => f.name);
 
                 if (filesToRemove.length > 0) {
@@ -584,7 +672,6 @@ function PaymentFormContent() {
               <table className="w-full text-sm text-left">
                 <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold text-xs uppercase">
                   <tr>
-                    {/* [NEW] Checkbox Column Header */}
                     <th className="px-6 py-4 w-[50px]">
                         <span className="sr-only">Select</span>
                     </th>
@@ -598,13 +685,13 @@ function PaymentFormContent() {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {unpaidInvoices.map((inv) => {
-                    // 할당된 금액이 있으면 체크된 것으로 간주
                     const allocatedAmount = allocations[inv.id] || 0;
                     const isChecked = allocatedAmount > 0;
+                    // ✨ Dynamic Remaining Balance Calculation
+                    const remainingBalance = Math.max(0, roundAmount(inv.balance - allocatedAmount));
 
                     return (
                         <tr key={inv.id} className={`hover:bg-slate-50 ${isChecked ? "bg-blue-50/20" : ""}`}>
-                        {/* [NEW] Row Checkbox */}
                         <td className="px-6 py-4">
                             <Checkbox 
                                 checked={isChecked}
@@ -616,7 +703,9 @@ function PaymentFormContent() {
                         <td className="px-6 py-4 text-slate-700">{inv.invoice_date}</td>
                         <td className="px-6 py-4 text-slate-500">{inv.due_date}</td>
                         <td className="px-6 py-4 text-right font-medium text-slate-900">{formatCurrency(inv.total_amount)}</td>
-                        <td className="px-6 py-4 text-right font-bold text-slate-700">{formatCurrency(inv.balance)}</td>
+                        <td className={`px-6 py-4 text-right font-bold ${remainingBalance === 0 ? "text-emerald-600" : "text-slate-700"}`}>
+                            {remainingBalance === 0 ? "Paid" : formatCurrency(remainingBalance)}
+                        </td>
                         <td className="px-6 py-3 text-right">
                             <div className="relative">
                             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs">$</span>

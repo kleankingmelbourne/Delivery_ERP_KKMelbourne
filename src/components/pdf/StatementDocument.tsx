@@ -48,7 +48,7 @@ export interface StatementData {
 }
 
 const styles = StyleSheet.create({
-  page: { padding: 40, fontFamily: 'Helvetica', fontSize: 9, color: '#333' },
+  page: { padding: 40, fontFamily: 'NotoSansKR', fontSize: 9, color: '#333' },
   
   // Header with Logo
   header: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },

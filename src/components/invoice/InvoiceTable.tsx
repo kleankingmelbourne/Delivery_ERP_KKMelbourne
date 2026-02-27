@@ -690,7 +690,26 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
               </tr>
             </thead>
             <tbody className="text-sm">
-              {loading ? <tr><td colSpan={10} className="p-20 text-center animate-pulse">Loading...</td></tr> : 
+              {loading ? (
+                <tr>
+                  <td colSpan={10} className="p-20 text-center animate-pulse text-slate-400">
+                    Loading...
+                  </td>
+                </tr>
+              ) : invoices.length === 0 ? (
+                // 🚀 [추가된 부분] 인보이스가 없을 때 표시할 화면
+                <tr>
+                  <td colSpan={10} className="py-24 text-center">
+                    <div className="flex flex-col items-center justify-center gap-3">
+                      <Receipt className="w-12 h-12 text-slate-300" />
+                      <h3 className="text-lg font-bold text-slate-700">No invoices found</h3>
+                      <p className="text-sm text-slate-400">
+                        Try adjusting your dates/filters or create a new invoice.
+                      </p>
+                    </div>
+                  </td>
+                </tr>
+              ) : (
                 invoices.map(inv => {
                   const isExpanded = expandedRowIds.has(inv.id);
                   const isOverdue = inv.status !== "Paid" && inv.status !== "Credit" && inv.due_date < today;
@@ -858,7 +877,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
                     </React.Fragment>
                    );
                  })
-               }
+              )}
              </tbody>
            </table>
          </div>

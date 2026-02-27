@@ -256,18 +256,25 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     const initData = async () => {
       setLoading(true);
 
-      const [custRes, userRes, unitRes] = await Promise.all([
+      // ✅ 4개의 독립적인 데이터를 Promise.all로 "동시에" 요청합니다.
+      const [custRes, userRes, unitRes, invRes] = await Promise.all([
         supabase.from("customers").select("id, name").order("name"), 
         supabase.auth.getUser(),
-        supabase.from("product_units").select("id, unit_name").limit(10000) 
+        supabase.from("product_units").select("id, unit_name").limit(10000),
+        // Edit 모드일 때만 인보이스 데이터를 요청, 아니면 null 반환
+        isEditMode 
+          ? supabase.from("invoices").select(`*, invoice_items (*, products (*, product_units ( unit_name )))`).eq("id", invoiceId).single()
+          : Promise.resolve({ data: null, error: null })
       ]);
 
       if (custRes.data) setCustomers(custRes.data); 
       
-      if (userRes.data.user) {
-        const { data: profile } = await supabase.from('profiles').select('display_name').eq('id', userRes.data.user.id).single();
-        setCurrentUserName(profile?.display_name || userRes.data.user.email?.split('@')[0] || "Unknown");
-      }
+      const currentUser = userRes.data?.user;
+    if (currentUser) {
+      // currentUser가 확실히 존재함을 TypeScript가 인지함
+      supabase.from('profiles').select('display_name').eq('id', currentUser.id).single()
+        .then(({ data }) => setCurrentUserName(data?.display_name || currentUser.email?.split('@')[0] || "Unknown"));
+    }
       
       const uMap: Record<string, string> = {};
       if (unitRes.data) {
@@ -275,20 +282,10 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
           setUnitMap(uMap);
       }
 
-      // Edit Mode Load
-      if (isEditMode) {
-          const { data: inv, error: invError } = await supabase
-            .from("invoices")
-            .select(`*, invoice_items(*)`)
-            .eq("id", invoiceId)
-            .single();
-
-          if (invError || !inv) {
-            alert("Invoice not found.");
-            router.push("/invoice");
-            return;
-          }
-
+      // [최적화 완료] Edit Mode Load
+      if (isEditMode && invRes.data) {
+          const inv = invRes.data;
+          
           setSelectedCustomerId(inv.customer_id);
           setInvoiceDate(inv.invoice_date);
           setDueDate(inv.due_date);
@@ -296,38 +293,31 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
           setIsPickup(inv.is_pickup || false);
           setCurrentDriverId(inv.driver_id);
 
-          const productIdsInInvoice = inv.invoice_items.map((item: any) => item.product_id);
-          let initialProducts: any[] = [];
-          if (productIdsInInvoice.length > 0) {
-              const { data: productsData } = await supabase.from("products").select("*, product_units (unit_name)").in("id", productIdsInInvoice); 
-              if (productsData) initialProducts = productsData;
-          }
+          const initialProducts = inv.invoice_items.map((item: any) => item.products).filter(Boolean);
           const mappedProducts = initialProducts.map((p: any) => ({ ...p, unit_name: p.product_units?.unit_name || "CTN" }));
-          setAllProducts(mappedProducts);
+          
+          const uniqueProducts = Array.from(new Map(mappedProducts.map((p: any) => [p.id, p])).values()) as ProductMaster[];
+          setAllProducts(uniqueProducts);
 
           const loadedItems = inv.invoice_items.map((item: any) => {
             let unit = item.unit;
             if (!unit) { const match = item.description.match(/\((CTN|PACK)\)$/); unit = match ? match[1] : "CTN"; }
-            const prod = initialProducts.find((p: any) => p.id === item.product_id);
+            const prod = item.products; 
             return {
-                productId: item.product_id,
-                unit: unit,
-                quantity: item.quantity,
-                basePrice: item.base_price,
-                discountRate: item.discount,
-                unitPrice: item.unit_price,
-                defaultUnitName: prod?.product_units?.unit_name || "CTN"
+                productId: item.product_id, unit: unit, quantity: item.quantity, basePrice: item.base_price, discountRate: item.discount, unitPrice: item.unit_price, defaultUnitName: prod?.product_units?.unit_name || "CTN"
             };
           });
           setItems(loadedItems);
           setOriginalItems(JSON.parse(JSON.stringify(loadedItems))); 
+      } else if (isEditMode && invRes.error) {
+          alert("Invoice not found.");
+          router.push("/invoice");
       }
-
+      
       setLoading(false);
     };
     initData();
-  }, [invoiceId, isEditMode]);
-
+  }, [invoiceId, isEditMode, router]);
 
   // 2. Customer Change Effect 
   useEffect(() => {
@@ -342,63 +332,43 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     }
 
     const loadCustomerDetail = async () => {
-      // ✅ 1. 고객 상세 정보 (Memo, DueDate 등) - 이건 필수니까 유지 (가벼움)
-      const { data: fullCustomer } = await supabase
-          .from("customers")
-          .select("due_date, note, in_charge_delivery")
-          .eq("id", selectedCustomerId)
-          .single();
-
-      if (fullCustomer) {
-        setStaffNote(fullCustomer.note || "");
-        if (!isEditMode) calculateDueDate(invoiceDate, fullCustomer.due_date);
-        if (!currentDriverId) setCurrentDriverId(fullCustomer.in_charge_delivery); 
-      }
-      
-      // ✅ 2. 고객별 가격 정책(할인율)만 가져옴 (가벼움) - 유지
-      const { data: apData } = await supabase
-          .from("customer_products")
-          .select("product_id, custom_price_ctn, custom_price_pack")
-          .eq("customer_id", selectedCustomerId)
-          .limit(10000);
-      
-      if (apData) {
-          const mappedAllowed = apData.map((item: any) => ({ 
-              product_id: item.product_id, 
-              discount_ctn: item.custom_price_ctn || 0, 
-              discount_pack: item.custom_price_pack || 0 
-          }));
-          setAllowedProducts(mappedAllowed);
-          // allowedProductIds 배열 생성 로직은 삭제하거나 검색 필터용으로만 남김
-      }
-
-      // ❌ [삭제!] 여기서 "Allowed Products"의 모든 상세 정보를 DB에서 긁어오는 부분을 삭제합니다.
-      // 이 부분이 Edit 페이지 로딩을 느리게 만드는 주범입니다.
-      /* if (!showAllProducts && allowedProductIds.length > 0) {
-          const { data: productsData } = await supabase
-              .from("products")
-              .select("*, product_units (unit_name)")
-              .in("id", allowedProductIds);
-          
-          if (productsData) {
-             // ... (이 무거운 로직 삭제) ...
-          }
-      } 
-      */
-
-      // ✅ 3. Credit 및 미수금 조회 - 유지 (필요함)
-      const [paymentsRes, unpaidRes] = await Promise.all([
+      // ✅ 3가지 독립적인 통신을 동시에 출발시켜 시간을 1/3로 단축
+      const [customerRes, paymentsRes, unpaidRes] = await Promise.all([
+          // 1. 고객 + 전용상품 데이터
+          supabase.from("customers").select(`due_date, note, in_charge_delivery, customer_products ( product_id, custom_price_ctn, custom_price_pack, products ( *, product_units ( unit_name ) ) )`).eq("id", selectedCustomerId).single(),
+          // 2. 크레딧 조회
           supabase.from('payments').select('unallocated_amount').eq('customer_id', selectedCustomerId).gt('unallocated_amount', 0),
+          // 3. 미수금 조회
           supabase.from("invoices").select("due_date, total_amount, paid_amount").eq("customer_id", selectedCustomerId).neq("status", "Paid")
       ]);
 
-      // ... (아래 통계 처리 로직 유지) ...
-      if (paymentsRes.data) {
-        const total = paymentsRes.data.reduce((sum, p) => sum + p.unallocated_amount, 0);
-        setAvailableCredit(roundAmount(total));
-      } else {
-        setAvailableCredit(0);
+      // --- 1. 고객 정보 세팅 ---
+      const customerData = customerRes.data;
+      if (customerData) {
+          setStaffNote(customerData.note || "");
+          if (!isEditMode) calculateDueDate(invoiceDate, customerData.due_date);
+          if (!currentDriverId) setCurrentDriverId(customerData.in_charge_delivery); 
+
+          const apData = customerData.customer_products || []; 
+          if (apData.length > 0) {
+              const mappedAllowed = apData.map((item: any) => ({ product_id: item.product_id, discount_ctn: item.custom_price_ctn || 0, discount_pack: item.custom_price_pack || 0 }));
+              setAllowedProducts(mappedAllowed);
+
+              const fetchedProducts = apData.map((item: any) => item.products).filter(Boolean).map((p: any) => ({ ...p, unit_name: p.product_units?.unit_name || "CTN" }));
+              setAllProducts(prev => {
+                  const existingIds = new Set(prev.map(p => p.id));
+                  const newProducts = fetchedProducts.filter((p: any) => !existingIds.has(p.id));
+                  return [...prev, ...newProducts] as ProductMaster[];
+              });
+          } else {
+              setAllowedProducts([]); 
+          }
       }
+
+      // --- 2. 크레딧 및 통계 세팅 ---
+      if (paymentsRes.data) {
+        setAvailableCredit(roundAmount(paymentsRes.data.reduce((sum, p) => sum + p.unallocated_amount, 0)));
+      } else setAvailableCredit(0);
 
       if (unpaidRes.data) {
         const todayStr = new Date().toISOString().split('T')[0];
@@ -406,10 +376,9 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
         const overdueTotal = overdueInvoices.reduce((sum: number, inv: any) => sum + (inv.total_amount - (inv.paid_amount || 0)), 0);
         const sortedOverdue = overdueInvoices.sort((a: any, b: any) => new Date(a.due_date).getTime() - new Date(b.due_date).getTime());
         setCustomerStats({ totalOverdue: roundAmount(overdueTotal), oldestInvoiceDate: sortedOverdue[0]?.due_date || null });
-      } else {
-        setCustomerStats({ totalOverdue: 0, oldestInvoiceDate: null });
-      }
+      } else setCustomerStats({ totalOverdue: 0, oldestInvoiceDate: null });
     };
+    
 
     loadCustomerDetail();
   }, [selectedCustomerId, isEditMode]); 
@@ -538,19 +507,35 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
   
   const checkStockAvailability = async (itemList: InvoiceItem[]) => {
       const insufficientItems: string[] = [];
+      const productIds = itemList.map(i => i.productId).filter(Boolean);
+      
+      if (productIds.length === 0) return [];
+
+      // [최적화] 루프 밖에서 필요한 상품들의 재고를 단 1번의 쿼리로 전부 가져옵니다 (.in 사용)
+      const { data: products } = await supabase
+          .from('products')
+          .select('id, product_name, current_stock_level, current_stock_level_pack, total_pack_ctn')
+          .in('id', productIds);
+
+      if (!products) return [];
+
+      // 가져온 데이터를 메모리상에서 비교 (순식간에 처리됨)
       for (const item of itemList) {
           if (!item.productId) continue;
-          const { data: product } = await supabase.from('products').select('id, product_name, current_stock_level, current_stock_level_pack, total_pack_ctn').eq('id', item.productId).single();
+          const product = products.find((p: any) => p.id === item.productId);
+          
           if (product) {
               let currentCtn = product.current_stock_level || 0;
               let currentPack = product.current_stock_level_pack || 0;
-              const packsPerCtn = product.total_pack_ctn || 1;
+              const packsPerCtn = product.total_pack_ctn || 1; 
+
               if (isEditMode) {
                   const originalItem = originalItems.find(oi => oi.productId === item.productId && oi.unit === item.unit);
                   if (originalItem) {
                       if (originalItem.unit === 'CTN') currentCtn += originalItem.quantity; else currentPack += originalItem.quantity;
                   }
               }
+
               if (item.unit === "CTN") {
                   if (currentCtn < item.quantity) insufficientItems.push(`${product.product_name} (${item.unit})`);
               } else {
@@ -563,14 +548,29 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
   };
 
   const updateInventory = async (itemList: InvoiceItem[], isReturn: boolean) => {
+    const productIds = itemList.map(i => i.productId).filter(Boolean);
+    if (productIds.length === 0) return;
+
+    // 1. 상태를 1번의 쿼리로 다 가져옴
+    const { data: products } = await supabase
+        .from('products')
+        .select('id, current_stock_level, current_stock_level_pack, total_pack_ctn')
+        .in('id', productIds);
+
+    if (!products) return;
+
+    const updatePromises = []; // 병렬 처리를 위한 배열
+
     for (const item of itemList) {
         if (!item.productId) continue;
-        const { data: product } = await supabase.from('products').select('current_stock_level, current_stock_level_pack, total_pack_ctn').eq('id', item.productId).single();
+        const product = products.find((p: any) => p.id === item.productId);
         if (!product) continue;
+
         let currentCtn = product.current_stock_level || 0;
         let currentPack = product.current_stock_level_pack || 0;
         const packsPerCtn = product.total_pack_ctn || 1; 
         const qty = item.quantity; 
+
         if (isReturn) {
             if (item.unit === 'CTN') currentCtn += qty; else currentPack += qty;
         } else {
@@ -583,12 +583,22 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                 }
             }
         }
-        await supabase.from('products').update({ current_stock_level: currentCtn, current_stock_level_pack: currentPack }).eq('id', item.productId);
+        
+        // 2. 즉시 await 하지 않고 Promise 배열에 담음
+        updatePromises.push(
+            supabase.from('products')
+            .update({ current_stock_level: currentCtn, current_stock_level_pack: currentPack })
+            .eq('id', item.productId)
+        );
     }
+
+    // 3. 모아둔 업데이트 작업을 동시에 백그라운드로 전송하여 실행 (속도 비약적 상승)
+    await Promise.all(updatePromises);
   };
 
   const handleCreditMemoCreation = async (redirect: boolean) => {
     try {
+        // [1단계: ID 채번 및 뼈대 생성]
         const { data: lastCr } = await supabase.from('invoices').select('id').ilike('id', 'CR-%').order('id', { ascending: false }).limit(1).single();
         let nextId = "CR-00001";
         if (lastCr?.id) { const match = lastCr.id.match(/CR-(\d+)/); if (match && match[1]) nextId = `CR-${String(parseInt(match[1]) + 1).padStart(5, '0')}`; }
@@ -598,27 +608,41 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
           id: nextId, customer_id: selectedCustomerId, invoice_to: customerName, invoice_date: invoiceDate, due_date: invoiceDate, total_amount: grandTotal, subtotal: subTotal, gst_total: gstTotal, paid_amount: grandTotal, status: "Credit", created_who: currentUserName, updated_who: currentUserName, memo: memo, is_pickup: isPickup
         });
         if (invError) throw invError;
+
+        // [2단계: 연관 데이터 한방에 전송]
         const validItems = items.filter(item => item.productId);
+        const parallelTasks = [];
+
         if (validItems.length > 0) {
           const itemsData = validItems.map(item => {
               const p = allProducts.find(x => x.id === item.productId);
               return { invoice_id: nextId, product_id: item.productId, description: `${p?.product_name || 'Item'} (${item.unit})`, quantity: item.quantity, unit: item.unit, base_price: item.basePrice, discount: item.discountRate, unit_price: item.unitPrice, amount: roundAmount(item.quantity * item.unitPrice) };
           });
-          const { error: itemError } = await supabase.from("invoice_items").insert(itemsData);
-          if (itemError) throw itemError;
-          await updateInventory(validItems, true);
+          parallelTasks.push(supabase.from("invoice_items").insert(itemsData));
+          parallelTasks.push(updateInventory(validItems, true));
         }
+
         const creditAmount = Math.abs(grandTotal); 
         const itemSummary = validItems.map(i => { const p = allProducts.find(x => x.id === i.productId); return `${p?.product_name} x${i.quantity}`; }).join(', ');
-        const { error: payError } = await supabase.from('payments').insert({
+        
+        parallelTasks.push(supabase.from('payments').insert({
             id: nextId, customer_id: selectedCustomerId, amount: creditAmount, unallocated_amount: creditAmount, payment_date: invoiceDate, category: 'Credit Memo', reason: `Generated from ${nextId}`, note: `[Credit Memo] ${memo} / Items: ${itemSummary}`, created_at: new Date().toISOString()
-        });
-        if (payError) throw payError;
-        await supabase.from("customers").update({ note: staffNote }).eq("id", selectedCustomerId);
+        }));
+        
+        parallelTasks.push(supabase.from("customers").update({ note: staffNote }).eq("id", selectedCustomerId));
+
+        // 💥 모아둔 모든 Write 요청을 DB에 한방에 발사합니다.
+        await Promise.all(parallelTasks);
+
         alert(`Credit Memo (${nextId}) created successfully!`);
         if (redirect) router.push("/invoice"); else { resetForm(); }
-        setLoading(false);
-      } catch (e: any) { console.error(e); alert("Error: " + e.message); } finally { setLoading(false); }
+
+      } catch (e: any) { 
+          console.error(e); 
+          alert("Error: " + e.message); 
+      } finally { 
+          setLoading(false); 
+      }
   };
 
   const handleSave = async (redirectOrNew: boolean) => {
@@ -634,27 +658,41 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
     try {
       const customerName = customers.find(c => c.id === selectedCustomerId)?.name || "Customer";
+      let targetId = invoiceId;
+
+      // [1단계: 인보이스 뼈대 작업] 
       if (isEditMode) {
-          if (originalItems.length > 0) await updateInventory(originalItems, true);
-          const { error: invError } = await supabase.from("invoices").update({ customer_id: selectedCustomerId, invoice_to: customerName, invoice_date: invoiceDate, due_date: dueDate, total_amount: grandTotal, subtotal: subTotal, gst_total: gstTotal, updated_who: currentUserName, memo: memo, driver_id: currentDriverId, is_pickup: isPickup }).eq("id", invoiceId);
-          if (invError) throw invError;
-          await supabase.from("invoice_items").delete().eq("invoice_id", invoiceId);
+          // Edit 모드: 배열로 빼지 않고 곧바로 Promise.all에 넣어 튜플로 타입 추론을 강제합니다.
+          const [ , invUpdateRes, invDelRes ] = await Promise.all([
+              originalItems.length > 0 ? updateInventory(originalItems, true) : Promise.resolve(),
+              supabase.from("invoices").update({ customer_id: selectedCustomerId, invoice_to: customerName, invoice_date: invoiceDate, due_date: dueDate, total_amount: grandTotal, subtotal: subTotal, gst_total: gstTotal, updated_who: currentUserName, memo: memo, driver_id: currentDriverId, is_pickup: isPickup }).eq("id", invoiceId),
+              supabase.from("invoice_items").delete().eq("invoice_id", invoiceId)
+          ]);
+          
+          // 이제 타입스크립트가 invUpdateRes에 error 객체가 있다는 것을 정확히 압니다.
+          if (invUpdateRes && invUpdateRes.error) throw invUpdateRes.error; 
+          if (invDelRes && invDelRes.error) throw invDelRes.error;
       } else {
+          // New 모드: 아이템을 넣으려면 ID가 필요하므로 인보이스 생성만 먼저 기다립니다.
           const { data: inv, error: err1 } = await supabase.from("invoices").insert({ customer_id: selectedCustomerId, invoice_to: customerName, invoice_date: invoiceDate, due_date: dueDate, total_amount: grandTotal, paid_amount: 0, subtotal: subTotal, gst_total: gstTotal, created_who: currentUserName, updated_who: currentUserName, status: "Unpaid", memo: memo, driver_id: currentDriverId, is_pickup: isPickup }).select().single();
           if (err1 || !inv) throw err1 || new Error("Invoice creation failed");
-          var newInvoiceId = inv.id;
+          targetId = inv.id;
       }
-      const targetId = isEditMode ? invoiceId : newInvoiceId!;
+      
+      // [2단계: 연관 데이터 한방에 전송] 아이템 삽입, 재고 차감, 고객 노트 수정 등을 병렬로 묶습니다.
       const itemsData = validItems.map(item => {
         const p = allProducts.find(x => x.id === item.productId);
         return { invoice_id: targetId, product_id: item.productId, description: `${p?.product_name || 'Unknown'} (${item.unit})`, quantity: item.quantity, unit: item.unit, base_price: item.basePrice, discount: item.discountRate, unit_price: item.unitPrice, amount: roundAmount(item.quantity * item.unitPrice) };
       });
-      if (itemsData.length > 0) {
-        const { error: err2 } = await supabase.from("invoice_items").insert(itemsData);
-        if (err2) throw err2;
-        await updateInventory(validItems, false);
-      }
-      await supabase.from("customers").update({ note: staffNote }).eq("id", selectedCustomerId);
+
+      // 병렬로 실행할 작업 리스트 (배열)
+      const parallelSaveTasks = [
+        itemsData.length > 0 ? supabase.from("invoice_items").insert(itemsData) : Promise.resolve(),
+        itemsData.length > 0 ? updateInventory(validItems, false) : Promise.resolve(),
+        supabase.from("customers").update({ note: staffNote }).eq("id", selectedCustomerId)
+      ];
+
+      // Auto-add 체크 시, 고객 전용 상품 단가 업데이트 로직도 배열에 추가합니다.
       if (autoAddProduct && validItems.length > 0) {
         const updatesMap = new Map();
         allowedProducts.forEach(ap => updatesMap.set(ap.product_id, { ctn: ap.discount_ctn, pack: ap.discount_pack }));
@@ -668,12 +706,24 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
           return { customer_id: selectedCustomerId, product_id: item.productId, custom_price_ctn: rates.ctn, custom_price_pack: rates.pack };
         });
         const uniqueUpdates = Array.from(new Map(updates.map(item => [item.product_id, item])).values());
-        await supabase.from("customer_products").upsert(uniqueUpdates, { onConflict: 'customer_id, product_id' });
+        
+        parallelSaveTasks.push(supabase.from("customer_products").upsert(uniqueUpdates, { onConflict: 'customer_id, product_id' }));
       }
+
+      // 💥 모아둔 모든 Write 요청을 DB에 한방에 발사합니다.
+      const finalResults = await Promise.all(parallelSaveTasks);
+      if (finalResults[0] && 'error' in finalResults[0] && finalResults[0].error) throw finalResults[0].error;
+
       alert(isEditMode ? "Invoice updated successfully!" : "Invoice saved successfully!");
       if (isEditMode) router.push("/invoice");
       else { if (redirectOrNew) router.push("/invoice"); else resetForm(); }
-    } catch (e: any) { console.error(e); alert("Error: " + e.message); } finally { setLoading(false); }
+
+    } catch (e: any) { 
+        console.error(e); 
+        alert("Error: " + e.message); 
+    } finally { 
+        setLoading(false); 
+    }
   };
 
   const resetForm = () => {

@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { createClient } from "@/utils/supabase/client";
-import { GoogleMap, useJsApiLoader, DirectionsRenderer, Marker } from '@react-google-maps/api';
+import { GoogleMap, useJsApiLoader, DirectionsRenderer, Marker, TrafficLayer } from '@react-google-maps/api';
 import { Loader2, MapPin } from "lucide-react";
 
 // [중요] 라이브러리 배열 상수화 (재렌더링 방지)
@@ -171,18 +171,22 @@ export default function DriverRoutePage() {
 
     // 5. 출발지(Origin) 결정 및 경로 요청
     navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const origin = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-        requestDirections(origin, waypoints, returnCoords);
-      },
-      () => {
-        // GPS 실패 시 첫 번째 배송지를 출발지로
-        const origin = typeof waypoints[0].location === 'string' 
-          ? waypoints[0].location 
-          : (waypoints[0].location as google.maps.LatLngLiteral);
-        requestDirections(origin as any, waypoints.slice(1), returnCoords);
-      },
-      { enableHighAccuracy: true, timeout: 5000 }
+        (pos) => {
+            const origin = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+            requestDirections(origin, waypoints, returnCoords);
+        },
+        () => {
+            // GPS 실패 혹은 타임아웃 시 즉시 첫 번째 배송지를 출발지로 사용
+            const origin = typeof waypoints[0].location === 'string' 
+            ? waypoints[0].location 
+            : (waypoints[0].location as google.maps.LatLngLiteral);
+            requestDirections(origin as any, waypoints.slice(1), returnCoords);
+        },
+        { 
+            enableHighAccuracy: false, // 정확도를 낮추면 더 빨리 신호를 잡습니다.
+            timeout: 2000,             // 2초만 기다리고 안 되면 바로 포기!
+            maximumAge: 30000          // 30초 이내에 잡았던 위치 기록이 있다면 재사용
+        }
     );
   }, [supabase, geocodeAddress, requestDirections]);
 
@@ -207,6 +211,8 @@ export default function DriverRoutePage() {
           mapContainerStyle={{ width: '100%', height: '100%' }}
           options={{ zoomControl: false, streetViewControl: false, mapTypeControl: false, fullscreenControl: false }}
         >
+        {/* ✅ 실시간 교통 상황 레이어 추가 */}
+        <TrafficLayer />
           <DirectionsRenderer 
             directions={directionsResponse} 
             options={{ suppressMarkers: true, preserveViewport: false }} 

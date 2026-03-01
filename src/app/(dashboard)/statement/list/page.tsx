@@ -4,8 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { 
   Search, FileText, Building2, Plus, History, ArrowLeft, Calendar, Eye, 
-  Trash2, Printer, Download, Mail, MoreHorizontal, CheckSquare,
-  User, ChevronRight, Loader2
+  Trash2, Printer, Download, Mail, MoreHorizontal, Loader2, User, ChevronRight
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -19,10 +18,18 @@ import {
 import StatementGenerator from "@/components/statement/StatementGenerator";
 import { format } from "date-fns";
 
-// ✅ [복구] 유틸리티 함수 사용
 import { downloadStatementPdf, printStatementPdf } from "@/utils/downloadPdf"; 
-
 import EmailSendDialog from "@/components/email/EmailSendDialog";
+
+// ✅ [추가] 검색어 입력을 부드럽게 지연시켜 DB 과부하를 막는 커스텀 훅
+function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+  useEffect(() => {
+    const handler = setTimeout(() => { setDebouncedValue(value); }, delay);
+    return () => { clearTimeout(handler); };
+  }, [value, delay]);
+  return debouncedValue;
+}
 
 interface Customer {
   id: string;
@@ -51,6 +58,13 @@ export default function StatementPage() {
   const [logs, setLogs] = useState<StatementLog[]>([]);
   const [loadingLogs, setLoadingLogs] = useState(true);
 
+  // ✅ [추가] 리스트 뷰 전용 상태 (페이지네이션 및 검색)
+  const [listSearchTerm, setListSearchTerm] = useState("");
+  const debouncedListSearch = useDebounce(listSearchTerm, 300); // 0.3초 대기 후 검색
+  const [rowsPerPage, setRowsPerPage] = useState(10);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalLogs, setTotalLogs] = useState(0);
+
   // 다중 선택 관리
   const [selectedLogIds, setSelectedLogIds] = useState<Set<string>>(new Set());
 
@@ -60,33 +74,28 @@ export default function StatementPage() {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
-  
   const [defaultDates, setDefaultDates] = useState<{start: string, end: string} | null>(null);
   const [autoGenTrigger, setAutoGenTrigger] = useState(false);
-
-  // 저장 안 된 변경사항 추적 상태
   const [isGeneratorDirty, setIsGeneratorDirty] = useState(false);
+  
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const listRef = useRef<HTMLDivElement>(null);
+  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
-  // 이메일 다이얼로그 상태
   const [emailTarget, setEmailTarget] = useState<{
     id: string; 
     type: 'quotation' | 'invoice' | 'statement';
     customerName: string;
     customerEmail: string;
     docNumber: string;
-    statementData?: {
-        customerId: string;
-        startDate: string;
-        endDate: string;
-    }
+    statementData?: { customerId: string; startDate: string; endDate: string; }
   } | null>(null);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
 
+  // 초기 로드 시 고객 목록 가져오기
   useEffect(() => {
-    if(viewMode === 'list') fetchLogs();
     fetchCustomers();
-
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setIsDropdownOpen(false);
@@ -94,25 +103,53 @@ export default function StatementPage() {
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [viewMode]);
+  }, []);
 
+  // ✅ [추가] 검색어 또는 보여줄 개수가 변경되면 무조건 1페이지로 리셋
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [debouncedListSearch, rowsPerPage]);
+
+  // ✅ [추가] 페이지, 검색어, 뷰모드가 바뀔 때마다 서버사이드에서 데이터 가져오기
+  useEffect(() => {
+    if (viewMode === 'list') {
+      fetchLogs();
+    }
+  }, [viewMode, currentPage, rowsPerPage, debouncedListSearch]);
+
+  // ✅ [수정] 서버사이드 페이지네이션 & 필터링 쿼리
   const fetchLogs = async () => {
     setLoadingLogs(true);
-    const { data, error } = await supabase
+    
+    // !inner 옵션을 사용해야 join된 테이블(customers)을 조건으로 필터링 할 수 있습니다.
+    let query = supabase
       .from("statement_logs")
-      .select(`*, customers (name, company, email)`)
-      .order("generated_at", { ascending: false });
+      .select(`*, customers!inner (name, company, email)`, { count: 'exact' });
 
-    if (!error && data) setLogs(data as any);
+    if (debouncedListSearch) {
+      query = query.ilike('customers.name', `%${debouncedListSearch}%`);
+    }
+
+    query = query.order("generated_at", { ascending: false });
+
+    // 10000은 ALL을 의미합니다.
+    if (rowsPerPage !== 10000) {
+      const from = (currentPage - 1) * rowsPerPage;
+      const to = from + rowsPerPage - 1;
+      query = query.range(from, to);
+    }
+
+    const { data, count, error } = await query;
+
+    if (!error && data) {
+      setLogs(data as any);
+      setTotalLogs(count || 0);
+    }
     setLoadingLogs(false);
   };
 
   const fetchCustomers = async () => {
-    const { data } = await supabase
-      .from("customers")
-      .select("id, name, company, email")
-      .order("name");
-
+    const { data } = await supabase.from("customers").select("id, name, company, email").order("name");
     if (data) {
       setCustomers(data);
       setFilteredCustomers(data);
@@ -123,6 +160,7 @@ export default function StatementPage() {
     const term = e.target.value;
     setSearchTerm(term);
     setIsDropdownOpen(true);
+    setHighlightedIndex(0);
 
     if (term === "") {
       setFilteredCustomers(customers);
@@ -136,7 +174,30 @@ export default function StatementPage() {
     }
   };
 
-  // 🚨 변경사항이 있는지 확인하고 경고창을 띄우는 함수
+  useEffect(() => {
+    if (isDropdownOpen && itemRefs.current[highlightedIndex]) {
+      itemRefs.current[highlightedIndex]?.scrollIntoView({ 
+        block: "nearest",
+        behavior: "auto"
+      });
+    }
+  }, [highlightedIndex, isDropdownOpen]);
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!isDropdownOpen || filteredCustomers.length === 0) return;
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHighlightedIndex(prev => (prev < filteredCustomers.length - 1 ? prev + 1 : prev));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlightedIndex(prev => (prev > 0 ? prev - 1 : 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      handleSelectCustomer(filteredCustomers[highlightedIndex]);
+    }
+  };
+
   const checkUnsaved = () => {
     if (isGeneratorDirty) {
         return !confirm("저장되지 않은 변경 사항이 있습니다. 정말 나가시겠습니까?");
@@ -144,13 +205,10 @@ export default function StatementPage() {
     return false;
   };
 
-  // ✅ [중요] 저장 성공 시 실행되는 함수
-  // checkUnsaved()를 호출하지 않고 강제로 리스트 화면으로 이동합니다.
   const handleSaveSuccess = () => {
-    setIsGeneratorDirty(false); // 상태 초기화 (다음 동작을 위해)
-    setViewMode('list');        // 리스트 화면으로 전환
+    setIsGeneratorDirty(false); 
+    setViewMode('list');        
     setSelectedLogIds(new Set());
-    // fetchLogs()는 useEffect([viewMode])에 의해 자동으로 실행됩니다.
   };
 
   const handleSelectCustomer = async (customer: Customer) => {
@@ -169,7 +227,7 @@ export default function StatementPage() {
         .neq('status', 'Paid')
         .order('invoice_date', { ascending: true })
         .limit(1)
-        .single();
+        .maybeSingle();
 
     const startDate = oldestInv ? oldestInv.invoice_date : format(new Date(), "yyyy-MM-01");
     const endDate = format(new Date(), "yyyy-MM-dd");
@@ -180,16 +238,16 @@ export default function StatementPage() {
   const handleViewLog = (log: StatementLog) => {
     if (checkUnsaved()) return;
 
+    // 객체/배열 방어코드
+    const safeCustomer = Array.isArray(log.customers) ? log.customers[0] : log.customers;
+
     setSelectedCustomer({
         id: log.customer_id,
-        name: log.customers.name,
-        company: log.customers.company,
-        email: log.customers.email || ""
+        name: safeCustomer?.name || "Unknown",
+        company: safeCustomer?.company || "",
+        email: safeCustomer?.email || ""
     });
-    setDefaultDates({
-        start: log.start_date,
-        end: log.end_date
-    });
+    setDefaultDates({ start: log.start_date, end: log.end_date });
     setAutoGenTrigger(true);
     setIsGeneratorDirty(false);
     setViewMode('create');
@@ -197,7 +255,6 @@ export default function StatementPage() {
 
   const switchToCreate = () => {
     if (checkUnsaved()) return;
-
     setViewMode('create');
     setSelectedCustomer(null);
     setDefaultDates(null);
@@ -206,10 +263,8 @@ export default function StatementPage() {
     setIsGeneratorDirty(false);
   };
 
-  // 일반적인 리스트 전환 (뒤로가기 버튼 등에서 사용 - 검사 수행함)
   const switchToList = () => {
     if (checkUnsaved()) return; 
-
     setViewMode('list');
     setSelectedLogIds(new Set());
     setIsGeneratorDirty(false);
@@ -240,31 +295,45 @@ export default function StatementPage() {
   };
 
   const handleDownloadPdf = async (log: StatementLog) => {
-    if (!log.customers?.name) return alert("고객 정보가 없습니다.");
-    await downloadStatementPdf(log.customer_id, log.start_date, log.end_date, log.customers.name);
+    const safeCustomerName = Array.isArray(log.customers) ? log.customers[0]?.name : log.customers?.name;
+    if (!safeCustomerName) return alert("고객 정보가 없습니다.");
+    await downloadStatementPdf(log.customer_id, log.start_date, log.end_date, safeCustomerName);
   };
 
   const handlePrintPdf = async (log: StatementLog) => {
-    if (!log.customers?.name) return alert("고객 정보가 없습니다.");
-    await printStatementPdf(log.customer_id, log.start_date, log.end_date, log.customers.name);
+    const safeCustomerName = Array.isArray(log.customers) ? log.customers[0]?.name : log.customers?.name;
+    if (!safeCustomerName) return alert("고객 정보가 없습니다.");
+    await printStatementPdf(log.customer_id, log.start_date, log.end_date, safeCustomerName);
   };
   
-  const handleEmailPdf = (log: StatementLog) => {
+  const handleEmailPdf = async (log: StatementLog) => {
+    const safeCustomer = Array.isArray(log.customers) ? log.customers[0] : log.customers;
+    const customerName = safeCustomer?.name || "Customer";
+    let customerEmail = safeCustomer?.email || "";
+
+    if (!customerEmail && log.customer_id) {
+        const { data } = await supabase.from('customers').select('email').eq('id', log.customer_id).maybeSingle();
+        if (data && data.email) customerEmail = data.email;
+    }
+
     const statementInfo = JSON.stringify({
         customerId: log.customer_id,
         startDate: log.start_date,
         endDate: log.end_date,
-        customerName: log.customers.name
+        customerName: customerName
     });
 
     setEmailTarget({
         id: statementInfo, 
         type: 'statement',
-        customerName: log.customers.name,
-        customerEmail: log.customers.email || "",
+        customerName: customerName,
+        customerEmail: customerEmail,
         docNumber: `${log.start_date} ~ ${log.end_date}`,
     });
   };
+
+  // 계산
+  const totalPages = Math.ceil(totalLogs / (rowsPerPage === 10000 ? (totalLogs || 1) : rowsPerPage));
 
   return (
     <div className="min-h-screen bg-slate-50/50 p-6 md:p-10 space-y-8">
@@ -308,91 +377,144 @@ export default function StatementPage() {
         
         {/* === LIST VIEW === */}
         {viewMode === 'list' && (
-          <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-300">
-            {loadingLogs ? (
-               <div className="p-12 text-center text-slate-400 flex flex-col items-center">
-                   <Loader2 className="w-8 h-8 animate-spin mb-2" />
-                   Loading history...
-               </div>
-            ) : logs.length === 0 ? (
-               <div className="p-20 text-center">
-                 <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <History className="w-8 h-8 text-slate-300" />
+          <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+            
+            {/* ✅ [추가] 리스트 뷰용 필터 (개수 선택 및 검색어) */}
+            <div className="flex flex-col sm:flex-row justify-between items-center bg-white p-4 rounded-xl border border-slate-200 shadow-sm mb-4 gap-4">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-slate-500 uppercase">Show:</span>
+                <select 
+                  className="h-10 px-3 pr-8 rounded-md border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                  value={rowsPerPage}
+                  onChange={(e) => setRowsPerPage(Number(e.target.value))}
+                >
+                  <option value={10}>10 rows</option>
+                  <option value={20}>20 rows</option>
+                  <option value={30}>30 rows</option>
+                  <option value={50}>50 rows</option>
+                  <option value={10000}>All ({totalLogs})</option>
+                </select>
+              </div>
+              
+              <div className="relative w-full sm:w-72">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <Input 
+                  placeholder="Search by customer name..." 
+                  className="pl-9 h-10 border-slate-200" 
+                  value={listSearchTerm}
+                  onChange={(e) => setListSearchTerm(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+              {loadingLogs ? (
+                 <div className="p-12 text-center text-slate-400 flex flex-col items-center">
+                     <Loader2 className="w-8 h-8 animate-spin mb-2" />
+                     Loading history...
                  </div>
-                 <h3 className="text-lg font-bold text-slate-700">No History Found</h3>
-                 <p className="text-slate-400 mb-6">생성된 스테이트먼트 기록이 없습니다.</p>
-                 <Button onClick={switchToCreate} variant="outline">Create First Statement</Button>
-               </div>
-            ) : (
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-100 text-xs font-bold text-slate-500 uppercase">
-                    <th className="px-4 py-4 w-10">
-                        <Checkbox 
-                            checked={selectedLogIds.size === logs.length && logs.length > 0} 
-                            onCheckedChange={(c) => handleSelectAll(!!c)} 
-                        />
-                    </th>
-                    <th className="px-6 py-4">Generated Date</th>
-                    <th className="px-6 py-4">Customer</th>
-                    <th className="px-6 py-4">Period</th>
-                    <th className="px-6 py-4 text-center">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {logs.map((log) => (
-                    <tr key={log.id} className="hover:bg-indigo-50/30 transition-colors">
-                      <td className="px-4 py-4">
-                        <Checkbox 
-                            checked={selectedLogIds.has(log.id)} 
-                            onCheckedChange={() => handleSelectOne(log.id)} 
-                        />
-                      </td>
-                      <td className="px-6 py-4 text-slate-600 font-medium text-sm">
-                        {format(new Date(log.generated_at), "dd MMM yyyy, HH:mm")}
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="font-bold text-slate-800 text-sm">{log.customers?.name || "Unknown"}</div>
-                        {log.customers?.company && (
-                          <div className="text-xs text-slate-400 flex items-center gap-1">
-                            <Building2 className="w-3 h-3" /> {log.customers.company}
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="inline-flex items-center px-2.5 py-1 rounded-md bg-slate-100 text-slate-600 text-xs font-medium">
-                          <Calendar className="w-3 h-3 mr-1.5 opacity-50"/>
-                          {log.start_date} ~ {log.end_date}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-center">
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                                <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
-                                    <MoreHorizontal className="w-4 h-4" />
-                                </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                                <DropdownMenuItem onClick={() => handleViewLog(log)}>
-                                    <Eye className="w-4 h-4 mr-2" /> View
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => handleDownloadPdf(log)}>
-                                    <Download className="w-4 h-4 mr-2" /> Download PDF
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => handlePrintPdf(log)}>
-                                    <Printer className="w-4 h-4 mr-2" /> Print
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => handleEmailPdf(log)}>
-                                    <Mail className="w-4 h-4 mr-2" /> Email Customer
-                                </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+              ) : logs.length === 0 ? (
+                 <div className="p-20 text-center">
+                   <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4">
+                     <History className="w-8 h-8 text-slate-300" />
+                   </div>
+                   <h3 className="text-lg font-bold text-slate-700">No History Found</h3>
+                   <p className="text-slate-400 mb-6">생성된 스테이트먼트 기록이 없습니다.</p>
+                 </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse whitespace-nowrap">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-100 text-xs font-bold text-slate-500 uppercase">
+                        <th className="px-4 py-4 w-10">
+                            <Checkbox 
+                                checked={selectedLogIds.size === logs.length && logs.length > 0} 
+                                onCheckedChange={(c) => handleSelectAll(!!c)} 
+                            />
+                        </th>
+                        <th className="px-6 py-4">Generated Date</th>
+                        <th className="px-6 py-4">Customer</th>
+                        <th className="px-6 py-4">Period</th>
+                        <th className="px-6 py-4 text-center">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {logs.map((log) => {
+                        const safeCustomer = Array.isArray(log.customers) ? log.customers[0] : log.customers;
+                        return (
+                          <tr key={log.id} className="hover:bg-indigo-50/30 transition-colors">
+                            <td className="px-4 py-4">
+                              <Checkbox 
+                                  checked={selectedLogIds.has(log.id)} 
+                                  onCheckedChange={() => handleSelectOne(log.id)} 
+                              />
+                            </td>
+                            <td className="px-6 py-4 text-slate-600 font-medium text-sm">
+                              {format(new Date(log.generated_at), "dd MMM yyyy, HH:mm")}
+                            </td>
+                            <td className="px-6 py-4">
+                              <div className="font-bold text-slate-800 text-sm">{safeCustomer?.name || "Unknown"}</div>
+                              {safeCustomer?.company && (
+                                <div className="text-xs text-slate-400 flex items-center gap-1 mt-0.5">
+                                  <Building2 className="w-3 h-3" /> {safeCustomer.company}
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-6 py-4">
+                              <div className="inline-flex items-center px-2.5 py-1 rounded-md bg-slate-100 text-slate-600 text-xs font-medium">
+                                <Calendar className="w-3 h-3 mr-1.5 opacity-50"/>
+                                {log.start_date} ~ {log.end_date}
+                              </div>
+                            </td>
+                            <td className="px-6 py-4 text-center">
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                      <Button variant="ghost" size="sm" className="h-8 w-8 p-0 outline-none data-[state=open]:bg-slate-200">
+                                          <MoreHorizontal className="w-4 h-4" />
+                                      </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end" className="w-48 z-[9999]">
+                                      <DropdownMenuItem onClick={() => handleViewLog(log)} className="cursor-pointer">
+                                          <Eye className="w-4 h-4 mr-2" /> View
+                                      </DropdownMenuItem>
+                                      <DropdownMenuItem onClick={() => handleDownloadPdf(log)} className="cursor-pointer">
+                                          <Download className="w-4 h-4 mr-2" /> Download PDF
+                                      </DropdownMenuItem>
+                                      <DropdownMenuItem onClick={() => handlePrintPdf(log)} className="cursor-pointer">
+                                          <Printer className="w-4 h-4 mr-2" /> Print
+                                      </DropdownMenuItem>
+                                      <DropdownMenuItem onClick={() => handleEmailPdf(log)} className="cursor-pointer">
+                                          <Mail className="w-4 h-4 mr-2" /> Email Customer
+                                      </DropdownMenuItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              
+              {/* ✅ [추가] 서버사이드 페이지네이션 푸터 */}
+              {totalPages > 1 && (
+                <div className="flex items-center justify-between px-6 py-4 bg-slate-50 border-t border-slate-200">
+                    <span className="text-xs font-medium text-slate-500">
+                      Page {currentPage} of {totalPages} <span className="mx-1">•</span> Total {totalLogs}
+                    </span>
+                    <div className="flex gap-2">
+                      <Button variant="outline" size="sm" disabled={currentPage === 1} onClick={() => setCurrentPage(prev => prev - 1)}>
+                        Previous
+                      </Button>
+                      <Button variant="outline" size="sm" disabled={currentPage === totalPages} onClick={() => setCurrentPage(prev => prev + 1)}>
+                        Next
+                      </Button>
+                    </div>
+                </div>
+              )}
+
+            </div>
           </div>
         )}
 
@@ -418,22 +540,25 @@ export default function StatementPage() {
                         value={searchTerm}
                         onChange={handleSearch}
                         onFocus={() => setIsDropdownOpen(true)}
+                        onKeyDown={handleKeyDown}
                         autoFocus
                       />
                     </div>
 
                     {isDropdownOpen && (
-                      <div className="absolute top-14 left-0 right-0 bg-white border border-slate-100 rounded-xl shadow-xl max-h-80 overflow-y-auto z-50 animate-in fade-in slide-in-from-top-2">
+                      <div ref={listRef} className="absolute top-14 left-0 right-0 bg-white border border-slate-100 rounded-xl shadow-xl max-h-80 overflow-y-auto z-50 animate-in fade-in slide-in-from-top-2"> 
                         {filteredCustomers.length === 0 ? (
                           <div className="p-4 text-center text-slate-400 text-sm">No customers found.</div>
-                        ) : (
-                          <div className="divide-y divide-slate-50">
-                            {filteredCustomers.map((cust) => (
-                              <button
-                                key={cust.id}
-                                onClick={() => handleSelectCustomer(cust)}
-                                className="w-full flex items-center justify-between p-4 hover:bg-indigo-50 transition-colors text-left group"
-                              >
+                          ) : (
+                            <div className="divide-y divide-slate-50">
+                              {filteredCustomers.map((cust, index) => ( 
+                                <button
+                                  key={cust.id}
+                                  ref={(el) => { itemRefs.current[index] = el; }} 
+                                  onMouseEnter={() => setHighlightedIndex(index)} 
+                                  onClick={() => handleSelectCustomer(cust)}
+                                  className={`w-full flex items-center justify-between p-4 transition-colors text-left group ${index === highlightedIndex ? 'bg-indigo-50' : 'hover:bg-indigo-50'}`}
+                                >
                                 <div className="flex items-center gap-3">
                                   <div className="w-10 h-10 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center group-hover:bg-indigo-200 group-hover:text-indigo-700 transition-colors">
                                     <User className="w-5 h-5" />
@@ -485,10 +610,7 @@ export default function StatementPage() {
                   initialEndDate={defaultDates?.end}
                   autoGenerate={autoGenTrigger}
                   onDirtyChange={setIsGeneratorDirty}
-                  
-                  // ✅ [핵심 수정] switchToList 대신 handleSaveSuccess를 연결하여 검사 우회
                   onSuccess={handleSaveSuccess} 
-                  
                   onEmail={() => {
                     const statementInfo = JSON.stringify({
                         customerId: selectedCustomer.id,

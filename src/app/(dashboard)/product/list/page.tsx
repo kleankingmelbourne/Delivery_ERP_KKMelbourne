@@ -13,6 +13,8 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
+import { useAuth } from "@/components/providers/AuthProvider";
+
 import {
   Dialog,
   DialogContent,
@@ -52,8 +54,6 @@ export default function ProductPage() {
   // --- 상태 관리 ---
   const [products, setProducts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  
-  // [NEW] Active / Total 표시용 상태
   const [totalProductsDisplay, setTotalProductsDisplay] = useState("0 / 0");
 
   const [isModalOpen, setIsModalOpen] = useState(false)
@@ -61,7 +61,6 @@ export default function ProductPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
 
-  // Status Filter Tab State
   const [statusFilter, setStatusFilter] = useState<'active' | 'inactive' | 'all'>('active');
 
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -87,7 +86,6 @@ export default function ProductPage() {
   const [usageLoading, setUsageLoading] = useState(false);
 
   const [dynamicSchema, setDynamicSchema] = useState(PRODUCT_SCHEMA);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [vendorMap, setVendorMap] = useState<Record<string, string>>({});
   const [unitMap, setUnitMap] = useState<Record<string, string>>({}); 
   
@@ -95,6 +93,9 @@ export default function ProductPage() {
   const [vendorOptions, setVendorOptions] = useState<{label: string, value: string}[]>([]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  
+  const { productUnits } = useAuth();
 
   const initialFormState = {
     buy_price: 0,
@@ -112,138 +113,113 @@ export default function ProductPage() {
     default_unit_id: "",
     vendor_id: "",
     location: "",
-    current_stock_level: 0,      
+    current_stock_level: 0,     
     current_stock_level_pack: 0, 
     min_stock_level: 5,
     product_image: "",
   };
   const [formData, setFormData] = useState<any>(initialFormState);
 
-  // --- 1. 데이터 불러오기 (Pagination Loop 적용) ---
-  const fetchProduct = async () => {
+  // 🚀 [핵심 최적화] Data Fetching Logic
+  // 여러 개의 비동기 함수를 하나로 통합하고 Promise.all을 통해 "단 한 번의 병렬 통신"으로 압축했습니다.
+  const fetchAllData = async () => {
     setLoading(true);
     
-    let allFetchedData: any[] = [];
-    let fetchMore = true;
-    let startRow = 0;
-    const step = 1000; // Supabase 기본 최대 한도
-
-    // [수정] 1000개 제한을 우회하기 위해 반복해서 데이터를 가져옵니다.
-    while (fetchMore) {
-        const { data, error } = await supabase
-            .from("products")
-            .select(`
-                *,
-                product_categories (category_name),
-                product_vendors (vendor_name),
-                product_units (unit_name) 
-            `)
-            .order("id", { ascending: false })
-            .range(startRow, startRow + step - 1);
-        
-        if (error) {
-            console.error("Error fetching:", error);
-            break; // 에러 나면 루프 중단
-        }
-
-        if (data && data.length > 0) {
-            allFetchedData = [...allFetchedData, ...data];
-            startRow += step;
-            
-            // 가져온 데이터가 1000개 미만이면 마지막 페이지라는 뜻
-            if (data.length < step) {
-                fetchMore = false;
-            }
-        } else {
-            fetchMore = false;
-        }
-    }
-
-    // 모두 가져온 데이터(allFetchedData)를 바탕으로 계산
-    const calculatedData = allFetchedData.map((item: any) => {
-      const price = Number(item.buy_price) || 0;
-      const ctnStock = Number(item.current_stock_level) || 0;
-      const packStock = Number(item.current_stock_level_pack) || 0;
-      const packsPerCtn = Number(item.total_pack_ctn) || 1; 
-
-      // Stock Value Calculation (Ctn + Pack)
-      const packPrice = packsPerCtn > 0 ? (price / packsPerCtn) : 0;
-      const totalValue = (ctnStock * price) + (packStock * packPrice);
-      
-      return {
-        ...item,
-        stock_value: totalValue 
-      };
-    });
-
-    // Calculate Active / Total Count
-    const totalCount = calculatedData.length;
-    const activeCount = calculatedData.filter((p: any) => p.is_active).length;
-    setTotalProductsDisplay(`${activeCount} / ${totalCount}`);
-
-    const lowStockList = calculatedData.filter((item: any) => {
-      const uName = item.product_units?.unit_name || "CTN";
-      const isItemCtn = uName.toLowerCase().includes('ctn') || uName.toLowerCase().includes('carton');
-      
-      const current = isItemCtn ? Number(item.current_stock_level) : Number(item.current_stock_level_pack);
-      const min = Number(item.min_stock_level) || 5; 
-      
-      return item.is_active && (current < min);
-    });
-    setLowStockItems(lowStockList);
-
-    const total = calculatedData.reduce((acc: number, cur: any) => acc + cur.stock_value, 0);
-    setTotalStockValue(total);
-
-    setProducts(calculatedData);
-    setLoading(false);
-  }
-
-  const fetchReferenceData = async () => {
     try {
-      const [units, categories, vendors] = await Promise.all([
-        supabase.from("product_units").select("id, unit_name"),
+      // 1. 필요한 모든 데이터를 한 번에 던집니다 (Parallel Execution)
+      // Products 테이블은 꼭 필요한 컬럼만 지정하여 데이터 다이어트를 수행했습니다.
+      const [categoriesRes, vendorsRes, productsRes] = await Promise.all([
+        //supabase.from("product_units").select("id, unit_name"),
         supabase.from("product_categories").select("id, category_name"),
         supabase.from("product_vendors").select("id, vendor_name"),
+        supabase.from("products").select(`
+            id, product_name, product_barcode, vendor_product_id, location, gst,
+            category_id, vendor_id, default_unit_id, total_pack_ctn,
+            sell_price_ctn, margin_ctn, sell_price_pack, margin_pack, buy_price,
+            current_stock_level, current_stock_level_pack, min_stock_level, product_image, is_active,
+            product_units(unit_name)
+        `).order("id", { ascending: false }).limit(5000) // 💡 루프를 제거하고 limit(5000)으로 한방에 가져옵니다.
       ]);
 
+      // 2. Reference Data (드롭다운 및 맵핑 데이터) 조립
       const newSchema = JSON.parse(JSON.stringify(PRODUCT_SCHEMA));
+      const uMap: Record<string, string> = {};
+      const vMap: Record<string, string> = {};
 
-      if (units.data) {
-        const uMap: Record<string, string> = {};
-        newSchema.default_unit_id.options = units.data.map((u: any) => {
+      if (productUnits && productUnits.length > 0) {
+        newSchema.default_unit_id.options = productUnits.map((u: any) => {
             uMap[u.id] = u.unit_name;
             return { label: u.unit_name, value: u.id };
         });
         setUnitMap(uMap);
       }
       
-      if (categories.data) {
-        const catOpts = categories.data.map((c: any) => ({ label: c.category_name, value: c.id }));
+      if (categoriesRes.data) {
+        const catOpts = categoriesRes.data.map((c: any) => ({ label: c.category_name, value: c.id }));
         newSchema.category_id.options = catOpts;
         setCategoryOptions(catOpts);
       }
       
-      const vMap: Record<string, string> = {};
-      if (vendors.data) {
-        const vendOpts = vendors.data.map((v: any) => {
+      if (vendorsRes.data) {
+        const vendOpts = vendorsRes.data.map((v: any) => {
             vMap[v.id] = v.vendor_name; 
             return { label: v.vendor_name, value: v.id };
         });
         newSchema.vendor_id.options = vendOpts;
         setVendorOptions(vendOpts);
       }
+      
       setVendorMap(vMap);
-
       setDynamicSchema(newSchema);
+
+      // 3. Product Data 처리 (Stock Value 및 Low Stock 계산)
+      if (productsRes.data) {
+        const calculatedData = productsRes.data.map((item: any) => {
+          const price = Number(item.buy_price) || 0;
+          const ctnStock = Number(item.current_stock_level) || 0;
+          const packStock = Number(item.current_stock_level_pack) || 0;
+          const packsPerCtn = Number(item.total_pack_ctn) || 1; 
+
+          const packPrice = packsPerCtn > 0 ? (price / packsPerCtn) : 0;
+          const totalValue = (ctnStock * price) + (packStock * packPrice);
+          
+          return {
+            ...item,
+            stock_value: totalValue 
+          };
+        });
+
+        // 대시보드 통계 업데이트
+        const totalCount = calculatedData.length;
+        const activeCount = calculatedData.filter((p: any) => p.is_active).length;
+        setTotalProductsDisplay(`${activeCount} / ${totalCount}`);
+
+        const lowStockList = calculatedData.filter((item: any) => {
+          const uName = item.product_units?.unit_name || "CTN";
+          const isItemCtn = uName.toLowerCase().includes('ctn') || uName.toLowerCase().includes('carton');
+          
+          const current = isItemCtn ? Number(item.current_stock_level) : Number(item.current_stock_level_pack);
+          const min = Number(item.min_stock_level) || 5; 
+          
+          return item.is_active && (current < min);
+        });
+        setLowStockItems(lowStockList);
+
+        const total = calculatedData.reduce((acc: number, cur: any) => acc + cur.stock_value, 0);
+        setTotalStockValue(total);
+
+        setProducts(calculatedData);
+      }
+
     } catch (error) {
-      console.error("Failed to fetch reference data:", error);
+      console.error("Failed to load dashboard data:", error);
+    } finally {
+      setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchProduct();
-    fetchReferenceData();
+    fetchAllData();
   }, []);
 
   // --- Export Function ---
@@ -343,7 +319,7 @@ export default function ProductPage() {
 
                 if (error) throw error;
                 alert(`Successfully imported/updated ${upsertData.length} items.`);
-                fetchProduct(); 
+                fetchAllData(); // 💡 fetchProduct 대신 통합 함수 호출
             } catch (error: any) {
                 console.error("Import Error:", error);
                 alert("Import failed: " + error.message);
@@ -536,7 +512,7 @@ export default function ProductPage() {
         if (error) throw error;
       }
 
-      await fetchProduct();
+      await fetchAllData(); // 💡 갱신 시에도 통합 함수 호출
       setIsModalOpen(false);
       setEditingProduct(null);
       setImageFile(null);
@@ -586,7 +562,7 @@ export default function ProductPage() {
 
         alert("Deleted successfully.");
         setSelectedIds(new Set());
-        fetchProduct();
+        fetchAllData(); // 💡 삭제 후 데이터 갱신
 
     } catch (error: any) {
       alert("Failed to delete: " + error.message);
@@ -980,29 +956,29 @@ export default function ProductPage() {
         </div>
 
         <div className="overflow-x-auto">
-            <table className="w-full text-sm text-left">
+            <table className="w-full text-sm text-left table-fixed">
                 <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200 uppercase text-xs">
                     <tr>
-                        <th className="px-4 py-3 w-[50px] text-center">
+                        <th className="px-4 py-3 w-[5%] text-center">
                             <Checkbox 
                                 checked={paginatedData.length > 0 && paginatedData.every(p => selectedIds.has(p.id))}
                                 onCheckedChange={(c) => handleSelectAll(!!c)}
                             />
                         </th>
-                        <th className="px-4 py-3">Product Name</th>
-                        <th className="px-4 py-3">Vendor ID</th>
-                        <th className="px-4 py-3 text-right cursor-pointer hover:bg-slate-100" onClick={() => handleSort('stock_value')}>
+                        <th className="px-4 py-3 w-[25%] truncate">Product Name</th>
+                        <th className="px-4 py-3 w-[15%] truncate">Vendor ID</th>
+                        <th className="px-4 py-3 w-[10%] text-right cursor-pointer hover:bg-slate-100 truncate" onClick={() => handleSort('stock_value')}>
                             <div className="flex items-center justify-end gap-1">Value <ArrowUpDown className="w-3 h-3"/></div>
                         </th>
-                        <th className="px-4 py-3 text-right cursor-pointer hover:bg-slate-100" onClick={() => handleSort('buy_price')}>
+                        <th className="px-4 py-3 w-[10%] text-right cursor-pointer hover:bg-slate-100 truncate" onClick={() => handleSort('buy_price')}>
                             <div className="flex items-center justify-end gap-1">Cost <ArrowUpDown className="w-3 h-3"/></div>
                         </th>
-                        <th className="px-4 py-3 text-right">Price(Ctn)</th>
-                        <th className="px-4 py-3 text-right">Price(Pack)</th>
-                        <th className="px-4 py-3 text-center cursor-pointer hover:bg-slate-100" onClick={() => handleSort('current_stock_level')}>
+                        <th className="px-4 py-3 w-[10%] text-right truncate">Price(Ctn)</th>
+                        <th className="px-4 py-3 w-[10%] text-right truncate">Price(Pack)</th>
+                        <th className="px-4 py-3 w-[10%] text-center cursor-pointer hover:bg-slate-100 truncate" onClick={() => handleSort('current_stock_level')}>
                             <div className="flex items-center justify-center gap-1">Stock <ArrowUpDown className="w-3 h-3"/></div>
                         </th>
-                        <th className="px-4 py-3 text-center">Actions</th>
+                        <th className="px-4 py-3 w-[10%] text-center truncate">Actions</th>
                     </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -1014,7 +990,6 @@ export default function ProductPage() {
                         paginatedData.map((product) => {
                             const isSelected = selectedIds.has(product.id);
                             
-                            // Low Stock Logic for List View
                             // @ts-ignore
                             const unitName = product.product_units?.unit_name || "CTN";
                             const isCtn = unitName.toLowerCase().includes("ctn") || unitName.toLowerCase().includes("carton");
@@ -1032,34 +1007,30 @@ export default function ProductPage() {
                                             onCheckedChange={() => handleSelectOne(product.id)}
                                         />
                                     </td>
-                                    <td className="px-4 py-3 font-medium text-slate-900">
-                                        <div className="flex items-center gap-3">
-                                            <div>
-                                                <div className="flex items-center gap-2">
-                                                    {product.product_name}
-                                                    {!product.is_active && <span className="text-[9px] bg-red-600 text-white px-2 py-0.5 rounded font-bold uppercase shadow-sm">Inactive</span>}
-                                                </div>
-                                            </div>
+                                    <td className="px-4 py-3 font-medium text-slate-900 truncate" title={product.product_name}>
+                                        <div className="flex items-center gap-2 overflow-hidden">
+                                            <span className="truncate">{product.product_name}</span>
+                                            {!product.is_active && <span className="shrink-0 text-[9px] bg-red-600 text-white px-2 py-0.5 rounded font-bold uppercase shadow-sm">Inactive</span>}
                                         </div>
                                     </td>
                                     
-                                    <td className="px-4 py-3 text-slate-600">
+                                    <td className="px-4 py-3 text-slate-600 truncate" title={product.vendor_product_id}>
                                         {product.vendor_product_id && <span className="text-xs font-medium">[{product.vendor_product_id}]</span>}
                                     </td>
 
-                                    <td className="px-4 py-3 text-right font-bold text-slate-700">
+                                    <td className="px-4 py-3 text-right font-bold text-slate-700 truncate" title={`$${product.stock_value?.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}>
                                         ${product.stock_value?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                     </td>
-                                    <td className="px-4 py-3 text-right text-slate-600">${Number(product.buy_price).toFixed(2)}</td>
-                                    <td className="px-4 py-3 text-right text-slate-600 font-bold">${Number(product.sell_price_ctn).toFixed(2)}</td>
-                                    <td className="px-4 py-3 text-right text-slate-600">${Number(product.sell_price_pack).toFixed(2)}</td>
+                                    <td className="px-4 py-3 text-right text-slate-600 truncate">${Number(product.buy_price).toFixed(2)}</td>
+                                    <td className="px-4 py-3 text-right text-slate-600 font-bold truncate">${Number(product.sell_price_ctn).toFixed(2)}</td>
+                                    <td className="px-4 py-3 text-right text-slate-600 truncate">${Number(product.sell_price_pack).toFixed(2)}</td>
                                     
                                     <td className="px-4 py-3 text-center">
                                         <div className="flex flex-col items-center">
                                             <span className={`px-2 py-1 rounded-full text-xs font-bold ${product.is_active && isLowStock ? "bg-red-100 text-red-600" : "bg-slate-100 text-slate-700"}`}>
                                                 {displayStock}
                                             </span>
-                                            <span className="text-[10px] text-slate-400 mt-0.5">{unitName}</span>
+                                            <span className="text-[10px] text-slate-400 mt-0.5 truncate max-w-full">{unitName}</span>
                                         </div>
                                     </td>
                                     

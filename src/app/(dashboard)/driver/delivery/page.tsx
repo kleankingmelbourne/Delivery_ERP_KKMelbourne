@@ -60,7 +60,7 @@ const getMelbourneDate = () => {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Australia/Melbourne' });
 };
 
-// [NEW] 이미지에 날짜/시간을 합성하는 함수
+// 이미지에 날짜/시간을 합성하는 함수
 const addTimestampToImage = (file: File): Promise<File> => {
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -73,35 +73,24 @@ const addTimestampToImage = (file: File): Promise<File> => {
         const ctx = canvas.getContext('2d');
         
         if (!ctx) {
-          resolve(file); // 캔버스 지원 안되면 원본 반환
+          resolve(file); 
           return;
         }
 
-        // 캔버스 크기를 이미지 크기와 동일하게 설정
         canvas.width = img.width;
         canvas.height = img.height;
-
-        // 이미지 그리기
         ctx.drawImage(img, 0, 0);
 
-        // 날짜 시간 텍스트 설정 (Melbourne Time)
         const dateStr = new Date().toLocaleString('en-AU', { 
           timeZone: 'Australia/Melbourne',
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit',
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: false
-        }); // 예: 24/02/2026, 14:30
+          year: 'numeric', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit', hour12: false
+        }); 
 
-        // 폰트 크기 동적 설정 (이미지 너비의 4%)
         const fontSize = Math.floor(img.width * 0.04); 
         ctx.font = `bold ${fontSize}px sans-serif`;
         ctx.textAlign = 'right';
         ctx.textBaseline = 'bottom';
-
-        // 텍스트 스타일 (흰색 글씨 + 검은색 테두리)
         ctx.fillStyle = '#ffffff';
         ctx.strokeStyle = '#000000';
         ctx.lineWidth = fontSize / 5;
@@ -109,11 +98,9 @@ const addTimestampToImage = (file: File): Promise<File> => {
         const x = img.width - (fontSize / 2);
         const y = img.height - (fontSize / 2);
 
-        // 테두리 그리고 글씨 그리기
         ctx.strokeText(dateStr, x, y);
         ctx.fillText(dateStr, x, y);
 
-        // 캔버스를 다시 파일로 변환
         canvas.toBlob((blob) => {
           if (blob) {
             const newFile = new File([blob], file.name, { type: file.type, lastModified: Date.now() });
@@ -139,7 +126,6 @@ export default function DriverDeliveryPage() {
   const [driverProfileAddress, setDriverProfileAddress] = useState(""); 
   const [companyAddress, setCompanyAddress] = useState(""); 
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  
   const [currentUserName, setCurrentUserName] = useState("Driver");
 
   const [runStates, setRunStates] = useState<{ [key: number]: RunState }>({
@@ -183,14 +169,114 @@ export default function DriverDeliveryPage() {
       setRunStates(prev => ({ ...prev, [run]: { ...prev[run], ...updates } }));
   };
 
-  useEffect(() => {
-    fetchInitialData();
-  }, []);
+  const sortDeliveries = (items: DeliveryItem[]) => {
+      const newItems = items.filter(d => d.delivery_order === 0);
+      const savedItems = items.filter(d => d.delivery_order > 0);
+      savedItems.sort((a, b) => a.delivery_order - b.delivery_order);
+      return [...newItems, ...savedItems];
+  };
 
+  // ✅ [수정 완료] 무한 로딩을 유발하던 자물쇠(Lock) 완전 제거
+  useEffect(() => {
+      let isMounted = true;
+
+      const initData = async () => {
+          setLoading(true);
+          try {
+              const { data: { user } } = await supabase.auth.getUser();
+              if (!user) return;
+              
+              if (isMounted) setCurrentUserId(user.id);
+              const today = getMelbourneDate();
+
+              // 🔥 3개의 쿼리를 하나로 묶어서 단 한 번만 실행합니다!
+              const [profileRes, companyRes, invoiceRes] = await Promise.all([
+                  supabase.from('profiles').select('address, display_name').eq('id', user.id).single(),
+                  supabase.from('company_settings').select('address_line1, address_line2, state, suburb, postcode').maybeSingle(),
+                  supabase.from('invoices').select(`id, invoice_to, status, is_completed, memo, delivery_run, delivery_order, driver_id, invoice_date, customers ( mobile, delivery_address, delivery_state, delivery_suburb, delivery_postcode )`).eq('invoice_date', today).eq('driver_id', user.id).neq('delivery_run', 0).order('delivery_order', { ascending: true })
+              ]);
+
+              if (!isMounted) return;
+
+              // 1. 프로필 & 회사 세팅
+              const profile = profileRes.data;
+              const company = companyRes.data;
+
+              let driverAddr = "";
+              if (profile) {
+                  driverAddr = profile.address || "";
+                  setDriverProfileAddress(driverAddr);
+                  setCurrentUserName(profile.display_name || user.email?.split('@')[0] || "Driver");
+              }
+
+              let compAddr = "";
+              if (company) {
+                  compAddr = [company.address_line1, company.address_line2, company.suburb, company.state, company.postcode].filter(p => p && p.trim() !== "").join(", ");
+                  setCompanyAddress(compAddr);
+              }
+
+              // 2. 리턴 주소 세팅
+              const savedReturn = localStorage.getItem("returnAddress");
+              if (savedReturn) setReturnAddress(savedReturn);
+              else if (driverAddr) setReturnAddress(driverAddr);
+              else if (compAddr) setReturnAddress(compAddr);
+
+              // 3. 인보이스 데이터 가공
+              if (invoiceRes.data) {
+                  const rawItems = invoiceRes.data.map((item: any) => {
+                      const customer = Array.isArray(item.customers) ? item.customers[0] : item.customers;
+                      const fullAddress = customer 
+                          ? `${customer.delivery_address || ''}, ${customer.delivery_suburb || ''} ${customer.delivery_state || ''} ${customer.delivery_postcode || ''}`.trim()
+                          : "No Address Info";
+                      const cleanAddress = fullAddress === ",   " ? "No Address Info" : fullAddress.replace(/^, /, "");
+                      const run = (item.delivery_run === 0 || item.delivery_run === null) ? 1 : item.delivery_run;
+                      const order = item.delivery_order === null ? 0 : item.delivery_order;
+
+                      return {
+                          id: item.id,
+                          invoice_to: item.invoice_to,
+                          delivery_address: cleanAddress, 
+                          phone: customer?.mobile || "",  
+                          status: item.status,
+                          is_completed: item.is_completed,
+                          memo: item.memo,
+                          delivery_run: run, 
+                          delivery_order: order
+                      } as DeliveryItem;
+                  });
+                  
+                  const sortedItems = sortDeliveries(rawItems);
+                  setDeliveries(sortedItems);
+                  setOriginalDeliveries(sortedItems);
+                  
+                  const isRun1Started = sortedItems.some((d: any) => d.delivery_run === 1 && d.is_completed);
+                  const isRun2Started = sortedItems.some((d: any) => d.delivery_run === 2 && d.is_completed);
+                  const hasNew1 = sortedItems.some((d: any) => d.delivery_run === 1 && d.delivery_order === 0);
+                  const hasNew2 = sortedItems.some((d: any) => d.delivery_run === 2 && d.delivery_order === 0);
+
+                  setRunStates({
+                      1: { isStarted: isRun1Started, isEditing: hasNew1 },
+                      2: { isStarted: isRun2Started, isEditing: hasNew2 }
+                  });
+              }
+          } catch (error) {
+              console.error("Init Data Error:", error);
+          } finally {
+              // 🚀 무조건 로딩 화면을 종료시킵니다.
+              if (isMounted) setLoading(false);
+          }
+      };
+
+      initData();
+
+      return () => { isMounted = false; };
+  }, [supabase]); // 빈 배열과 동일하게 한 번만 실행됨
+
+  // ✅ 실시간 구독 로직
   useEffect(() => {
     if (!currentUserId) return;
 
-    const channel = supabase.channel('realtime-driver-invoices').on('postgres_changes', { event: '*', schema: 'public', table: 'invoices' }, (payload) => {
+    const channel = supabase.channel('realtime-driver-invoices').on('postgres_changes', { event: '*', schema: 'public', table: 'invoices' }, async (payload) => {
         const today = getMelbourneDate();
         const newRecord = payload.new as any;
         const oldRecord = payload.old as any;
@@ -203,9 +289,7 @@ export default function DriverDeliveryPage() {
         const wasAssignedToMe = oldRecord?.driver_id === currentUserId;
         let shouldRefresh = false;
 
-        if (eventType === 'INSERT' && isAssignedToMe) {
-            shouldRefresh = true;
-        }
+        if (eventType === 'INSERT' && isAssignedToMe) shouldRefresh = true;
 
         if (eventType === 'UPDATE') {
             const isRunChanged = oldRecord?.delivery_run !== newRecord.delivery_run;
@@ -220,7 +304,7 @@ export default function DriverDeliveryPage() {
                 }
             }
             if (isAssignedToMe && wasAssignedToMe && !isRunChanged && !isOrderReset) {
-                 shouldRefresh = true;
+                 shouldRefresh = true; // 단순 상태 업데이트(완료 등)
             }
         }
 
@@ -229,130 +313,25 @@ export default function DriverDeliveryPage() {
         }
 
         if (shouldRefresh) { 
-            fetchDeliveries(currentUserId); 
+            // 🚨 리렌더링 없이 조용히 데이터만 업데이트하도록 백그라운드 Fetch 함수 작성
+            const { data } = await supabase.from('invoices').select(`id, invoice_to, status, is_completed, memo, delivery_run, delivery_order, driver_id, invoice_date, customers ( mobile, delivery_address, delivery_state, delivery_suburb, delivery_postcode )`).eq('invoice_date', today).eq('driver_id', currentUserId).neq('delivery_run', 0).order('delivery_order', { ascending: true });
+            if (data) {
+                const rawItems = data.map((item: any) => {
+                    const customer = Array.isArray(item.customers) ? item.customers[0] : item.customers;
+                    const fullAddress = customer ? `${customer.delivery_address || ''}, ${customer.delivery_suburb || ''}`.trim() : "No Address Info";
+                    return {
+                        id: item.id, invoice_to: item.invoice_to, delivery_address: fullAddress.replace(/^, /, ""), phone: customer?.mobile || "", status: item.status, is_completed: item.is_completed, memo: item.memo, delivery_run: item.delivery_run || 1, delivery_order: item.delivery_order || 0
+                    } as DeliveryItem;
+                });
+                const sortedItems = sortDeliveries(rawItems);
+                setDeliveries(sortedItems);
+                setOriginalDeliveries(sortedItems);
+            }
         }
     }).subscribe();
 
     return () => { supabase.removeChannel(channel); };
-  }, [currentUserId]); 
-
-  const fetchInitialData = async () => {
-      setLoading(true); 
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-          setLoading(false);
-          return;
-      }
-      setCurrentUserId(user.id);
-
-      fetchDeliveries(user.id, true);
-
-      const [profileRes, companyRes] = await Promise.all([
-          supabase.from('profiles').select('address, display_name').eq('id', user.id).single(),
-          supabase.from('company_settings').select('address_line1, address_line2, state, suburb, postcode').maybeSingle()
-      ]);
-
-      const profile = profileRes.data;
-      const company = companyRes.data;
-
-      if (profile) {
-          if (profile.address) setDriverProfileAddress(profile.address);
-          const name = profile.display_name || user.email?.split('@')[0] || "Driver";
-          setCurrentUserName(name);
-      }
-
-      let fullCompAddr = "";
-      if (company) {
-          const parts = [company.address_line1, company.address_line2, company.suburb, company.state, company.postcode].filter(p => p && p.trim() !== "");
-          fullCompAddr = parts.join(", ");
-          setCompanyAddress(fullCompAddr);
-      }
-
-      const savedReturn = localStorage.getItem("returnAddress");
-      if (savedReturn) {
-          setReturnAddress(savedReturn);
-      } else if (profile?.address) {
-          setReturnAddress(profile.address);
-      } else if (fullCompAddr) {
-          setReturnAddress(fullCompAddr);
-      }
-  };
-
-  const sortDeliveries = (items: DeliveryItem[]) => {
-      const newItems = items.filter(d => d.delivery_order === 0);
-      const savedItems = items.filter(d => d.delivery_order > 0);
-      savedItems.sort((a, b) => a.delivery_order - b.delivery_order);
-      return [...newItems, ...savedItems];
-  };
-
-  const fetchDeliveries = async (userId: string, isInitialLoad = false) => {
-    try {
-        const today = getMelbourneDate();
-        const { data, error } = await supabase
-          .from('invoices')
-          .select(`
-            id, invoice_to, status, is_completed, memo, delivery_run, delivery_order, driver_id, invoice_date,
-            customers ( mobile, delivery_address, delivery_state, delivery_suburb, delivery_postcode )
-          `)
-          .eq('invoice_date', today)  
-          .eq('driver_id', userId)   
-          .neq('delivery_run', 0)    
-          .order('delivery_order', { ascending: true }); 
-
-        if (error) console.error("🔥 Fetch Error:", error.message);
-
-        if (data) {
-          const rawItems = data.map((item: any) => {
-            const customer = Array.isArray(item.customers) ? item.customers[0] : item.customers;
-            const fullAddress = customer 
-                ? `${customer.delivery_address || ''}, ${customer.delivery_suburb || ''} ${customer.delivery_state || ''} ${customer.delivery_postcode || ''}`.trim()
-                : "주소 정보 없음";
-            const cleanAddress = fullAddress === ",   " ? "주소 정보 없음" : fullAddress.replace(/^, /, "");
-
-            const run = (item.delivery_run === 0 || item.delivery_run === null) ? 1 : item.delivery_run;
-            const order = item.delivery_order === null ? 0 : item.delivery_order;
-
-            return {
-                id: item.id,
-                invoice_to: item.invoice_to,
-                delivery_address: cleanAddress, 
-                phone: customer?.mobile || "",  
-                status: item.status,
-                is_completed: item.is_completed,
-                memo: item.memo,
-                delivery_run: run, 
-                delivery_order: order
-            } as DeliveryItem;
-          });
-          
-          const sortedItems = sortDeliveries(rawItems);
-
-          setDeliveries(sortedItems);
-          setOriginalDeliveries(sortedItems);
-          
-          const isRun1Started = sortedItems.some((d: any) => d.delivery_run === 1 && d.is_completed);
-          const isRun2Started = sortedItems.some((d: any) => d.delivery_run === 2 && d.is_completed);
-          
-          const hasNew1 = sortedItems.some((d: any) => d.delivery_run === 1 && d.delivery_order === 0);
-          const hasNew2 = sortedItems.some((d: any) => d.delivery_run === 2 && d.delivery_order === 0);
-
-          setRunStates(prev => ({
-              1: { 
-                  isStarted: prev[1].isStarted || isRun1Started, 
-                  isEditing: prev[1].isEditing || hasNew1 
-              },
-              2: { 
-                  isStarted: prev[2].isStarted || isRun2Started, 
-                  isEditing: prev[2].isEditing || hasNew2 
-              }
-          }));
-        }
-    } catch (err) {
-        console.error(err);
-    } finally {
-        setLoading(false); 
-    }
-  };
+  }, [currentUserId, supabase]); 
 
   const currentList = deliveries.filter(d => (d.delivery_run === 0 ? 1 : d.delivery_run) === activeRun);
   const activeItem = currentList.find(d => !d.is_completed);
@@ -419,6 +398,7 @@ export default function DriverDeliveryPage() {
           calculateAutoRoute(origin, waypoints);
       }, () => { calculateAutoRoute(waypoints[0].location, waypoints.slice(1)); });
   }; 
+  
   const calculateAutoRoute = (origin: any, waypoints: any[]) => {
       const directionsService = new google.maps.DirectionsService();
       directionsService.route({ origin: origin, destination: returnAddress, waypoints: waypoints, optimizeWaypoints: true, travelMode: google.maps.TravelMode.DRIVING }, (result: any, status: any) => {
@@ -439,17 +419,21 @@ export default function DriverDeliveryPage() {
           } else { alert("Route calculation failed."); }
       });
   }
+
   const handleShowMap = () => {
       if (!isLoaded || !returnAddress || currentList.length === 0) return alert("No deliveries or Final Destination set.");
       setIsMapModalOpen(true);
       navigator.geolocation.getCurrentPosition((position) => { const pos = { lat: position.coords.latitude, lng: position.coords.longitude }; calculateRouteForMap(pos); }, () => { calculateRouteForMap(currentList[0].delivery_address); });
   };
+  
   const calculateRouteForMap = (origin: any) => {
       const directionsService = new google.maps.DirectionsService();
       const waypoints = currentList.map(item => ({ location: item.delivery_address, stopover: true }));
       directionsService.route({ origin: origin, destination: returnAddress, waypoints: waypoints, optimizeWaypoints: false, travelMode: google.maps.TravelMode.DRIVING }, (result: any, status: any) => { if (status === google.maps.DirectionsStatus.OK) setDirectionsResponse(result); });
   }
+  
   const handleNavigate = (address: string) => { window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(address)}`, '_blank'); };
+  
   const handleSetDestination = (type: 'company' | 'driver' | 'custom', customAddr?: string) => {
       let addr = "";
       if (type === 'company') addr = companyAddress || "";
@@ -460,16 +444,13 @@ export default function DriverDeliveryPage() {
       localStorage.setItem("returnAddress", addr);
       setIsDestinationModalOpen(false);
   };
+  
   const handleStartComplete = (id: string) => { setTargetId(id); fileInputRef.current?.click(); };
   
-  // ✅ [수정] 파일 선택 시 이미지를 변환(날짜 합성)하고 미리보기 설정
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => { 
     const file = e.target.files?.[0]; 
     if (file) { 
-        // 1. 이미지에 날짜/시간 찍기
         const stampedFile = await addTimestampToImage(file);
-        
-        // 2. 변환된 이미지로 state 설정
         setSelectedFile(stampedFile); 
         setPreviewUrl(URL.createObjectURL(stampedFile)); 
     } 
@@ -486,7 +467,6 @@ export default function DriverDeliveryPage() {
             initialQuality: 0.7 
         };
 
-        // 날짜가 찍힌 이미지(selectedFile)를 압축
         const compressedFile = await imageCompression(selectedFile, options);
         console.log(`Resize: ${(selectedFile.size/1024).toFixed(2)}kb -> ${(compressedFile.size/1024).toFixed(2)}kb`);
 
@@ -498,12 +478,14 @@ export default function DriverDeliveryPage() {
         
         const { data: { publicUrl } } = supabase.storage.from('delivery-proofs').getPublicUrl(fileName);
         await supabase.from('invoices').update({ is_completed: true, proof_url: publicUrl }).eq('id', targetId);
+        
+        // 조용히 상태 업데이트 (리렌더링 방지)
         setDeliveries(prev => prev.map(d => d.id === targetId ? { ...d, is_completed: true } : d));
         handleCloseModal();
     } catch (error: any) { alert("Error: " + error.message); } finally { setIsUploading(false); }
   };
+  
   const handleCloseModal = () => { setSelectedFile(null); setPreviewUrl(null); setTargetId(null); if (fileInputRef.current) fileInputRef.current.value = ""; };
-
 
   return (
     <div className="max-w-md mx-auto h-screen bg-slate-50 flex flex-col relative overflow-hidden">

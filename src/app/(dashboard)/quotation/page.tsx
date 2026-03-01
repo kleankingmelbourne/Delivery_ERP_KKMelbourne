@@ -22,6 +22,7 @@ import {
 
 import { downloadQuotationPdf, printQuotationPdf } from "@/utils/downloadPdf";
 import EmailSendDialog from "@/components/email/EmailSendDialog";
+import { useAuth } from "@/components/providers/AuthProvider";
 
 // --- Types ---
 interface Quotation {
@@ -56,17 +57,18 @@ interface QuotationItem {
 export default function QuotationListPage() {
   const supabase = createClient();
   const router = useRouter();
-  
+  const { currentUserName } = useAuth();
+
   // --- States ---
   const [quotations, setQuotations] = useState<Quotation[]>([]);
   const [loading, setLoading] = useState(true);
-  const [currentUserName, setCurrentUserName] = useState("");
   
   // Filters
   const [searchTerm, setSearchTerm] = useState("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
-  const [rowsPerPage, setRowsPerPage] = useState(20); 
+  // 💡 디폴트로 10개만 보여주도록 설정
+  const [rowsPerPage, setRowsPerPage] = useState(10); 
   const [currentPage, setCurrentPage] = useState(1);
 
   // Selection
@@ -90,16 +92,6 @@ export default function QuotationListPage() {
     const init = async () => {
       setLoading(true);
 
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        const name = user.user_metadata?.display_name || 
-                     user.user_metadata?.full_name || 
-                     user.user_metadata?.name ||
-                     user.email?.split('@')[0] || 
-                     "Unknown";
-        setCurrentUserName(name);
-      }
-
       const { data, error } = await supabase
         .from("quotations")
         .select(`
@@ -115,7 +107,7 @@ export default function QuotationListPage() {
     };
 
     init();
-  }, []);
+  }, [supabase]);
 
   // --- Filtering Logic ---
   const filteredQuotations = useMemo(() => {
@@ -288,9 +280,9 @@ export default function QuotationListPage() {
                 value={rowsPerPage}
                 onChange={(e) => { setRowsPerPage(Number(e.target.value)); setCurrentPage(1); }}
               >
-                <option value={5}>5 rows</option>
                 <option value={10}>10 rows</option>
                 <option value={20}>20 rows</option>
+                <option value={50}>50 rows</option>
                 <option value={10000}>All ({filteredQuotations.length})</option>
               </select>
             </div>
@@ -324,24 +316,26 @@ export default function QuotationListPage() {
       {/* Table */}
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm text-left border-collapse">
+          {/* 💡 table-fixed를 적용하여 설정한 % 비율이 강제 유지되도록 합니다. */}
+          <table className="w-full text-sm text-left border-collapse table-fixed ">
             <thead className="bg-slate-50 border-b border-slate-200 text-slate-700 font-bold text-xs uppercase">
               <tr>
-                <th className="px-4 py-3 w-[40px]">
+                {/* 💡 각 컬럼에 % 비율 할당 */}
+                <th className="px-4 py-3 w-[4%]">
                   <Checkbox 
                     checked={paginatedData.length > 0 && paginatedData.every(q => selectedIds.includes(q.id))}
                     onCheckedChange={(c) => handleSelectAll(!!c)}
                   />
                 </th>
-                <th className="px-4 py-3">Issue Date</th>
-                <th className="px-4 py-3">Number</th>
-                <th className="px-4 py-3">Customer</th>
-                <th className="px-4 py-3 text-right">Amount</th>
-                <th className="px-4 py-3">Created By</th>
-                <th className="px-4 py-3">Updated By</th>
-                <th className="px-4 py-3 text-center">Status</th>
-                <th className="px-4 py-3 text-center w-[100px]">View Detail</th>
-                <th className="px-4 py-3 text-center w-[50px]">Actions</th>
+                <th className="px-4 py-3 w-[10%]">Issue Date</th>
+                <th className="px-4 py-3 w-[12%]">Number</th>
+                <th className="px-4 py-3 w-[22%]">Customer</th>
+                <th className="px-4 py-3 w-[10%] text-right">Amount</th>
+                <th className="px-4 py-3 w-[10%]">Created By</th>
+                <th className="px-4 py-3 w-[10%]">Updated By</th>
+                <th className="px-4 py-3 w-[8%] text-center">Status</th>
+                <th className="px-4 py-3 w-[8%] text-center">Detail</th>
+                <th className="px-4 py-3 w-[6%] text-center">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -360,30 +354,44 @@ export default function QuotationListPage() {
                           onCheckedChange={(c) => handleSelectRow(quotation.id, !!c)}
                         />
                       </td>
-                      <td className="px-4 py-3 text-slate-600 font-medium">{quotation.issue_date}</td>
-                      <td className="px-4 py-3 font-bold text-slate-800">{quotation.quotation_number}</td>
                       
-                      {/* [MODIFIED] Customer Name with Badge */}
+                      {/* 💡 truncate 추가: 글자가 넘치면 ... 으로 표시되고 마우스를 올리면 전체가 보입니다. */}
+                      <td className="px-4 py-3 text-slate-600 font-medium truncate" title={quotation.issue_date}>
+                        {quotation.issue_date}
+                      </td>
+                      
+                      <td className="px-4 py-3 font-bold text-slate-800 truncate" title={quotation.quotation_number}>
+                        {quotation.quotation_number}
+                      </td>
+                      
+                      {/* Customer Name with Badge */}
                       <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                            <span className="font-medium">
+                        <div className="flex items-center gap-2 overflow-hidden">
+                            <span className="font-medium truncate block max-w-full" title={quotation.customers?.name || quotation.quotation_to || "Unknown"}>
                                 {quotation.customers?.name || quotation.quotation_to || <span className="text-slate-400 italic">Unknown</span>}
                             </span>
                             {!quotation.customer_id && (
-                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700 border border-amber-200 whitespace-nowrap flex items-center gap-1" title="Unregistered Customer">
+                                <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700 border border-amber-200 whitespace-nowrap flex items-center gap-1" title="Unregistered Customer">
                                     Manual
                                 </span>
                             )}
                         </div>
                       </td>
 
-                      <td className="px-4 py-3 text-right font-bold text-slate-900">${quotation.total_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                      <td className="px-4 py-3 text-right font-bold text-slate-900 truncate">
+                        ${quotation.total_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </td>
                       
-                      <td className="px-4 py-3 text-slate-600 text-xs">{quotation.created_who || "-"}</td>
-                      <td className="px-4 py-3 text-slate-600 text-xs">{quotation.updated_who || "-"}</td>
+                      <td className="px-4 py-3 text-slate-600 text-xs truncate" title={quotation.created_who || "-"}>
+                        {quotation.created_who || "-"}
+                      </td>
+                      
+                      <td className="px-4 py-3 text-slate-600 text-xs truncate" title={quotation.updated_who || "-"}>
+                        {quotation.updated_who || "-"}
+                      </td>
 
                       <td className="px-4 py-3 text-center">
-                        <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide ${quotation.status === 'Accepted' ? 'bg-emerald-100 text-emerald-700' : quotation.status === 'Sent' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'}`}>
+                        <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide whitespace-nowrap ${quotation.status === 'Accepted' ? 'bg-emerald-100 text-emerald-700' : quotation.status === 'Sent' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'}`}>
                           {quotation.status}
                         </span>
                       </td>

@@ -677,15 +677,15 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
           <table className="w-full text-left border-collapse table-fixed">
             <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-500 text-xs uppercase font-bold tracking-wide whitespace-nowrap">
               <tr>
-                <th className="px-6 py-4 w-[4%]"><input type="checkbox" checked={isAllSelected} onChange={handleSelectAll} className="w-4 h-4"/></th>
-                <th className="px-6 py-4 w-[8%]">Invoice #</th>
-                <th className="px-6 py-4 w-[20%]">Customer</th>
-                <th className="px-6 py-4 w-[9%]">Date</th>
-                <th className="px-6 py-4 w-[9%]">Due Date</th>
-                <th className="px-6 py-4 w-[10%] text-right">Total</th>
-                <th className="px-6 py-4 w-[12%] text-center">Delivery By</th>
-                <th className="px-6 py-4 w-[10%] text-center">Delivered?</th>
-                <th className="px-6 py-4 w-[8%] text-center">Status</th>
+                <th className="px-2 py-4 w-[4%]"><input type="checkbox" checked={isAllSelected} onChange={handleSelectAll} className="w-4 h-4"/></th>
+                <th className="px-2 py-4 w-[8%]">Invoice #</th>
+                <th className="px-2 py-4 w-[20%]">Customer</th>
+                <th className="px-2 py-4 w-[9%]">Date</th>
+                <th className="px-2 py-4 w-[9%]">Due Date</th>
+                <th className="px-2 py-4 w-[10%] text-right">Total</th>
+                <th className="px-2 py-4 w-[12%] text-center">Delivery By</th>
+                <th className="px-2 py-4 w-[10%] text-center">Delivered?</th>
+                <th className="px-2 py-4 w-[8%] text-center">Status</th>
                 <th className="px-6 py-4 w-[10%] text-center">Actions</th>
               </tr>
             </thead>
@@ -722,7 +722,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
                       <tr className={`transition-colors border-b border-slate-100 whitespace-nowrap ${selectedIds.has(inv.id) ? "bg-blue-50/50" : isExpanded ? "bg-slate-50" : "hover:bg-slate-50"}`}>
                         <td className="px-6 py-4"><input type="checkbox" checked={selectedIds.has(inv.id)} onChange={()=>handleSelectOne(inv.id)} className="w-4 h-4"/></td>
                         
-                        <td className="px-6 py-4 font-semibold text-slate-700">
+                        <td className="px-6 py-4 font-semibold text-slate-700 truncate max-w-0">
                           {isCredit ? (
                              <span className="bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded border border-blue-100 font-bold text-xs">{inv.id}</span>
                           ) : (
@@ -730,10 +730,10 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
                           )}
                         </td>
 
-                        <td className="px-6 py-4 font-bold text-slate-900 truncate" title={inv.invoice_to}>{inv.invoice_to}</td>
-                        <td className="px-6 py-4 text-slate-500">{inv.invoice_date}</td>
+                        <td className="px-2 py-4 font-bold text-slate-900 truncate max-w-0" title={inv.invoice_to}>{inv.invoice_to}</td>
+                        <td className="px-2 py-4 text-slate-500 truncate max-w-0">{inv.invoice_date}</td>
                         
-                        <td className={`px-6 py-4 truncate ${isOverdue ? "text-red-600 font-bold" : "text-slate-500"}`}>
+                        <td className={`px-2 py-4 truncate max-w-0 ${isOverdue ? "text-red-600 font-bold" : "text-slate-500"}`}>
                           <div className="flex items-center gap-1">
                             {inv.due_date}
                             {isOverdue && (
@@ -791,28 +791,45 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
                             <button onClick={() => toggleRow(inv.id)} className={`p-2 rounded-full transition-colors ${isExpanded ? 'bg-slate-200 text-slate-800' : 'bg-blue-50 text-blue-600 hover:bg-blue-100'}`}>
                               {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                             </button>
-                            <div className="relative">
-                              <button onClick={(e)=>{e.stopPropagation(); setOpenMenuId(openMenuId===inv.id?null:inv.id)}} className="p-2 hover:bg-slate-200 rounded-full"><MoreHorizontal className="w-4 h-4"/></button>
-                              {openMenuId === inv.id && (
-                                <div ref={menuRef} className="absolute right-0 top-10 w-48 bg-white border shadow-xl z-50 py-1" onClick={e=>e.stopPropagation()}>
-                                  {!isCredit && (
-                                     <button 
-                                       onClick={() => handlePaymentRedirect(inv.customer_id || "")} 
-                                       className="w-full px-4 py-2 text-sm text-emerald-700 font-bold bg-emerald-50 hover:bg-emerald-100 flex gap-2 border-b border-slate-100 mb-1"
-                                     >
-                                       <DollarSign className="w-4 h-4"/> Receive Payment
-                                     </button>
-                                  )}
-                                  <button onClick={()=>handleEmail(inv)} className="w-full px-4 py-2 text-sm hover:bg-slate-50 flex gap-2"><Mail className="w-4 h-4 text-purple-600"/> Email Invoice</button>
-                                  <button onClick={()=>handlePrint(inv.id)} className="w-full px-4 py-2 text-sm hover:bg-slate-50 flex gap-2"><Printer className="w-4 h-4"/> Print</button>
-                                  <button onClick={()=>handleDownload(inv.id)} className="w-full px-4 py-2 text-sm hover:bg-slate-50 flex gap-2"><Download className="w-4 h-4"/> PDF</button>
-                                  <button onClick={()=>handlePackingList(inv.id)} className="w-full px-4 py-2 text-sm hover:bg-slate-50 flex gap-2"><Package className="w-4 h-4 text-orange-600"/> Packing List</button>
-                                  <div className="border-t my-1"></div>
-                                  <button onClick={()=>handleEdit(inv.id)} className="w-full px-4 py-2 text-sm hover:bg-slate-50 flex gap-2"><Edit className="w-4 h-4"/> Edit</button>
-                                  <button onClick={()=>handleDelete(inv.id)} className="w-full px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex gap-2"><Trash2 className="w-4 h-4"/> Delete</button>
-                                </div>
-                              )}
-                            </div>
+                            <DropdownMenu>
+  <DropdownMenuTrigger asChild>
+    <button className="p-2 hover:bg-slate-200 rounded-full outline-none data-[state=open]:bg-slate-200">
+      <MoreHorizontal className="w-4 h-4" />
+    </button>
+  </DropdownMenuTrigger>
+  
+  <DropdownMenuContent align="end" className="w-48 bg-white border shadow-xl z-50">
+    {!isCredit && (
+      <DropdownMenuItem 
+        onClick={() => handlePaymentRedirect(inv.customer_id || "")} 
+        className="w-full px-3 py-2.5 text-sm text-emerald-700 font-bold hover:bg-emerald-50 flex gap-2 cursor-pointer border-b border-slate-100 focus:bg-emerald-50 focus:text-emerald-800"
+      >
+        <DollarSign className="w-4 h-4" /> Receive Payment
+      </DropdownMenuItem>
+    )}
+    <DropdownMenuItem onClick={() => handleEmail(inv)} className="w-full px-3 py-2.5 text-sm hover:bg-slate-50 flex gap-2 cursor-pointer focus:bg-slate-50">
+      <Mail className="w-4 h-4 text-purple-600" /> Email Invoice
+    </DropdownMenuItem>
+    <DropdownMenuItem onClick={() => handlePrint(inv.id)} className="w-full px-3 py-2.5 text-sm hover:bg-slate-50 flex gap-2 cursor-pointer focus:bg-slate-50">
+      <Printer className="w-4 h-4 text-slate-500" /> Print
+    </DropdownMenuItem>
+    <DropdownMenuItem onClick={() => handleDownload(inv.id)} className="w-full px-3 py-2.5 text-sm hover:bg-slate-50 flex gap-2 cursor-pointer focus:bg-slate-50">
+      <Download className="w-4 h-4 text-slate-500" /> PDF
+    </DropdownMenuItem>
+    <DropdownMenuItem onClick={() => handlePackingList(inv.id)} className="w-full px-3 py-2.5 text-sm hover:bg-slate-50 flex gap-2 cursor-pointer focus:bg-slate-50">
+      <Package className="w-4 h-4 text-orange-600" /> Packing List
+    </DropdownMenuItem>
+    
+    <div className="border-t border-slate-100 my-1"></div>
+    
+    <DropdownMenuItem onClick={() => handleEdit(inv.id)} className="w-full px-3 py-2.5 text-sm hover:bg-slate-50 flex gap-2 cursor-pointer focus:bg-slate-50">
+      <Edit className="w-4 h-4 text-blue-600" /> Edit
+    </DropdownMenuItem>
+    <DropdownMenuItem onClick={() => handleDelete(inv.id)} className="w-full px-3 py-2.5 text-sm text-red-600 hover:bg-red-50 flex gap-2 cursor-pointer focus:bg-red-50 focus:text-red-700">
+      <Trash2 className="w-4 h-4" /> Delete
+    </DropdownMenuItem>
+  </DropdownMenuContent>
+</DropdownMenu>
                           </div>
                         </td>
                       </tr>

@@ -83,17 +83,17 @@ const styles = StyleSheet.create({
   colDueDate: { width: '14%', textAlign: 'center' }, // [NEW] Due Date 컬럼
 
   // Ageing Table Styles
-  ageingContainer: { marginTop: 20, marginBottom: 10, border: '1px solid #ddd' },
+  ageingContainer: { marginTop: 5, marginBottom: 1, border: '1px solid #ddd' },
   ageingHeader: { flexDirection: 'row', backgroundColor: '#859e77', paddingVertical: 6 },
   ageingHeaderCell: { flex: 1, color: '#fff', fontSize: 8, fontWeight: 'bold', textAlign: 'center' },
   ageingRow: { flexDirection: 'row', paddingVertical: 8, backgroundColor: '#fff' },
   ageingCell: { flex: 1, fontSize: 9, textAlign: 'center', color: '#333' },
 
   // Footer & Payment Info
-  footerSection: { marginTop: 10, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  paymentInfo: { width: '100%', padding: 10, color: '#fff', backgroundColor: '#859e77', borderRadius: 4, marginTop: 10 },
+  footerSection: { marginTop: 1, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  paymentInfo: { width: '100%', padding: 10, color: '#000000', backgroundColor: '#ffffff', borderRadius: 4, marginTop: 10 },
   
-  bottomInfo: { marginTop: 30, borderTop: '1px solid #859e77', paddingTop: 10, textAlign: 'left' },
+  bottomInfo: { marginTop: 2, borderTop: '1px solid #859e77', paddingTop: 10, textAlign: 'left' },
   bottomText: { fontSize: 8, color: '#666', lineHeight: 1.5 },
 });
 
@@ -166,7 +166,7 @@ const StatementDocument = ({ data }: { data: StatementData }) => {
           {/* Transactions */}
           {data.transactions.map((t, idx) => {
             runningBalance += (t.amount - t.credit);
-            const displayRef = t.reference.length > 25 ? t.reference.slice(0, 25) + '...' : t.reference;
+            const displayRef = t.reference.length > 25 ? t.reference.slice(0, 100) + '...' : t.reference;
 
             return (
               <View key={idx} style={styles.tableRow}>
@@ -193,7 +193,7 @@ const StatementDocument = ({ data }: { data: StatementData }) => {
         </View>
 
         {/* Ageing Analysis Bar */}
-        <Text style={{marginBottom: 4}}>OVERDUE INFORMATION</Text>
+        <Text style={{marginTop: 10, fontSize: 10,color: '#859e77', fontWeight: 'bold' }}>OVERDUE INFORMATION</Text>
         <View style={styles.ageingContainer}>
             <View style={styles.ageingHeader}>
                 <Text style={styles.ageingHeaderCell}>Current</Text>
@@ -217,13 +217,8 @@ const StatementDocument = ({ data }: { data: StatementData }) => {
         <View style={styles.footerSection}>
            <View style={styles.paymentInfo}>
               <Text style={{ fontWeight: 'bold', marginBottom: 4, textDecoration: 'underline' }}>How to pay</Text>
-              <Text>Bank Transfer</Text>
-              <Text>Bank: {data.bankName || "St George"}</Text>
-              <Text>BSB: {data.bsb || "-"}</Text>
-              <Text>Acc: {data.accountNumber || "-"}</Text>
-              <Text style={{ marginTop: 6}}>or</Text>
-              <Text style={{ marginTop: 6}}>PayID: {data.bank_payid || "-"}</Text>
-              <Text style={{ marginTop: 6, fontSize: 8 }}>Please quote Invoice # or Customer Name</Text>
+              <Text>Bank: {data.bankName || "St George"},  BSB: {data.bsb || "-"},  Acc: {data.accountNumber || "-"}     or     PayID: {data.bank_payid || "-"}</Text>
+              <Text style={{ marginTop: 6, fontSize: 8 }}>* Please quote Invoice # or Customer Name</Text>
            </View>
         </View>
         

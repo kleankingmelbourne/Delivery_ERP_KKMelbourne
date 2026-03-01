@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef, useMemo } from "react";
+import { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { useRouter } from "next/navigation";
 import { 
@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
+import { useAuth } from "@/components/providers/AuthProvider";
 
 // --- [Utility] ---
 const roundAmount = (num: number) => Math.round((num + Number.EPSILON) * 100) / 100;
@@ -31,10 +32,9 @@ function useDebounce<T>(value: T, delay: number): T {
   return debouncedValue;
 }
 
-// --- [Component] SearchableSelect (Fixed: Supports onClick & onSearch) ---
+// --- [Component] SearchableSelect ---
 interface Option { id: string; label: string; subLabel?: string; }
 
-// ✅ [수정] onClick, onSearch 속성 복구
 interface SearchableSelectProps { 
     options: Option[]; 
     value: string; 
@@ -42,11 +42,14 @@ interface SearchableSelectProps {
     placeholder?: string; 
     disabled?: boolean; 
     className?: string; 
-    onClick?: () => void;              // 행 추가 등을 위한 클릭 이벤트
-    onSearch?: (term: string) => void; // 서버 검색이 필요할 경우 사용
+    onClick?: () => void;              
+    onSearch?: (term: string) => void; 
+    id?: string;
+    onOuterFocus?: () => void;
+    onTabPress?: () => void;
 }
 
-function SearchableSelect({ options, value, onChange, placeholder = "Select...", disabled = false, className, onClick, onSearch }: SearchableSelectProps) {
+function SearchableSelect({ options, value, onChange, placeholder = "Select...", disabled = false, className, onClick, onSearch, id, onOuterFocus, onTabPress }: SearchableSelectProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [highlightedIndex, setHighlightedIndex] = useState(0); 
@@ -55,10 +58,13 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select...",
   const listRef = useRef<HTMLDivElement>(null);
   const optionsRef = useRef<(HTMLDivElement | null)[]>([]); 
   const inputRef = useRef<HTMLInputElement>(null);
+  
+  const isKeyboardNav = useRef(false);
+  // 💡 [핵심] 사용자가 마우스로 직접 클릭해서 포커스가 왔는지, 키보드(Tab)로 왔는지 구분하는 장치
+  const isMouseAction = useRef(false); 
 
   const debouncedSearchTerm = useDebounce(searchTerm, 300);
 
-  // ✅ [수정] onSearch가 있으면 서버 검색 실행
   useEffect(() => {
       if (onSearch && isOpen) {
           onSearch(debouncedSearchTerm);
@@ -67,10 +73,7 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select...",
 
   const selectedOption = options.find(o => o.id === value);
   
-  // 클라이언트 사이드 필터링
   const filteredOptions = useMemo(() => {
-    // onSearch가 있으면 서버가 필터링하므로 클라이언트 필터링은 최소화하거나 건너뜀
-    // 하지만 UX상 로컬 필터링도 같이 되면 더 부드러움
     if (!searchTerm) return options;
     const lowerTerm = searchTerm.toLowerCase();
     return options.filter(option => 
@@ -86,7 +89,9 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select...",
 
   useEffect(() => {
     if (isOpen && listRef.current && optionsRef.current[highlightedIndex]) {
-        optionsRef.current[highlightedIndex]?.scrollIntoView({ block: "nearest" });
+        if (isKeyboardNav.current) {
+            optionsRef.current[highlightedIndex]?.scrollIntoView({ block: "nearest" });
+        }
     }
   }, [highlightedIndex, isOpen]);
 
@@ -102,6 +107,8 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select...",
   }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    isKeyboardNav.current = true; 
+    
     if (e.key === "ArrowDown") {
       e.preventDefault(); 
       setHighlightedIndex(prev => (prev < filteredOptions.length - 1 ? prev + 1 : prev));
@@ -115,6 +122,10 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select...",
         setSearchTerm("");
         if (e.key === "Enter") e.preventDefault();
       }
+      if (e.key === "Tab" && !e.shiftKey && onTabPress) {
+        e.preventDefault();
+        onTabPress();
+      }
     } else if (e.key === "Escape") {
       setIsOpen(false);
     }
@@ -123,7 +134,29 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select...",
   return (
     <div className={`relative ${className}`} ref={containerRef}>
       <div 
-        // ✅ [수정] onClick 이벤트 핸들러 연결 (행 추가 로직 등)
+        id={id}             
+        tabIndex={0} 
+        onMouseDown={() => { isMouseAction.current = true; }} // 💡 마우스 클릭 시 기록!
+        onFocus={(e) => { 
+            if (onOuterFocus) onOuterFocus(); 
+            
+            // 💡 [핵심] 마우스 클릭이 아니고(즉, Tab 키 이동) & 이 껍데기가 직접 포커스 되었을 때 자동으로 창 열기!
+            if (!isMouseAction.current && !disabled && !isOpen && e.target === e.currentTarget) {
+                setIsOpen(true);
+                setTimeout(() => inputRef.current?.focus(), 10);
+            }
+            isMouseAction.current = false; // 플래그 초기화
+        }} 
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            if (!disabled) { setIsOpen(true); setTimeout(() => inputRef.current?.focus(), 0); }
+          }
+          if (e.key === "Tab" && !e.shiftKey && onTabPress) {
+            e.preventDefault();
+            onTabPress();
+          }
+        }}
         onClick={() => { 
             if (!disabled) { 
                 setIsOpen(!isOpen); 
@@ -166,7 +199,10 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select...",
                   key={option.id} 
                   ref={(el) => { optionsRef.current[index] = el; }} 
                   onClick={() => { onChange(option.id); setIsOpen(false); setSearchTerm(""); }} 
-                  onMouseMove={() => setHighlightedIndex(index)}
+                  onMouseMove={() => { 
+                      isKeyboardNav.current = false; 
+                      if (highlightedIndex !== index) setHighlightedIndex(index);
+                  }}
                   className={`flex items-center justify-between px-3 py-2 text-sm rounded cursor-pointer ${index === highlightedIndex ? "bg-slate-100 font-bold text-slate-900" : "hover:bg-slate-50 text-slate-700"}`}
                 >
                   <div className="flex flex-col">
@@ -220,7 +256,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
   const [allowedProducts, setAllowedProducts] = useState<AllowedProduct[]>([]); 
   const [searchResultIds, setSearchResultIds] = useState<Set<string>>(new Set()); 
 
-  const [currentUserName, setCurrentUserName] = useState("");
+  const { currentUserName, productUnits } = useAuth();
   const [showAllProducts, setShowAllProducts] = useState(false); 
   const [autoAddProduct, setAutoAddProduct] = useState(false);
   
@@ -256,36 +292,24 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     const initData = async () => {
       setLoading(true);
 
-      // ✅ 4개의 독립적인 데이터를 Promise.all로 "동시에" 요청합니다.
-      const [custRes, userRes, unitRes, invRes] = await Promise.all([
-        supabase.from("customers").select("id, name").order("name"), 
-        supabase.auth.getUser(),
-        supabase.from("product_units").select("id, unit_name").limit(10000),
-        // Edit 모드일 때만 인보이스 데이터를 요청, 아니면 null 반환
-        isEditMode 
-          ? supabase.from("invoices").select(`*, invoice_items (*, products (*, product_units ( unit_name )))`).eq("id", invoiceId).single()
-          : Promise.resolve({ data: null, error: null })
+      const [custRes, invRes] = await Promise.all([
+        !isEditMode ? supabase.from("customers").select("id, name").order("name") : Promise.resolve({ data: null }),
+        isEditMode ? supabase.from("invoices").select(`*, invoice_items (*, products (*, product_units ( unit_name )))`).eq("id", invoiceId).single() : Promise.resolve({ data: null, error: null })
       ]);
 
-      if (custRes.data) setCustomers(custRes.data); 
-      
-      const currentUser = userRes.data?.user;
-    if (currentUser) {
-      // currentUser가 확실히 존재함을 TypeScript가 인지함
-      supabase.from('profiles').select('display_name').eq('id', currentUser.id).single()
-        .then(({ data }) => setCurrentUserName(data?.display_name || currentUser.email?.split('@')[0] || "Unknown"));
-    }
+      if (!isEditMode && custRes?.data) {
+          setCustomers(custRes.data); 
+      }
       
       const uMap: Record<string, string> = {};
-      if (unitRes.data) {
-          unitRes.data.forEach((u: any) => uMap[u.id] = u.unit_name);
+      if (productUnits && productUnits.length > 0) {
+          productUnits.forEach((u: any) => uMap[u.id] = u.unit_name);
           setUnitMap(uMap);
       }
 
-      // [최적화 완료] Edit Mode Load
-      if (isEditMode && invRes.data) {
+      if (isEditMode && invRes?.data) {
           const inv = invRes.data;
-          
+          setCustomers([{ id: inv.customer_id, name: inv.invoice_to || "Unknown Customer" }]);
           setSelectedCustomerId(inv.customer_id);
           setInvoiceDate(inv.invoice_date);
           setDueDate(inv.due_date);
@@ -309,7 +333,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
           });
           setItems(loadedItems);
           setOriginalItems(JSON.parse(JSON.stringify(loadedItems))); 
-      } else if (isEditMode && invRes.error) {
+      } else if (isEditMode && invRes?.error) {
           alert("Invoice not found.");
           router.push("/invoice");
       }
@@ -332,17 +356,12 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     }
 
     const loadCustomerDetail = async () => {
-      // ✅ 3가지 독립적인 통신을 동시에 출발시켜 시간을 1/3로 단축
       const [customerRes, paymentsRes, unpaidRes] = await Promise.all([
-          // 1. 고객 + 전용상품 데이터
           supabase.from("customers").select(`due_date, note, in_charge_delivery, customer_products ( product_id, custom_price_ctn, custom_price_pack, products ( *, product_units ( unit_name ) ) )`).eq("id", selectedCustomerId).single(),
-          // 2. 크레딧 조회
           supabase.from('payments').select('unallocated_amount').eq('customer_id', selectedCustomerId).gt('unallocated_amount', 0),
-          // 3. 미수금 조회
           supabase.from("invoices").select("due_date, total_amount, paid_amount").eq("customer_id", selectedCustomerId).neq("status", "Paid")
       ]);
 
-      // --- 1. 고객 정보 세팅 ---
       const customerData = customerRes.data;
       if (customerData) {
           setStaffNote(customerData.note || "");
@@ -365,7 +384,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
           }
       }
 
-      // --- 2. 크레딧 및 통계 세팅 ---
       if (paymentsRes.data) {
         setAvailableCredit(roundAmount(paymentsRes.data.reduce((sum, p) => sum + p.unallocated_amount, 0)));
       } else setAvailableCredit(0);
@@ -379,23 +397,12 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       } else setCustomerStats({ totalOverdue: 0, oldestInvoiceDate: null });
     };
     
-
     loadCustomerDetail();
   }, [selectedCustomerId, isEditMode]); 
 
-  const handleShowAllToggle = async (isChecked: boolean) => {
+  const handleShowAllToggle = (isChecked: boolean) => {
       setShowAllProducts(isChecked);
-      if (isChecked) {
-          const { data } = await supabase.from("products").select("*, product_units (unit_name)").limit(1000); 
-          if (data) {
-              const mapped = data.map((p: any) => ({ ...p, unit_name: p.product_units?.unit_name || "CTN" }));
-              setAllProducts(prev => {
-                  const existingIds = new Set(prev.map(p => p.id));
-                  const newItems = mapped.filter(p => !existingIds.has(p.id));
-                  return [...prev, ...newItems];
-              });
-          }
-      } else {
+      if (!isChecked) {
           setSearchResultIds(new Set()); 
           const allowedIds = allowedProducts.map(ap => ap.product_id);
           const selectedItemIds = items.map(i => i.productId).filter(Boolean);
@@ -404,8 +411,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       }
   };
 
-  // ✅ [복구] Products는 여전히 서버 검색을 할 수 있도록 유지
-  const handleSearchProducts = async (term: string) => {
+  const handleSearchProducts = useCallback(async (term: string) => {
       if (!term.trim() || !showAllProducts) return;
       const { data } = await supabase.from("products").select("*, product_units (unit_name)").or(`product_name.ilike.%${term}%,vendor_product_id.ilike.%${term}%`).limit(20); 
       if (data && data.length > 0) {
@@ -421,7 +427,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
               return next;
           });
       }
-  };
+  }, [showAllProducts, supabase]);
 
   const calculateDueDate = (startDateStr: string, term: string | null) => {
     if (!term) { setDueDate(startDateStr); return; }
@@ -511,7 +517,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       
       if (productIds.length === 0) return [];
 
-      // [최적화] 루프 밖에서 필요한 상품들의 재고를 단 1번의 쿼리로 전부 가져옵니다 (.in 사용)
       const { data: products } = await supabase
           .from('products')
           .select('id, product_name, current_stock_level, current_stock_level_pack, total_pack_ctn')
@@ -519,7 +524,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
       if (!products) return [];
 
-      // 가져온 데이터를 메모리상에서 비교 (순식간에 처리됨)
       for (const item of itemList) {
           if (!item.productId) continue;
           const product = products.find((p: any) => p.id === item.productId);
@@ -551,7 +555,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     const productIds = itemList.map(i => i.productId).filter(Boolean);
     if (productIds.length === 0) return;
 
-    // 1. 상태를 1번의 쿼리로 다 가져옴
     const { data: products } = await supabase
         .from('products')
         .select('id, current_stock_level, current_stock_level_pack, total_pack_ctn')
@@ -559,7 +562,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
     if (!products) return;
 
-    const updatePromises = []; // 병렬 처리를 위한 배열
+    const updatePromises = []; 
 
     for (const item of itemList) {
         if (!item.productId) continue;
@@ -584,21 +587,22 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
             }
         }
         
-        // 2. 즉시 await 하지 않고 Promise 배열에 담음
         updatePromises.push(
-            supabase.from('products')
-            .update({ current_stock_level: currentCtn, current_stock_level_pack: currentPack })
-            .eq('id', item.productId)
+            supabase
+                .from('products')
+                .update({ 
+                    current_stock_level: currentCtn, 
+                    current_stock_level_pack: currentPack 
+                })
+                .eq('id', item.productId)
         );
     }
 
-    // 3. 모아둔 업데이트 작업을 동시에 백그라운드로 전송하여 실행 (속도 비약적 상승)
     await Promise.all(updatePromises);
   };
 
   const handleCreditMemoCreation = async (redirect: boolean) => {
     try {
-        // [1단계: ID 채번 및 뼈대 생성]
         const { data: lastCr } = await supabase.from('invoices').select('id').ilike('id', 'CR-%').order('id', { ascending: false }).limit(1).single();
         let nextId = "CR-00001";
         if (lastCr?.id) { const match = lastCr.id.match(/CR-(\d+)/); if (match && match[1]) nextId = `CR-${String(parseInt(match[1]) + 1).padStart(5, '0')}`; }
@@ -609,7 +613,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
         });
         if (invError) throw invError;
 
-        // [2단계: 연관 데이터 한방에 전송]
         const validItems = items.filter(item => item.productId);
         const parallelTasks = [];
 
@@ -631,7 +634,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
         
         parallelTasks.push(supabase.from("customers").update({ note: staffNote }).eq("id", selectedCustomerId));
 
-        // 💥 모아둔 모든 Write 요청을 DB에 한방에 발사합니다.
         await Promise.all(parallelTasks);
 
         alert(`Credit Memo (${nextId}) created successfully!`);
@@ -660,39 +662,32 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       const customerName = customers.find(c => c.id === selectedCustomerId)?.name || "Customer";
       let targetId = invoiceId;
 
-      // [1단계: 인보이스 뼈대 작업] 
       if (isEditMode) {
-          // Edit 모드: 배열로 빼지 않고 곧바로 Promise.all에 넣어 튜플로 타입 추론을 강제합니다.
           const [ , invUpdateRes, invDelRes ] = await Promise.all([
               originalItems.length > 0 ? updateInventory(originalItems, true) : Promise.resolve(),
               supabase.from("invoices").update({ customer_id: selectedCustomerId, invoice_to: customerName, invoice_date: invoiceDate, due_date: dueDate, total_amount: grandTotal, subtotal: subTotal, gst_total: gstTotal, updated_who: currentUserName, memo: memo, driver_id: currentDriverId, is_pickup: isPickup }).eq("id", invoiceId),
               supabase.from("invoice_items").delete().eq("invoice_id", invoiceId)
           ]);
           
-          // 이제 타입스크립트가 invUpdateRes에 error 객체가 있다는 것을 정확히 압니다.
           if (invUpdateRes && invUpdateRes.error) throw invUpdateRes.error; 
           if (invDelRes && invDelRes.error) throw invDelRes.error;
       } else {
-          // New 모드: 아이템을 넣으려면 ID가 필요하므로 인보이스 생성만 먼저 기다립니다.
           const { data: inv, error: err1 } = await supabase.from("invoices").insert({ customer_id: selectedCustomerId, invoice_to: customerName, invoice_date: invoiceDate, due_date: dueDate, total_amount: grandTotal, paid_amount: 0, subtotal: subTotal, gst_total: gstTotal, created_who: currentUserName, updated_who: currentUserName, status: "Unpaid", memo: memo, driver_id: currentDriverId, is_pickup: isPickup }).select().single();
           if (err1 || !inv) throw err1 || new Error("Invoice creation failed");
           targetId = inv.id;
       }
       
-      // [2단계: 연관 데이터 한방에 전송] 아이템 삽입, 재고 차감, 고객 노트 수정 등을 병렬로 묶습니다.
       const itemsData = validItems.map(item => {
         const p = allProducts.find(x => x.id === item.productId);
         return { invoice_id: targetId, product_id: item.productId, description: `${p?.product_name || 'Unknown'} (${item.unit})`, quantity: item.quantity, unit: item.unit, base_price: item.basePrice, discount: item.discountRate, unit_price: item.unitPrice, amount: roundAmount(item.quantity * item.unitPrice) };
       });
 
-      // 병렬로 실행할 작업 리스트 (배열)
       const parallelSaveTasks = [
         itemsData.length > 0 ? supabase.from("invoice_items").insert(itemsData) : Promise.resolve(),
         itemsData.length > 0 ? updateInventory(validItems, false) : Promise.resolve(),
         supabase.from("customers").update({ note: staffNote }).eq("id", selectedCustomerId)
       ];
 
-      // Auto-add 체크 시, 고객 전용 상품 단가 업데이트 로직도 배열에 추가합니다.
       if (autoAddProduct && validItems.length > 0) {
         const updatesMap = new Map();
         allowedProducts.forEach(ap => updatesMap.set(ap.product_id, { ctn: ap.discount_ctn, pack: ap.discount_pack }));
@@ -710,7 +705,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
         parallelSaveTasks.push(supabase.from("customer_products").upsert(uniqueUpdates, { onConflict: 'customer_id, product_id' }));
       }
 
-      // 💥 모아둔 모든 Write 요청을 DB에 한방에 발사합니다.
       const finalResults = await Promise.all(parallelSaveTasks);
       if (finalResults[0] && 'error' in finalResults[0] && finalResults[0].error) throw finalResults[0].error;
 
@@ -751,7 +745,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-2">
                 <label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2"><User className="w-3.5 h-3.5" /> Customer</label>
-                <SearchableSelect options={customerOptions} value={selectedCustomerId} onChange={setSelectedCustomerId} placeholder={loading ? "Loading list..." : "Search customer..."} />
+                <SearchableSelect options={customerOptions} value={selectedCustomerId} onChange={setSelectedCustomerId} placeholder={loading ? "Loading list..." : "Search customer..."} disabled={isEditMode} />
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2"><label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2"><Calendar className="w-3.5 h-3.5" /> Date</label><Input type="date" value={invoiceDate} onChange={handleInvoiceDateChange} /></div>
@@ -764,9 +758,20 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                 <div className="flex items-center gap-6">
                   <div className="flex items-center space-x-2">
                     <Checkbox id="showAll" checked={showAllProducts} onCheckedChange={(c) => handleShowAllToggle(!!c)} />
-                    <label htmlFor="showAll" className="text-xs font-bold text-slate-800">Show All Products</label>
+                    <label htmlFor="showAll" className="text-xs font-bold text-slate-500">Allow Search All Products</label>
                   </div>
-                  <div className="flex items-center space-x-2"><Checkbox id="autoAdd" checked={autoAddProduct} onCheckedChange={(c) => setAutoAddProduct(!!c)} /><label htmlFor="autoAdd" className={`text-xs font-bold ${!autoAddProduct ? 'text-slate-500' : 'text-blue-600'}`}>Auto-add/Update List</label></div>
+                  <div className="flex items-center space-x-2">
+                    {/* ✅ Auto-Add 체크박스에서 Tab 누르면 가장 마지막 칸으로 점프! */}
+                    <Checkbox id="autoAdd" checked={autoAddProduct} onCheckedChange={(c) => setAutoAddProduct(!!c)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Tab' && !e.shiftKey) {
+                          e.preventDefault();
+                          const lastIdx = items.length - 1;
+                          document.getElementById(`product-search-${lastIdx}`)?.focus();
+                        }
+                      }}
+                    />
+                    <label htmlFor="autoAdd" className={`text-xs font-bold ${!autoAddProduct ? 'text-slate-500' : 'text-blue-600'}`}>Auto-add/Update List</label></div>
                 </div>
             </div>
             <div className="border border-slate-200 rounded-lg"> 
@@ -791,7 +796,25 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                         <tr key={idx} className="hover:bg-slate-50/50">
                           <td className="p-2 text-center text-xs text-slate-400 font-bold">{idx + 1}</td>
                           <td className="p-2">
-                            <SearchableSelect options={productOptions} value={item.productId} onChange={(val) => handleProductChange(idx, val)} placeholder="Search product..." className="w-full" onClick={() => handleProductClick(idx)} onSearch={handleSearchProducts} />
+                            {/* 💡 id 속성을 추가하여 document.getElementById 로 추적하게 만듭니다. */}
+                            <SearchableSelect 
+                                id={`product-search-${idx}`} 
+                                options={productOptions} 
+                                value={item.productId} 
+                                onChange={(val) => handleProductChange(idx, val)} 
+                                placeholder="Search product..." 
+                                className="w-full" 
+                                onClick={() => handleProductClick(idx)} 
+                                onSearch={handleSearchProducts} 
+                                onOuterFocus={() => {
+                                  // 마지막 줄에 포커스가 닿으면 한 줄 추가
+                                  if (idx === items.length - 1) addItem();
+                                }}
+                                onTabPress={() => {
+                                  // Tab 누르면 현재 줄의 Disc% 칸으로 바로 텔레포트
+                                  document.getElementById(`disc-input-${idx}`)?.focus();
+                                }} 
+                            />
                           </td>
                           <td className="p-2">
                               <select className={`w-full p-2 border border-slate-200 rounded text-center font-medium outline-none text-xs ${!isCtnOrPack && item.productId ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : 'bg-slate-50'}`} value={item.unit} onChange={(e) => handleUnitChange(idx, e.target.value as any)} disabled={!isCtnOrPack && !!item.productId}>
@@ -800,7 +823,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                           </td>
                           <td className="p-2 text-right text-slate-400 text-xs line-through decoration-slate-300">${item.basePrice.toFixed(2)}</td>
                           <td className="p-2 text-right font-bold text-blue-700 text-sm">${item.unitPrice.toFixed(2)}</td>
-                          <td className="p-2 relative"><Input type="number" min="0" max="100" className="text-right h-9 text-xs border-blue-100 focus:border-blue-500 font-bold pr-2 bg-blue-50/50 text-blue-700" value={item.discountRate} onChange={(e) => handleDiscountChange(idx, Number(e.target.value))} /></td>
+                          <td className="p-2 relative"><Input id={`disc-input-${idx}`} type="number" min="0" max="100" className="text-right h-9 text-xs border-blue-100 focus:border-blue-500 font-bold pr-2 bg-blue-50/50 text-blue-700" value={item.discountRate} onChange={(e) => handleDiscountChange(idx, Number(e.target.value))} /></td>
                           <td className="p-2"><Input type="number" step="1" onKeyDown={(e) => { if (e.key === '.' || e.key === 'e') e.preventDefault(); }} className="text-center h-9" value={item.quantity} onChange={(e) => { const val = e.target.value; if (val === '') updateItem(idx, "quantity", ''); else updateItem(idx, "quantity", parseInt(val, 10)); }} /></td>
                           <td className="px-4 py-3 text-right font-bold text-slate-900">${(item.quantity * item.unitPrice).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                           <td className="p-2 text-center"><button onClick={() => removeItem(idx)} className="text-slate-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button></td>

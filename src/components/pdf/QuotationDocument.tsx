@@ -127,14 +127,14 @@ export const QuotationPage = ({ data }: { data: QuotationData }) => {
             <View style={styles.metaRow}><Text style={styles.metaLabel}>DATE:</Text><Text>{data.date}</Text></View>
             <View style={styles.metaRow}><Text style={styles.metaLabel}>VALID UNTIL:</Text><Text>{data.dueDate}</Text></View>
           </View>
-          <View style={styles.paymentBox}>
+          {/* <View style={styles.paymentBox}>
             <Text style={styles.paymentTitle}>Banking Details</Text>
             <View style={styles.bankingRow}><Text style={styles.bankingLabel}>BANK:</Text><Text>{data.bankName || "-"}</Text></View>
             <View style={styles.bankingRow}><Text style={styles.bankingLabel}>BSB:</Text><Text>{data.bsb || "-"}</Text></View>
             <View style={styles.bankingRow}><Text style={styles.bankingLabel}>A/C NO:</Text><Text>{data.accountNumber || "-"}</Text></View>
             <View style={styles.separatorLine} />
             <View style={styles.payIdRow}><Text style={styles.payIdLabel}>PayID:</Text><Text>{data.bank_payid || "-"}</Text></View>
-          </View>
+          </View> */}
         </View>
       </View>
 
@@ -194,6 +194,10 @@ export const QuotationPage = ({ data }: { data: QuotationData }) => {
         </View>
       </View>
 
+      <Text style={styles.paymentTitle}>Banking Details</Text>
+      <View style={styles.bankingRow}><Text>BANK: </Text><Text>{data.bankName || "-"}   BSB: </Text><Text>{data.bsb || "-"}   A/C NO: </Text><Text>{data.accountNumber || "-"}   or   PayID: </Text><Text>{data.bank_payid || "-"}</Text>
+      </View>
+      
       <View style={styles.footerContainer}>
         {data.invoiceInfo && (
           <View style={styles.infoSection}>

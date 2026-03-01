@@ -6,7 +6,7 @@ import Script from "next/script";
 import { 
   Calendar as CalendarIcon, Truck, Map as MapIcon, Navigation, 
   MapPin, CheckCircle2, User, Loader2, MapPin as WarehouseIcon, Radio,
-  Box, X, Circle, FileText, Sparkles, Building2, Home, MousePointerClick, Save, RotateCcw, Edit2, Check, GripVertical
+  Box, X, Circle, FileText, Sparkles, Building2, Home, MousePointerClick, Save, RotateCcw, Edit2, Check, GripVertical, Printer
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -22,6 +22,9 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
+
+// [NEW] Pdf Download / Print Import
+import { printBulkPdf } from "@/utils/downloadPdf";
 
 // [NEW] DnD Kit Imports
 import {
@@ -69,6 +72,9 @@ interface InvoiceItem {
   description: string;
   quantity: number;
   unit: string;
+  products?: {
+    vendor_product_id: string | null;
+  } | null;
 }
 
 interface DriverRouteInfo {
@@ -122,6 +128,9 @@ export default function DeliveryRoutePage() {
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [isRouteChanged, setIsRouteChanged] = useState(false);
 
+  // [NEW] Printing State
+  const [printingRouteKey, setPrintingRouteKey] = useState<string | null>(null);
+
   // Map
   const [isMapOpen, setIsMapOpen] = useState(false);
   const [isGoogleLoaded, setIsGoogleLoaded] = useState(false);
@@ -134,7 +143,7 @@ export default function DeliveryRoutePage() {
   const [invoiceItems, setInvoiceItems] = useState<InvoiceItem[]>([]);
   const [loadingItems, setLoadingItems] = useState(false);
 
-  // [NEW] Sensors for DnD
+  // Sensors for DnD
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
@@ -261,7 +270,60 @@ export default function DeliveryRoutePage() {
       setLoading(false);
   };
 
-  // [NEW] Drag End Handler
+  // ✅ [NEW] Print Route Invoices Function
+  const handlePrintRoute = async (e: React.MouseEvent, driverId: string, run: number) => {
+    e.stopPropagation(); // 라우트 선택(클릭) 이벤트 방지
+    const routeKey = `${driverId}_${run}`;
+    
+    // 만약 현재 열려있는 탭이고 수정사항이 저장되지 않았다면 경고창 띄우기
+    if (selectedRouteKey === routeKey && isRouteChanged) {
+        if (!confirm("You have unsaved sorting changes. Do you want to print the saved version from the database?")) {
+            return;
+        }
+    }
+
+    setPrintingRouteKey(routeKey);
+
+    try {
+        // DB에서 최신 저장된 해당 기사의 순서대로 인보이스 아이디 가져오기
+        const { data, error } = await supabase
+            .from("invoices")
+            .select("id, delivery_run")
+            .eq("invoice_date", selectedDate)
+            .eq("driver_id", driverId)
+            .neq("status", "Paid")
+            .is("is_pickup", false)
+            .order("delivery_order", { ascending: true });
+
+        if (error) throw error;
+
+        if (data) {
+            // 정확히 해당 Run(1 또는 2)의 인보이스만 필터링
+            const filtered = data.filter(item => {
+                const itemRun = (item.delivery_run === 0 || item.delivery_run === null) ? 1 : item.delivery_run;
+                return itemRun === run;
+            });
+
+            const invoiceIds = filtered.map(inv => inv.id);
+
+            if (invoiceIds.length === 0) {
+                alert("No invoices found to print for this route.");
+                setPrintingRouteKey(null);
+                return;
+            }
+
+            // PDF 병합 및 프린트 함수 호출
+            await printBulkPdf(invoiceIds);
+        }
+    } catch (err: any) {
+        console.error("Print Error:", err);
+        alert("Error printing invoices: " + err.message);
+    } finally {
+        setPrintingRouteKey(null);
+    }
+  };
+
+  // Drag End Handler
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     if (active.id !== over?.id) {
@@ -342,9 +404,25 @@ export default function DeliveryRoutePage() {
     setSelectedInvoice(invoice);
     setIsDetailOpen(true);
     setLoadingItems(true);
-    const { data, error } = await supabase.from('invoice_items').select('id, description, quantity, unit').eq('invoice_id', invoice.id);
-    if (!error && data) setInvoiceItems(data);
-    else setInvoiceItems([]);
+    
+    const { data, error } = await supabase
+      .from('invoice_items')
+      .select('id, description, quantity, unit, products(vendor_product_id)')
+      .eq('invoice_id', invoice.id);
+      
+    if (!error && data) {
+        const formattedItems = data.map((item: any) => ({
+            id: item.id,
+            description: item.description,
+            quantity: item.quantity,
+            unit: item.unit,
+            products: Array.isArray(item.products) ? item.products[0] : item.products
+        }));
+        setInvoiceItems(formattedItems);
+    } else {
+        setInvoiceItems([]);
+    }
+    
     setLoadingItems(false);
   };
 
@@ -420,6 +498,7 @@ export default function DeliveryRoutePage() {
               const key = `${route.driverId}_${route.run}`;
               const isSelected = selectedRouteKey === key;
               const isDone = route.count > 0 && route.count === route.completedCount;
+              const isPrinting = printingRouteKey === key;
 
               return (
                 <button
@@ -445,17 +524,31 @@ export default function DeliveryRoutePage() {
                   
                   <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between">
-                          <span className={cn("font-bold text-sm truncate", isSelected ? "text-emerald-900" : "text-slate-700")}>
-                              {route.driverName}
-                          </span>
-                          {isDone && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />}
+                          <div className="flex items-center gap-1.5 truncate">
+                              <span className={cn("font-bold text-sm truncate", isSelected ? "text-emerald-900" : "text-slate-700")}>
+                                  {route.driverName}
+                              </span>
+                              {isDone && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
+                          </div>
+
+                          {/* ✅ [NEW] Print Button */}
+                          <div 
+                              onClick={(e) => handlePrintRoute(e, route.driverId, route.run)}
+                              className={cn(
+                                  "p-1.5 rounded-md transition-colors cursor-pointer shrink-0",
+                                  isPrinting ? "bg-indigo-50" : "text-slate-400 hover:text-indigo-600 hover:bg-indigo-50"
+                              )}
+                              title="Print Route Invoices in Order"
+                          >
+                              {isPrinting ? <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600"/> : <Printer className="w-3.5 h-3.5" />}
+                          </div>
                       </div>
                       <div className="flex items-center gap-2 mt-0.5">
                           <Badge variant="secondary" className={cn("text-[9px] px-1.5 h-4 rounded-sm font-normal", route.run === 2 ? "bg-indigo-50 text-indigo-600" : "bg-slate-100 text-slate-500")}>
                               {route.run === 1 ? "1st Run" : "2nd Run"}
                           </Badge>
                           <span className="text-[10px] text-slate-400 font-medium">
-                              {route.completedCount} / {route.count}
+                              {route.completedCount} / {route.count} stops
                           </span>
                       </div>
                   </div>
@@ -608,7 +701,7 @@ export default function DeliveryRoutePage() {
 
     {/* Invoice Details Dialog */}
     <Dialog open={isDetailOpen} onOpenChange={setIsDetailOpen}>
-        <DialogContent className="max-w-md bg-white">
+        <DialogContent className="max-w-xl bg-white">
             <DialogHeader>
                 <DialogTitle className="flex items-center gap-2 text-slate-900">
                     <Box className="w-5 h-5 text-indigo-600"/>
@@ -626,24 +719,28 @@ export default function DeliveryRoutePage() {
                         <Loader2 className="w-5 h-5 animate-spin"/> Loading...
                     </div>
                 ) : (
-                    <table className="w-full text-sm text-left">
+                    <table className="w-full text-sm text-left table-fixed">
                         <thead className="bg-slate-50 text-slate-500 font-bold text-xs uppercase border-b border-slate-100">
                             <tr>
-                                <th className="px-4 py-3">Item</th>
-                                <th className="px-4 py-3 text-center">Unit</th>
-                                <th className="px-4 py-3 text-right">Qty</th>
+                                <th className="px-4 py-3 w-[25%]">Item ID</th>
+                                <th className="px-4 py-3 w-[50%]">Item Name</th>
+                                <th className="px-4 py-3 w-[15%] text-center">Unit</th>
+                                <th className="px-4 py-3 w-[10%] text-right">Qty</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
                             {invoiceItems.map((item) => (
                                 <tr key={item.id} className="hover:bg-slate-50/50">
-                                    <td className="px-4 py-3 font-medium text-slate-700">{item.description}</td>
+                                    <td className="px-4 py-3 font-mono text-xs text-slate-500 truncate" title={item.products?.vendor_product_id || '-'}>
+                                        {item.products?.vendor_product_id || '-'}
+                                    </td>
+                                    <td className="px-4 py-3 font-medium text-slate-700 truncate" title={item.description}>{item.description}</td>
                                     <td className="px-4 py-3 text-center text-slate-500 text-xs">{item.unit || '-'}</td>
                                     <td className="px-4 py-3 text-right font-bold text-slate-900">{item.quantity}</td>
                                 </tr>
                             ))}
                             {invoiceItems.length === 0 && (
-                                <tr><td colSpan={3} className="p-6 text-center text-slate-400 text-xs">No items found in this invoice.</td></tr>
+                                <tr><td colSpan={4} className="p-6 text-center text-slate-400 text-xs">No items found in this invoice.</td></tr>
                             )}
                         </tbody>
                     </table>

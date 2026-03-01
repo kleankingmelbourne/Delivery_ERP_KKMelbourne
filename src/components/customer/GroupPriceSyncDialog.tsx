@@ -190,7 +190,6 @@ export default function GroupPriceSyncDialog({ isOpen, onClose, groupId, groupNa
         product_id: item.product_id,
         custom_price_ctn: u.rate_ctn === "" ? 0 : u.rate_ctn,
         custom_price_pack: u.rate_pack === "" ? 0 : u.rate_pack,
-        updated_at: new Date().toISOString()
     }));
 
     const { error } = await supabase
@@ -234,7 +233,6 @@ export default function GroupPriceSyncDialog({ isOpen, onClose, groupId, groupNa
                 product_id: item.product_id,
                 custom_price_ctn: u.rate_ctn === "" ? 0 : u.rate_ctn,
                 custom_price_pack: u.rate_pack === "" ? 0 : u.rate_pack,
-                updated_at: new Date().toISOString()
             });
         }
     }

@@ -443,44 +443,70 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     if(!confirm("Are you sure you want to delete this? This will restore stock.")) return; 
     setLoading(true); 
     try { 
+      // 1. Credit Note 결제 취소 로직 (CR- 로 시작할 경우)
       if (id.startsWith("CR-")) {
           const { data: allocations } = await supabase.from("payment_allocations").select("invoice_id, amount").eq("payment_id", id);
           if (allocations && allocations.length > 0) {
-              for (const alloc of allocations) {
-                  const { data: targetInv } = await supabase.from("invoices").select("id, total_amount, paid_amount").eq("id", alloc.invoice_id).single();
-                  if (targetInv) {
-                      const newPaid = Math.max(0, (targetInv.paid_amount || 0) - alloc.amount);
+              const invoiceIdsToUpdate = allocations.map(a => a.invoice_id);
+              const { data: targetInvs } = await supabase.from("invoices").select("id, total_amount, paid_amount").in("id", invoiceIdsToUpdate);
+              
+              if (targetInvs && targetInvs.length > 0) {
+                  const updates = targetInvs.map(targetInv => {
+                      const alloc = allocations.find(a => a.invoice_id === targetInv.id);
+                      const allocAmount = alloc ? alloc.amount : 0;
+                      const newPaid = Math.max(0, (targetInv.paid_amount || 0) - allocAmount);
                       let newStatus = "Unpaid";
                       if (newPaid >= targetInv.total_amount && targetInv.total_amount > 0) newStatus = "Paid";
                       else if (newPaid > 0) newStatus = "Partial";
-                      await supabase.from("invoices").update({ paid_amount: newPaid, status: newStatus }).eq("id", targetInv.id);
-                  }
+                      
+                      return supabase.from("invoices").update({ paid_amount: newPaid, status: newStatus }).eq("id", targetInv.id);
+                  });
+                  await Promise.all(updates);
               }
           }
           await supabase.from("payment_allocations").delete().eq("payment_id", id);
           await supabase.from("payments").delete().eq("id", id);
       }
 
+      // 🚀 [최적화 핵심] 2. 재고(Stock) 복구 로직 (N+1 문제 해결)
       const { data: itemsToDelete } = await supabase.from("invoice_items").select("product_id, quantity, unit").eq("invoice_id", id);
+      
       if (itemsToDelete && itemsToDelete.length > 0) {
-          for (const item of itemsToDelete) {
-              if (!item.product_id) continue;
-              const { data: product } = await supabase.from("products").select("current_stock_level, current_stock_level_pack").eq("id", item.product_id).single();
-              if (product) {
-                  let currentCtn = product.current_stock_level || 0;
-                  let currentPack = product.current_stock_level_pack || 0;
-                  if (item.unit === "CTN") currentCtn += item.quantity;
-                  else currentPack += item.quantity;
-                  await supabase.from("products").update({ current_stock_level: currentCtn, current_stock_level_pack: currentPack }).eq("id", item.product_id);
+          // A. 삭제할 아이템들의 총 수량을 상품별(product_id)로 합산합니다.
+          const stockUpdates: Record<string, { ctn: number, pack: number }> = {};
+          itemsToDelete.forEach(item => {
+              if (!item.product_id) return;
+              if (!stockUpdates[item.product_id]) stockUpdates[item.product_id] = { ctn: 0, pack: 0 };
+              
+              if (item.unit === "CTN") stockUpdates[item.product_id].ctn += item.quantity;
+              else stockUpdates[item.product_id].pack += item.quantity;
+          });
+
+          const productIds = Object.keys(stockUpdates);
+
+          // B. 묶어둔 상품 ID들을 배열로 만들어 DB에서 한 번에 조회합니다. (쿼리 1번)
+          if (productIds.length > 0) {
+              const { data: products } = await supabase.from("products").select("id, current_stock_level, current_stock_level_pack").in("id", productIds);
+              
+              if (products && products.length > 0) {
+                  // C. 조회한 데이터를 바탕으로 각 상품별 업데이트 쿼리를 Promise.all로 동시에 쏩니다.
+                  const updatePromises = products.map(product => {
+                      const adjustment = stockUpdates[product.id];
+                      return supabase.from("products").update({
+                          current_stock_level: (product.current_stock_level || 0) + adjustment.ctn,
+                          current_stock_level_pack: (product.current_stock_level_pack || 0) + adjustment.pack
+                      }).eq("id", product.id);
+                  });
+                  await Promise.all(updatePromises);
               }
           }
       }
 
+      // 3. 인보이스 및 아이템 삭제
       await supabase.from("invoice_items").delete().eq("invoice_id", id); 
       await supabase.from("invoices").delete().eq("id", id); 
       
       fetchInvoices(); 
-      // 삭제 후 전체 카운트도 갱신 필요
       setTotalCount(prev => Math.max(0, prev - 1));
       
       alert("Deleted successfully and stock/status restored.");
@@ -501,44 +527,66 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
         const ids = Array.from(selectedIds);
         const creditIds = ids.filter(id => id.startsWith("CR-"));
         
+        // 1. Credit Note 결제 취소 로직
         if (creditIds.length > 0) {
             const { data: allocations } = await supabase.from("payment_allocations").select("invoice_id, amount, payment_id").in("payment_id", creditIds);
             if (allocations && allocations.length > 0) {
-                for (const alloc of allocations) {
-                    const { data: targetInv } = await supabase.from("invoices").select("id, total_amount, paid_amount").eq("id", alloc.invoice_id).single();
-                    if (targetInv) {
-                        const newPaid = Math.max(0, (targetInv.paid_amount || 0) - alloc.amount);
+                const invoiceIdsToUpdate = allocations.map(a => a.invoice_id);
+                const { data: targetInvs } = await supabase.from("invoices").select("id, total_amount, paid_amount").in("id", invoiceIdsToUpdate);
+                
+                if (targetInvs && targetInvs.length > 0) {
+                    const updates = targetInvs.map(targetInv => {
+                        const allocsForThisInv = allocations.filter(a => a.invoice_id === targetInv.id);
+                        const totalAllocAmount = allocsForThisInv.reduce((sum, a) => sum + a.amount, 0);
+                        const newPaid = Math.max(0, (targetInv.paid_amount || 0) - totalAllocAmount);
                         let newStatus = "Unpaid";
                         if (newPaid >= targetInv.total_amount && targetInv.total_amount > 0) newStatus = "Paid";
                         else if (newPaid > 0) newStatus = "Partial";
-                        await supabase.from("invoices").update({ paid_amount: newPaid, status: newStatus }).eq("id", targetInv.id);
-                    }
+                        
+                        return supabase.from("invoices").update({ paid_amount: newPaid, status: newStatus }).eq("id", targetInv.id);
+                    });
+                    await Promise.all(updates);
                 }
             }
             await supabase.from("payment_allocations").delete().in("payment_id", creditIds);
             await supabase.from("payments").delete().in("id", creditIds);
         }
 
+        // 🚀 [최적화 핵심] 2. 일괄 삭제 시 재고(Stock) 복구 로직 (N+1 문제 해결)
         const { data: allItemsToDelete } = await supabase.from("invoice_items").select("product_id, quantity, unit").in("invoice_id", ids);
+        
         if (allItemsToDelete && allItemsToDelete.length > 0) {
+            // A. 수십 장의 인보이스에 흩어진 상품들의 수량을 하나로 모아서 더합니다.
             const stockUpdates: Record<string, { ctn: number, pack: number }> = {};
-            for (const item of allItemsToDelete) {
-                if (!item.product_id) continue;
+            allItemsToDelete.forEach(item => {
+                if (!item.product_id) return;
                 if (!stockUpdates[item.product_id]) stockUpdates[item.product_id] = { ctn: 0, pack: 0 };
+                
                 if (item.unit === "CTN") stockUpdates[item.product_id].ctn += item.quantity;
                 else stockUpdates[item.product_id].pack += item.quantity;
-            }
-            for (const [prodId, adjustment] of Object.entries(stockUpdates)) {
-                const { data: product } = await supabase.from("products").select("current_stock_level, current_stock_level_pack").eq("id", prodId).single();
-                if (product) {
-                    await supabase.from("products").update({
-                        current_stock_level: (product.current_stock_level || 0) + adjustment.ctn,
-                        current_stock_level_pack: (product.current_stock_level_pack || 0) + adjustment.pack
-                    }).eq("id", prodId);
+            });
+
+            const productIds = Object.keys(stockUpdates);
+
+            // B. 모아진 상품 ID들만 DB에서 한 번에 가져옵니다.
+            if (productIds.length > 0) {
+                const { data: products } = await supabase.from("products").select("id, current_stock_level, current_stock_level_pack").in("id", productIds);
+                
+                if (products && products.length > 0) {
+                    // C. 한 번에 가져온 현재 재고 정보에 복구할 수량을 더해서 동시에(Promise.all) 업데이트합니다.
+                    const updatePromises = products.map(product => {
+                        const adjustment = stockUpdates[product.id];
+                        return supabase.from("products").update({
+                            current_stock_level: (product.current_stock_level || 0) + adjustment.ctn,
+                            current_stock_level_pack: (product.current_stock_level_pack || 0) + adjustment.pack
+                        }).eq("id", product.id);
+                    });
+                    await Promise.all(updatePromises);
                 }
             }
         }
 
+        // 3. 인보이스 및 아이템 일괄 삭제
         await supabase.from("invoice_items").delete().in("invoice_id", ids);
         const { error } = await supabase.from("invoices").delete().in("id", ids); 
         

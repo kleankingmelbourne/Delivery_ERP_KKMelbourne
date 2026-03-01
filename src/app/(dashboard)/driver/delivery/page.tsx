@@ -176,7 +176,6 @@ export default function DriverDeliveryPage() {
       return [...newItems, ...savedItems];
   };
 
-  // ✅ [수정 완료] 무한 로딩을 유발하던 자물쇠(Lock) 완전 제거
   useEffect(() => {
       let isMounted = true;
 
@@ -189,7 +188,6 @@ export default function DriverDeliveryPage() {
               if (isMounted) setCurrentUserId(user.id);
               const today = getMelbourneDate();
 
-              // 🔥 3개의 쿼리를 하나로 묶어서 단 한 번만 실행합니다!
               const [profileRes, companyRes, invoiceRes] = await Promise.all([
                   supabase.from('profiles').select('address, display_name').eq('id', user.id).single(),
                   supabase.from('company_settings').select('address_line1, address_line2, state, suburb, postcode').maybeSingle(),
@@ -198,7 +196,6 @@ export default function DriverDeliveryPage() {
 
               if (!isMounted) return;
 
-              // 1. 프로필 & 회사 세팅
               const profile = profileRes.data;
               const company = companyRes.data;
 
@@ -215,13 +212,11 @@ export default function DriverDeliveryPage() {
                   setCompanyAddress(compAddr);
               }
 
-              // 2. 리턴 주소 세팅
               const savedReturn = localStorage.getItem("returnAddress");
               if (savedReturn) setReturnAddress(savedReturn);
               else if (driverAddr) setReturnAddress(driverAddr);
               else if (compAddr) setReturnAddress(compAddr);
 
-              // 3. 인보이스 데이터 가공
               if (invoiceRes.data) {
                   const rawItems = invoiceRes.data.map((item: any) => {
                       const customer = Array.isArray(item.customers) ? item.customers[0] : item.customers;
@@ -262,7 +257,6 @@ export default function DriverDeliveryPage() {
           } catch (error) {
               console.error("Init Data Error:", error);
           } finally {
-              // 🚀 무조건 로딩 화면을 종료시킵니다.
               if (isMounted) setLoading(false);
           }
       };
@@ -270,9 +264,8 @@ export default function DriverDeliveryPage() {
       initData();
 
       return () => { isMounted = false; };
-  }, [supabase]); // 빈 배열과 동일하게 한 번만 실행됨
+  }, [supabase]); 
 
-  // ✅ 실시간 구독 로직
   useEffect(() => {
     if (!currentUserId) return;
 
@@ -304,7 +297,7 @@ export default function DriverDeliveryPage() {
                 }
             }
             if (isAssignedToMe && wasAssignedToMe && !isRunChanged && !isOrderReset) {
-                 shouldRefresh = true; // 단순 상태 업데이트(완료 등)
+                 shouldRefresh = true; 
             }
         }
 
@@ -313,7 +306,6 @@ export default function DriverDeliveryPage() {
         }
 
         if (shouldRefresh) { 
-            // 🚨 리렌더링 없이 조용히 데이터만 업데이트하도록 백그라운드 Fetch 함수 작성
             const { data } = await supabase.from('invoices').select(`id, invoice_to, status, is_completed, memo, delivery_run, delivery_order, driver_id, invoice_date, customers ( mobile, delivery_address, delivery_state, delivery_suburb, delivery_postcode )`).eq('invoice_date', today).eq('driver_id', currentUserId).neq('delivery_run', 0).order('delivery_order', { ascending: true });
             if (data) {
                 const rawItems = data.map((item: any) => {
@@ -387,50 +379,87 @@ export default function DriverDeliveryPage() {
       updateRunState(activeRun, { isEditing: true });
   };
 
+  // ✅ [최적화 핵심] GPS 대기 시간을 없애고 즉시 실행되도록 변경
   const handleAutoRoute = async () => {
-      if (!isLoaded) return alert("Google Maps API loading...");
-      if (!returnAddress) return alert("Please set a Final Destination first.");
+      if (!isLoaded) return alert("Google Maps API is still loading. Please try again in a few seconds.");
+      if (!returnAddress) return alert("Please set a Final Destination at the bottom of the list first.");
+      if (currentList.length < 2) return alert("You need at least 2 deliveries to optimize the route.");
+
       setIsAutoRouting(true); 
-      const waypoints = currentList.map(item => ({ location: item.delivery_address, stopover: true }));
-      if (waypoints.length === 0) { setIsAutoRouting(false); return; }
-      navigator.geolocation.getCurrentPosition((position) => {
-          const origin = { lat: position.coords.latitude, lng: position.coords.longitude };
-          calculateAutoRoute(origin, waypoints);
-      }, () => { calculateAutoRoute(waypoints[0].location, waypoints.slice(1)); });
+
+      try {
+          // GPS 검색을 기다리지 않고, "현재 첫 번째로 배정된 배송지"를 무조건 출발지(Origin)로 삼습니다.
+          // (보통 제일 먼저 가야할 곳이 정해져 있거나, 회사 출발일 확률이 높기 때문입니다.)
+          const originAddress = currentList[0].delivery_address;
+          
+          // 첫 번째 배송지를 뺀 나머지 배송지들을 최적화 대상으로 묶습니다.
+          const waypoints = currentList.slice(1).map(item => ({ 
+              location: item.delivery_address, 
+              stopover: true 
+          }));
+
+          // 구글 Directions 서비스 호출
+          const directionsService = new google.maps.DirectionsService();
+          
+          directionsService.route({ 
+              origin: originAddress, 
+              destination: returnAddress, 
+              waypoints: waypoints, 
+              optimizeWaypoints: true, 
+              travelMode: google.maps.TravelMode.DRIVING 
+          }, (result: any, status: any) => {
+              if (status === google.maps.DirectionsStatus.OK && result) {
+                  const newOrder = result.routes[0].waypoint_order;
+                  const optimizedList: DeliveryItem[] = [];
+                  
+                  // 첫 번째 배송지(Origin)는 무조건 첫 번째로 고정
+                  optimizedList.push(currentList[0]);
+                  
+                  // 나머지 배송지들을 구글이 짜준 최적의 순서대로 푸시
+                  newOrder.forEach((index: number) => {
+                      optimizedList.push(currentList[index + 1]);
+                  });
+
+                  // 현재 Run이 아닌 항목들과 합치기
+                  const otherRunItems = deliveries.filter(d => (d.delivery_run === 0 ? 1 : d.delivery_run) !== activeRun);
+                  const merged = [...otherRunItems, ...optimizedList];
+                  
+                  setDeliveries(merged);
+                  updateRunState(activeRun, { isEditing: true });
+              } else { 
+                  alert("Route calculation failed. Please check if all addresses are valid."); 
+              }
+              setIsAutoRouting(false); 
+          });
+
+      } catch (err) {
+          console.error("Auto Route Error:", err);
+          alert("An error occurred while calculating the route.");
+          setIsAutoRouting(false);
+      }
   }; 
   
-  const calculateAutoRoute = (origin: any, waypoints: any[]) => {
-      const directionsService = new google.maps.DirectionsService();
-      directionsService.route({ origin: origin, destination: returnAddress, waypoints: waypoints, optimizeWaypoints: true, travelMode: google.maps.TravelMode.DRIVING }, (result: any, status: any) => {
-          setIsAutoRouting(false); 
-          if (status === google.maps.DirectionsStatus.OK && result) {
-              const newOrder = result.routes[0].waypoint_order;
-              const optimizedList: DeliveryItem[] = [];
-              if (Array.isArray(origin)) { 
-                 optimizedList.push(currentList[0]);
-                 newOrder.forEach((index: number) => optimizedList.push(currentList[index + 1]));
-              } else {
-                 newOrder.forEach((index: number) => optimizedList.push(currentList[index]));
-              }
-              const otherRunItems = deliveries.filter(d => (d.delivery_run === 0 ? 1 : d.delivery_run) !== activeRun);
-              const merged = [...otherRunItems, ...optimizedList];
-              setDeliveries(merged);
-              updateRunState(activeRun, { isEditing: true });
-          } else { alert("Route calculation failed."); }
-      });
-  }
-
   const handleShowMap = () => {
       if (!isLoaded || !returnAddress || currentList.length === 0) return alert("No deliveries or Final Destination set.");
       setIsMapModalOpen(true);
-      navigator.geolocation.getCurrentPosition((position) => { const pos = { lat: position.coords.latitude, lng: position.coords.longitude }; calculateRouteForMap(pos); }, () => { calculateRouteForMap(currentList[0].delivery_address); });
-  };
-  
-  const calculateRouteForMap = (origin: any) => {
+      
+      // 맵 보기도 GPS 대기 없이 첫 배송지를 출발지로 그려줍니다.
+      const originAddress = currentList[0].delivery_address;
+      const waypoints = currentList.slice(1).map(item => ({ location: item.delivery_address, stopover: true }));
+      
       const directionsService = new google.maps.DirectionsService();
-      const waypoints = currentList.map(item => ({ location: item.delivery_address, stopover: true }));
-      directionsService.route({ origin: origin, destination: returnAddress, waypoints: waypoints, optimizeWaypoints: false, travelMode: google.maps.TravelMode.DRIVING }, (result: any, status: any) => { if (status === google.maps.DirectionsStatus.OK) setDirectionsResponse(result); });
-  }
+      directionsService.route({ 
+          origin: originAddress, 
+          destination: returnAddress, 
+          waypoints: waypoints, 
+          optimizeWaypoints: false, 
+          travelMode: google.maps.TravelMode.DRIVING 
+      }, (result: any, status: any) => { 
+          if (status === google.maps.DirectionsStatus.OK) {
+              setDirectionsResponse(result); 
+          }
+      });
+  };
   
   const handleNavigate = (address: string) => { window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(address)}`, '_blank'); };
   
@@ -534,8 +563,8 @@ export default function DriverDeliveryPage() {
                             if (!location) return null;
                             return <Marker key={index} position={location} label={{ text: `${index + 1}`, color: "white", fontWeight: "bold" }} />;
                         })}
-                        {directionsResponse.routes[0]?.legs[currentList.length]?.end_location && (
-                            <Marker position={directionsResponse.routes[0].legs[currentList.length].end_location} label={{ text: "F", color: "white", fontWeight: "bold" }} />
+                        {directionsResponse.routes[0]?.legs[currentList.length - 1]?.end_location && (
+                            <Marker position={directionsResponse.routes[0].legs[currentList.length - 1].end_location} label={{ text: "F", color: "white", fontWeight: "bold" }} />
                         )}
                     </GoogleMap>
                 ) : (

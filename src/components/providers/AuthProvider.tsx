@@ -11,7 +11,6 @@ type AuthContextType = {
   productUnits: any[];
   // ✅ [추가] 회사 위치 & 드라이버 본인 집 위치 전역 저장
   companyLocation: { lat: number; lng: number; address: string } | null;
-  driverLocation: { lat: number; lng: number; address: string } | null; 
 };
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -31,7 +30,6 @@ export function AuthProvider({
   
   // ✅ 위치 상태 변수 2개 준비
   const [companyLocation, setCompanyLocation] = useState<{ lat: number; lng: number; address: string } | null>(null);
-  const [driverLocation, setDriverLocation] = useState<{ lat: number; lng: number; address: string } | null>(null);
 
   useEffect(() => {
     // 🚨 프로필이 있고, 드라이버 권한일 때만 좌표를 가져옴
@@ -42,9 +40,8 @@ export function AuthProvider({
         const supabase = createClient();
         
         // 🚀 회사 설정과 기사 본인의 프로필에서 좌표를 동시에 가져옵니다. (0.1초 컷)
-        const [compRes, profRes] = await Promise.all([
+        const [compRes] = await Promise.all([
           supabase.from('company_settings').select('lat, lng, address_line1, address_line2, suburb, state, postcode').maybeSingle(),
-          supabase.from('profiles').select('lat, lng, address').eq('id', user.id).single()
         ]);
 
         // 1. 회사 좌표 저장
@@ -53,15 +50,6 @@ export function AuthProvider({
             .filter(p => p && p.trim() !== "").join(", ");
           setCompanyLocation({ lat: compRes.data.lat, lng: compRes.data.lng, address: fullAddress });
         }
-
-        // 2. 드라이버 집 좌표 저장
-        if (profRes.data && profRes.data.lat && profRes.data.lng) {
-          setDriverLocation({ 
-            lat: profRes.data.lat, 
-            lng: profRes.data.lng, 
-            address: profRes.data.address || profile?.address || "" 
-          });
-        }
       };
       
       fetchLocations();
@@ -69,7 +57,7 @@ export function AuthProvider({
   }, [profile, user]);
 
   return (
-    <AuthContext.Provider value={{ user, profile, currentUserName, productUnits, companyLocation, driverLocation }}>
+    <AuthContext.Provider value={{ user, profile, currentUserName, productUnits, companyLocation }}>
       {children}
     </AuthContext.Provider>
   );

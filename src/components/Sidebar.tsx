@@ -29,7 +29,8 @@ import {
   TrendingUp,     
   Banknote,       
   Receipt,
-  RefreshCw 
+  RefreshCw, 
+  LogsIcon
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import Image from "next/image"
@@ -119,6 +120,7 @@ const menuItems = [
       { name: "SALES REPORT", href: "/report/sales", icon: TrendingUp },
       { name: "PAYMENT REPORT", href: "/report/payment", icon: Receipt },
       { name: "OUTSTANDING", href: "/report/outstanding", icon: Banknote },
+      { name: "DELIVERY LOG", href: "/report/deliverylog", icon: LogsIcon },
     ]
   },
 

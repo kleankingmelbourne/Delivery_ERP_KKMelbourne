@@ -16,7 +16,7 @@ export interface InvoiceData {
     qty: number;
     unit: string;
     description: string;
-    itemCode: string; // Vendor Product ID가 들어올 예정
+    itemCode: string;
     unitPrice: number;
     amount: number;
   }[];
@@ -30,7 +30,6 @@ export interface InvoiceData {
   bankName?: string;
   bsb?: string;
   accountNumber?: string;
-  
   bank_payid?: string; 
 
   companyName?: string;
@@ -44,35 +43,42 @@ export interface InvoiceData {
 
 const styles = StyleSheet.create({
   page: { padding: 30, fontSize: 9, fontFamily: 'NotoSansKR', color: '#333' },
-  topSection: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20, alignItems: 'flex-start' },
-  topLeftColumn: { flexDirection: 'column', width: '55%' },
+  topSection: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10, alignItems: 'flex-start' },
+  topLeftColumn: { flexDirection: 'column', width: '60%' }, // ✅ 결제 정보를 위해 폭을 더 넓힘
   topRightColumn: { flexDirection: 'column', width: '40%', alignItems: 'flex-end' },
   logoImage: { width: 200, height: 100, objectFit: 'contain', marginTop: -20, marginLeft: -20 },
   companyInfo: { marginTop: 0, textAlign: 'left', fontSize: 9, lineHeight: 1.5 },
   companyTitle: { fontSize: 12, fontWeight: 'bold', marginBottom: 3, color: '#000' },
-  invoiceDetailsBox: { width: '100%', borderWidth: 1, borderColor: '#ddd', padding: 10, backgroundColor: '#fafafa', marginBottom: 5 },
-  invoiceTitle: { fontSize: 14, fontWeight: 'bold', textAlign: 'center', marginBottom: 8, borderBottomWidth: 1, borderColor: '#ddd', paddingBottom: 5 },
   
-  paymentBox: { width: '100%', borderWidth: 1, borderColor: '#ddd', padding: 10, backgroundColor: '#fafafa' },
-  paymentTitle: { fontSize: 11, fontWeight: 'bold', marginBottom: 0, textDecoration: 'underline' },
-  bankingRow: { flexDirection: 'row', marginBottom: 1 },
-  bankingLabel: { width: 60, fontWeight: 'bold', color: '#555' },
-  
-  separatorLine: { borderBottomWidth: 1, borderBottomColor: '#eee', marginVertical: 4 },
-  payIdRow: { flexDirection: 'row', marginTop: 2 },
-  payIdLabel: { width: 60, fontWeight: 'bold', color: '#555' }, 
+  // ✅ 결제 정보 라인 스타일 수정 (줄바꿈 방지 및 폰트 최적화)
+  bankingInfoInline: { 
+    marginTop: 4, 
+    fontSize: 7.5, // 폰트 크기를 살짝 줄여 한 줄 확보
+    color: '#444', 
+    borderTopWidth: 1, 
+    borderTopColor: '#eee', 
+    paddingTop: 2,
+    flexDirection: 'row',
+    width: '100%' 
+  },
+  bankingLabel: { fontWeight: 'bold', color: '#000' },
 
-  metaRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
-  metaLabel: { fontWeight: 'bold', color: '#555' },
+  invoiceDetailsBox: { width: '100%', borderWidth: 1, borderColor: '#ddd', padding: 20, backgroundColor: '#fafafa', marginBottom: 5 },
+  invoiceTitle: { fontSize: 13, fontWeight: 'bold', textAlign: 'center', marginBottom: 6, borderBottomWidth: 1, borderColor: '#ddd', paddingBottom: 4 },
   
-  addressContainer: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 1, marginBottom: 1, borderTopWidth: 1, borderColor: '#eee', paddingTop: 15, width: '100%' },
+  metaRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 3 },
+  metaLabel: { fontWeight: 'bold', color: '#555', fontSize: 8 },
+  
+  addressContainer: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 1, marginBottom: 1, borderTopWidth: 1, borderColor: '#eee', paddingTop: 8, width: '100%' },
   addressColumn: { width: '48%', flexDirection: 'column' },
   sectionTitle: { fontSize: 10, fontWeight: 'bold', color: '#666', marginBottom: 10 },
   nameText: { fontSize: 12, fontWeight: 'bold', marginBottom: 6 },
   addressText: { fontSize: 9, lineHeight: 1.4, color: '#444' },
+  
   memoContainer: { marginBottom: 5, borderWidth: 1, borderColor: '#333', padding: 8, backgroundColor: '#fdfdfd' },
   memoLabel: { fontSize: 9, fontWeight: 'bold', marginBottom: 3, textDecoration: 'underline' },
   memoText: { fontSize: 9, lineHeight: 1.4 },
+  
   tableContainer: { marginTop: 1, marginBottom: 5 },
   tableHeader: { flexDirection: 'row', backgroundColor: '#f0f0f0', borderBottomWidth: 1, borderColor: '#000', paddingVertical: 8, alignItems: 'center' },
   tableRow: { flexDirection: 'row', borderBottomWidth: 1, borderColor: '#eee', paddingVertical: 8, alignItems: 'center' },
@@ -82,13 +88,14 @@ const styles = StyleSheet.create({
   colItem: { width: '15%', textAlign: 'center' },
   colPrice: { width: '12%', textAlign: 'right' },
   colAmount: { width: '13%', textAlign: 'right', paddingRight: 5 },
+  
   totalSection: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 10 },
-  totalBox: { width: '45%' },
-  totalRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
+  totalBox: { width: '75%' },
+  totalRow: { flexDirection: 'row', justifyContent: 'flex-end', paddingVertical: 4 },
   
   totalRowBalance: { 
     flexDirection: 'row', 
-    justifyContent: 'space-between', 
+    justifyContent: 'flex-end', 
     paddingVertical: 6, 
     borderTopWidth: 2, 
     borderColor: '#000', 
@@ -99,7 +106,7 @@ const styles = StyleSheet.create({
   
   totalLabel: { fontWeight: 'bold', fontSize: 11 },
   totalValue: { fontWeight: 'bold', fontSize: 11 },
-  footerContainer: { marginTop: 30, borderTopWidth: 2, borderColor: '#eee', paddingTop: 15 },
+  footerContainer: { marginTop: 5, borderTopWidth: 2, borderColor: '#eee', paddingTop: 5 },
   infoSection: { marginTop: 0, padding: 5 },
   infoText: { fontSize: 8, color: '#555', lineHeight: 1.5, textAlign: 'left' },
 });
@@ -118,24 +125,27 @@ export const InvoicePage = ({ data }: { data: InvoiceData }) => {
              {data.companyPhone && <Text>TEL: {data.companyPhone}</Text>}
              {data.companyEmail && <Text>E-MAIL: {data.companyEmail}</Text>}
              {data.companyAddress && <Text>ADDR: {data.companyAddress}</Text>}
+             
+             {/* ✅ 결제 정보: 텍스트 노드를 하나로 합쳐서 줄바꿈 방지 */}
+             <View style={styles.bankingInfoInline}>
+               <Text>
+                 <Text style={styles.bankingLabel}>HOW TO PAY :   </Text>
+                 <Text style={styles.bankingLabel}>BANK: </Text>{data.bankName || "-"}   
+                 <Text style={styles.bankingLabel}>   BSB: </Text>{data.bsb || "-"}    
+                 <Text style={styles.bankingLabel}>   A/C: </Text>{data.accountNumber || "-"} 
+                 <Text style={styles.bankingLabel}>     OR     </Text>
+                 <Text style={styles.bankingLabel}>PayID: </Text>{data.bank_payid || "-"}
+               </Text>
+             </View>
            </View>
         </View>
+
         <View style={styles.topRightColumn}>
           <View style={styles.invoiceDetailsBox}>
             <Text style={styles.invoiceTitle}>{data.title || "TAX INVOICE"}</Text>
             <View style={styles.metaRow}><Text style={styles.metaLabel}>INVOICE NO:</Text><Text>{data.invoiceNo}</Text></View>
             <View style={styles.metaRow}><Text style={styles.metaLabel}>DATE:</Text><Text>{data.date}</Text></View>
             <View style={styles.metaRow}><Text style={styles.metaLabel}>DUE DATE:</Text><Text>{data.dueDate}</Text></View>
-          </View>
-          
-          <View style={styles.paymentBox}>
-            <Text style={styles.paymentTitle}>How to Pay</Text>
-            <View style={styles.bankingRow}><Text style={styles.bankingLabel}>BANK:</Text><Text>{data.bankName || "-"}</Text></View>
-            <View style={styles.bankingRow}><Text style={styles.bankingLabel}>BSB:</Text><Text>{data.bsb || "-"}</Text></View>
-            <View style={styles.bankingRow}><Text style={styles.bankingLabel}>A/C NO:</Text><Text>{data.accountNumber || "-"}</Text></View>
-            
-            <View style={styles.separatorLine} />
-            <View style={styles.payIdRow}><Text style={styles.payIdLabel}>PayID:</Text><Text>{data.bank_payid || "-"}</Text></View>
           </View>
         </View>
       </View>
@@ -148,9 +158,9 @@ export const InvoicePage = ({ data }: { data: InvoiceData }) => {
               {data.customerMobile && <Text style={styles.addressText}>Mobile: {data.customerMobile}</Text>}
           </View>
           <View style={styles.addressColumn}>
-             <Text style={styles.sectionTitle}>DELIVERY TO</Text>
-             <Text style={styles.nameText}>{data.deliveryName || data.customerName}</Text>
-             <Text style={styles.addressText}>{data.deliveryAddress || data.address}</Text>
+              <Text style={styles.sectionTitle}>DELIVERY TO</Text>
+              <Text style={styles.nameText}>{data.deliveryName || data.customerName}</Text>
+              <Text style={styles.addressText}>{data.deliveryAddress || data.address}</Text>
           </View>
       </View>
 
@@ -166,7 +176,6 @@ export const InvoicePage = ({ data }: { data: InvoiceData }) => {
           <Text style={styles.colQty}>QTY</Text>
           <Text style={styles.colUnit}>UNIT</Text>
           <Text style={styles.colDesc}>PRODUCT NAME</Text>
-          {/* [CHANGE] 헤더 이름을 ITEM -> ID로 변경 */}
           <Text style={styles.colItem}>ID</Text>
           <Text style={styles.colPrice}>PRICE</Text>
           <Text style={styles.colAmount}>AMOUNT</Text>
@@ -176,7 +185,6 @@ export const InvoicePage = ({ data }: { data: InvoiceData }) => {
             <Text style={styles.colQty}>{item.qty}</Text>
             <Text style={styles.colUnit}>{item.unit}</Text>
             <Text style={styles.colDesc}>{item.description}</Text>
-            {/* 여기 itemCode에 vendor_product_id가 들어옴 */}
             <Text style={styles.colItem}>{item.itemCode}</Text>
             <Text style={styles.colPrice}>${item.unitPrice.toFixed(2)}</Text>
             <Text style={styles.colAmount}>${item.amount.toFixed(2)}</Text>
@@ -186,17 +194,22 @@ export const InvoicePage = ({ data }: { data: InvoiceData }) => {
 
       <View style={styles.totalSection}>
         <View style={styles.totalBox}>
-          <View style={styles.totalRow}><Text>Subtotal</Text><Text>${data.subtotal.toFixed(2)}</Text></View>
-          <View style={styles.totalRow}><Text>GST</Text><Text>${data.gst.toFixed(2)}</Text></View>
+          <View style={styles.totalRow}>
+            <Text>         Subtotal  :  ${data.subtotal.toFixed(2)}</Text>
+            <Text>         GST  :  ${data.gst.toFixed(2)}</Text>
+            <Text>         Total (inc GST)  :  ${data.totalAmount.toFixed(2)}</Text>
+            <Text>         Received  :  ${(data.paidAmount || 0).toFixed(2)}</Text>
+            </View>
+          {/* <View style={styles.totalRow}><Text>GST</Text><Text>${data.gst.toFixed(2)}</Text></View>
           <View style={styles.totalRow}><Text>Total (inc GST)</Text><Text>${data.totalAmount.toFixed(2)}</Text></View>
           
           <View style={styles.totalRow}>
               <Text>Received</Text>
               <Text>- ${(data.paidAmount || 0).toFixed(2)}</Text>
-          </View>
+          </View> */}
 
           <View style={styles.totalRowBalance}>
-              <Text style={styles.totalLabel}>BALANCE DUE</Text>
+              <Text style={styles.totalLabel}>BALANCE DUE     </Text>
               <Text style={styles.totalValue}>${data.balanceDue.toFixed(2)}</Text>
           </View>
         </View>

@@ -68,7 +68,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
       }
     };
     fetchData();
-  }, []);
+  }, [supabase]);
 
   // 2. 데이터 세팅 및 초기화
   useEffect(() => {
@@ -205,7 +205,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
     // 1. 필수값 체크: 이름
     if (!formData.name) return alert("Customer Name is required.");
 
-    // [NEW] 2. 필수값 체크: 비밀번호 (신규 고객일 때만 체크)
+    // 2. 필수값 체크: 비밀번호 (신규 고객일 때만 체크)
     if (!customerData?.id && (!formData.password || formData.password.trim() === "")) {
         return alert("Password is required for new customers.");
     }
@@ -213,23 +213,34 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
     setLoading(true);
     
     try {
-      // ---------------------------------------------------------------
-      // 좌표 자동 보정 로직
-      // ---------------------------------------------------------------
+      // 🚨 [수정 로직 시작] 주소 변경 여부 체크
+      const isBillingAddressChanged = customerData ? (
+          customerData.address !== formData.address || 
+          customerData.suburb !== formData.suburb || 
+          customerData.postcode !== formData.postcode
+      ) : true;
+
+      const isDeliveryAddressChanged = customerData ? (
+          customerData.delivery_address !== formData.delivery_address || 
+          customerData.delivery_suburb !== formData.delivery_suburb || 
+          customerData.delivery_postcode !== formData.delivery_postcode
+      ) : true;
+
       let finalLat = formData.lat;
       let finalLng = formData.lng;
       let finalDeliveryLat = formData.delivery_lat;
       let finalDeliveryLng = formData.delivery_lng;
 
+      // 주소가 바뀌었을 때만 좌표 보정 로직 실행
       try {
-          if ((!finalLat || !finalLng) && formData.address.length > 5) {
+          if (isBillingAddressChanged && (!finalLat || !finalLng) && formData.address.length > 5) {
               const suggestions = await getPlaceSuggestions(formData.address);
               if (suggestions.length > 0) {
                   const details = await getPlaceDetails(suggestions[0].place_id);
                   if (details && details.lat) { finalLat = details.lat; finalLng = details.lng; }
               }
           }
-          if (!isSameAddress && (!finalDeliveryLat || !finalDeliveryLng) && formData.delivery_address.length > 5) {
+          if (!isSameAddress && isDeliveryAddressChanged && (!finalDeliveryLat || !finalDeliveryLng) && formData.delivery_address.length > 5) {
               const suggestions = await getPlaceSuggestions(formData.delivery_address);
               if (suggestions.length > 0) {
                   const details = await getPlaceDetails(suggestions[0].place_id);
@@ -240,8 +251,8 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
           console.warn("Map Auto-fetch failed, continuing save:", mapError);
       }
 
-      // 3. 최종 데이터 구성
-      const finalDeliveryData = isSameAddress ? {
+      // 최종 데이터 구성
+      const finalDeliveryFields = isSameAddress ? {
         delivery_address: formData.address,
         delivery_suburb: formData.suburb,
         delivery_state: formData.state,
@@ -259,18 +270,30 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
 
       // ID 제외 및 데이터 정제
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { id, password, customer_groups, profiles, created_at, ...restData } = formData as any;
+      const { id, password, customer_groups, profiles, created_at, lat, lng, delivery_lat, delivery_lng, ...restData } = formData as any;
       
       const payload: any = {
         ...restData, 
         lat: finalLat, 
         lng: finalLng, 
-        ...finalDeliveryData,
+        ...finalDeliveryFields,
         credit_limit: formData.credit_limit ? Number(formData.credit_limit) : null,
         group_id: formData.group_id ? Number(formData.group_id) : null,
         in_charge_sale: formData.in_charge_sale || null,
         in_charge_delivery: formData.in_charge_delivery || null,
       };
+
+      // 주소가 변경되지 않았다면 좌표 필드 제거 (기존 DB 값 보존)
+      if (customerData && !isBillingAddressChanged) {
+          delete payload.lat;
+          delete payload.lng;
+      }
+      
+      // 배송 주소가 변경되지 않았다면 배송 좌표 필드 제거 (단, '배송지 동일' 체크가 아닐 때만)
+      if (customerData && !isSameAddress && !isDeliveryAddressChanged) {
+          delete payload.delivery_lat;
+          delete payload.delivery_lng;
+      }
 
       if (formData.password && formData.password.trim() !== "") {
           payload.password = formData.password; 
@@ -294,9 +317,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
         error = insertError;
       }
 
-      if (error) {
-        throw error;
-      }
+      if (error) throw error;
 
       alert(customerData ? "Customer updated!" : "Customer added successfully!");
       onSuccess();
@@ -463,7 +484,6 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
               )}
             </section>
 
-            {/* Staff Note */}
             <section className="space-y-4">
               <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider border-b pb-2">Staff Note</h3>
               <Textarea value={formData.note} onChange={(e) => handleChange("note", e.target.value)} placeholder="Internal notes..." className="h-24" />
@@ -471,7 +491,6 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
 
           </div>
 
-          {/* Footer */}
           <div className="p-6 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
             <Button variant="ghost" onClick={onClose}>Cancel</Button>
             <Button onClick={handleSubmit} disabled={loading} className="bg-slate-900 hover:bg-slate-800 min-w-[120px]">

@@ -92,6 +92,7 @@ export default function LoginPage() {
               src="/images/logo.png"
               alt="Company Logo"
               fill
+              sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
               className="object-contain"
               priority
             />

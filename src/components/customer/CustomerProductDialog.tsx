@@ -1,10 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { createClient } from "@/utils/supabase/client";
-import { X, Search, Save, Package, Loader2, User, Plus, Globe, Trash2 } from "lucide-react";
+import { X, Search, Save, Package, Loader2, User, Plus, Globe, Trash2, CheckSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { cn } from "@/lib/utils";
 
 interface CustomerProductDialogProps {
   isOpen: boolean;
@@ -20,6 +22,7 @@ interface Product {
   sell_price_ctn: number;  
   sell_price_pack: number; 
   buy_price: number;
+  total_pack_ctn: number;
   unit_name?: string;
 }
 
@@ -27,10 +30,11 @@ interface ProductItem extends Product {
   table_id?: string; 
   custom_price_ctn: number | ""; 
   custom_price_pack: number | ""; 
+  original_pack_rate: number | ""; // ✅ 복구용 원래 할인율 저장
   is_new?: boolean;
+  sync_enabled?: boolean;
 }
 
-// [NEW] 1. 안전한 숫자 변환 헬퍼 (화면 표시용)
 const safeFixed = (val: any) => {
     const num = Number(val);
     if (isNaN(num)) return "0.00";
@@ -76,7 +80,7 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
       .from("products")
       .select(`
         id, product_name, product_barcode, 
-        sell_price_ctn, sell_price_pack, buy_price,
+        sell_price_ctn, sell_price_pack, buy_price, total_pack_ctn,
         product_units (unit_name)
       `)
       .in("id", productIds)
@@ -85,17 +89,63 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
     if (productsData) {
       const merged: ProductItem[] = productsData.map((prod: any) => {
         const custom = customData.find((c: any) => c.product_id === prod.id);
+        const pRate = custom?.custom_price_pack ?? "";
         return {
           ...prod,
           unit_name: prod.product_units?.unit_name || "",
           table_id: custom?.id,
           custom_price_ctn: custom?.custom_price_ctn ?? "", 
-          custom_price_pack: custom?.custom_price_pack ?? "",
+          custom_price_pack: pRate,
+          original_pack_rate: pRate, // ✅ DB에서 불러온 초기값 저장
+          sync_enabled: false,
         };
       });
       setItems(merged);
     }
     setLoading(false);
+  };
+
+  // ✅ [로직] 단일 항목 동기화 또는 복구 처리 함수
+  const getProcessedItem = (item: ProductItem, shouldSync: boolean): ProductItem => {
+    if (shouldSync) {
+      const baseCtnPrice = Number(item.sell_price_ctn);
+      const packsPerCtn = Number(item.total_pack_ctn) || 1;
+      const basePackPrice = Number(item.sell_price_pack);
+      
+      const discountRateCtn = item.custom_price_ctn === "" ? 0 : Number(item.custom_price_ctn);
+      const finalCtnPrice = baseCtnPrice * (1 - discountRateCtn / 100);
+      
+      const targetSinglePackPrice = finalCtnPrice / packsPerCtn;
+      const requiredPackDiscount = ((1 - (targetSinglePackPrice / basePackPrice)) * 100);
+      
+      return { 
+        ...item, 
+        sync_enabled: true,
+        custom_price_pack: Number(requiredPackDiscount.toFixed(2))
+      };
+    } else {
+      // ✅ 체크 해제 시 원래 저장되어 있던 할인율로 복원
+      return { 
+        ...item, 
+        sync_enabled: false,
+        custom_price_pack: item.original_pack_rate 
+      };
+    }
+  };
+
+  // 개별 체크박스 토글
+  const handleToggleSync = (productId: string) => {
+    setItems(prev => prev.map(item => 
+      item.id === productId ? getProcessedItem(item, !item.sync_enabled) : item
+    ));
+  };
+
+  // ✅ 전체 선택 체크박스 상태 계산
+  const isAllSynced = useMemo(() => items.length > 0 && items.every(i => i.sync_enabled), [items]);
+
+  // 전체 선택 토글
+  const handleToggleAllSync = (checked: boolean) => {
+    setItems(prev => prev.map(item => getProcessedItem(item, checked)));
   };
 
   const handleGlobalSearch = async (term: string) => {
@@ -110,7 +160,7 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
       .from("products")
       .select(`
         id, product_name, product_barcode, 
-        sell_price_ctn, sell_price_pack, buy_price,
+        sell_price_ctn, sell_price_pack, buy_price, total_pack_ctn,
         product_units (unit_name)
       `)
       .or(`product_name.ilike.%${term}%,product_barcode.ilike.%${term}%`)
@@ -135,7 +185,9 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
         table_id: undefined,
         custom_price_ctn: "" as const,
         custom_price_pack: "" as const,
-        is_new: true
+        original_pack_rate: "" as const,
+        is_new: true,
+        sync_enabled: false
     };
     setItems(prev => [newItem, ...prev]);
     setGlobalSearchTerm("");
@@ -170,10 +222,24 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
       else if (!isNaN(numValue) && numValue >= 0 && numValue <= 100) newValue = numValue;
       else return item;
 
-      return { 
+      const updatedItem = { 
         ...item, 
         [type === 'ctn' ? 'custom_price_ctn' : 'custom_price_pack']: newValue 
       };
+
+      // ✅ 동기화 체크 상태에서 박스 할인율 변경 시 낱개 가격 실시간 재계산
+      if (type === 'ctn' && updatedItem.sync_enabled) {
+        const baseCtnPrice = Number(item.sell_price_ctn);
+        const packsPerCtn = Number(item.total_pack_ctn) || 1;
+        const basePackPrice = Number(item.sell_price_pack);
+        const discountRateCtn = newValue === "" ? 0 : Number(newValue);
+        const finalCtnPrice = baseCtnPrice * (1 - discountRateCtn / 100);
+        const targetSinglePackPrice = finalCtnPrice / packsPerCtn;
+        const requiredPackDiscount = ((1 - (targetSinglePackPrice / basePackPrice)) * 100);
+        updatedItem.custom_price_pack = Number(requiredPackDiscount.toFixed(2));
+      }
+
+      return updatedItem;
     }));
   };
 
@@ -195,7 +261,6 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
         .upsert(upsertData, { onConflict: "customer_id, product_id" });
 
       if (error) {
-        console.error(error);
         alert("Error saving: " + error.message);
       } else {
         alert("Saved successfully!");
@@ -207,18 +272,15 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
     setSaving(false);
   };
 
-  // [NEW] 2. 계산 로직 안전장치 (null 방어)
   const calculateFinalPrice = (basePrice: any, discountRate: number | "") => {
-    const price = Number(basePrice) || 0; // null이면 0으로 변환
+    const price = Number(basePrice) || 0;
     if (discountRate === "" || discountRate === 0) return price;
     return price * (1 - (Number(discountRate) / 100));
   };
 
   const displayItems = items.filter(item => {
     const term = localSearchTerm.toLowerCase();
-    const name = item.product_name?.toLowerCase() || "";
-    const barcode = item.product_barcode?.toLowerCase() || "";
-    return name.includes(term) || barcode.includes(term);
+    return (item.product_name?.toLowerCase() || "").includes(term) || (item.product_barcode?.toLowerCase() || "").includes(term);
   });
 
   if (!isOpen) return null;
@@ -238,11 +300,8 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
               <X className="w-6 h-6" />
             </button>
           </div>
-          
           <div className="flex items-end gap-3 mt-1">
-            <div className="p-2 bg-blue-100 rounded-lg text-blue-600">
-                <User className="w-8 h-8" />
-            </div>
+            <div className="p-2 bg-blue-100 rounded-lg text-blue-600"><User className="w-8 h-8" /></div>
             <div>
                 <span className="text-xs text-slate-400 font-medium ml-1">Selected Customer</span>
                 <h1 className="text-3xl font-black text-slate-800 leading-none tracking-tight">{customerName}</h1>
@@ -250,66 +309,42 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
           </div>
         </div>
 
-        {/* Search Bars */}
+        {/* Search */}
         <div className="px-8 py-4 bg-white border-b border-slate-100 space-y-3 sticky top-0 z-20">
-          
-          <div className="relative w-full">
-            <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400"/>
-            <Input 
-              placeholder="Search loaded items..." 
-              className="pl-9 bg-slate-50 w-full max-w-sm border-slate-200 focus:bg-white transition-all text-sm h-9"
-              value={localSearchTerm}
-              onChange={(e) => setLocalSearchTerm(e.target.value)}
-            />
-          </div>
-
-          <div className="relative w-full">
-            <div className="relative">
-                <Globe className="absolute left-3 top-3 w-4 h-4 text-blue-500"/>
+          <div className="flex items-center justify-between">
+             <div className="relative w-full max-w-sm">
+                <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400"/>
                 <Input 
-                    placeholder="Search GLOBAL products to add..." 
-                    className="pl-9 bg-white w-full border-2 border-blue-100 focus:border-blue-400 shadow-sm transition-all h-10 font-medium"
-                    value={globalSearchTerm}
-                    onChange={(e) => handleGlobalSearch(e.target.value)}
+                  placeholder="Search loaded items..." 
+                  className="pl-9 bg-slate-50 border-slate-200 text-sm h-9"
+                  value={localSearchTerm}
+                  onChange={(e) => setLocalSearchTerm(e.target.value)}
                 />
-            </div>
-
-            {/* Global Search Results Dropdown */}
+             </div>
+          </div>
+          <div className="relative w-full">
+            <Globe className="absolute left-3 top-3 w-4 h-4 text-blue-500"/>
+            <Input 
+                placeholder="Search GLOBAL products to add..." 
+                className="pl-9 bg-white w-full border-2 border-blue-100 focus:border-blue-400 h-10 font-medium"
+                value={globalSearchTerm}
+                onChange={(e) => handleGlobalSearch(e.target.value)}
+            />
             {globalSearchTerm.length >= 2 && (
                 <div className="absolute top-full left-0 right-0 mt-1 bg-white rounded-lg border border-slate-200 shadow-xl max-h-60 overflow-y-auto z-50">
                     {searchingGlobal ? (
-                        <div className="p-4 text-center text-slate-400 flex items-center justify-center gap-2">
-                            <Loader2 className="w-4 h-4 animate-spin"/> Searching database...
-                        </div>
+                        <div className="p-4 text-center text-slate-400 flex items-center justify-center gap-2"><Loader2 className="w-4 h-4 animate-spin"/> Searching...</div>
                     ) : globalSearchResults.length === 0 ? (
-                        <div className="p-4 text-center text-slate-400 text-sm">
-                            No new products found matching "{globalSearchTerm}".
-                        </div>
+                        <div className="p-4 text-center text-slate-400 text-sm">No new products found.</div>
                     ) : (
                         <div className="divide-y divide-slate-50">
                             {globalSearchResults.map(prod => (
-                                <div key={prod.id} className="flex items-center justify-between p-3 hover:bg-blue-50 transition-colors group">
+                                <div key={prod.id} className="flex items-center justify-between p-3 hover:bg-blue-50 transition-colors">
                                     <div className="flex flex-col">
-                                        <div className="flex items-center gap-2">
-                                            <span className="font-bold text-slate-700 text-sm">{prod.product_name}</span>
-                                            <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded border border-slate-200">
-                                                {prod.unit_name || "UNIT"}
-                                            </span>
-                                        </div>
-                                        <div className="flex items-center gap-2 text-xs text-slate-400">
-                                            <span className="font-mono bg-slate-100 px-1 rounded">{prod.product_barcode}</span>
-                                            <span>•</span>
-                                            {/* [NEW] safeFixed 적용 */}
-                                            <span>Cost: ${safeFixed(prod.buy_price)}</span>
-                                        </div>
+                                        <span className="font-bold text-slate-700 text-sm">{prod.product_name}</span>
+                                        <span className="text-xs text-slate-400">Cost: ${safeFixed(prod.buy_price)}</span>
                                     </div>
-                                    <Button 
-                                        size="sm" 
-                                        onClick={() => handleAddItem(prod)} 
-                                        className="h-8 bg-white border border-blue-200 text-blue-600 hover:bg-blue-600 hover:text-white transition-all"
-                                    >
-                                        <Plus className="w-3 h-3 mr-1"/> Add Item
-                                    </Button>
+                                    <Button size="sm" onClick={() => handleAddItem(prod)} className="h-8 bg-white border border-blue-200 text-blue-600 hover:bg-blue-600 hover:text-white"><Plus className="w-3 h-3 mr-1"/> Add</Button>
                                 </div>
                             ))}
                         </div>
@@ -319,149 +354,105 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
           </div>
         </div>
 
-        {/* My Items Table */}
+        {/* Table */}
         <div className="flex-1 overflow-y-auto bg-slate-50/30">
           <table className="w-full text-sm text-left border-collapse">
             <thead className="bg-white text-slate-500 font-bold sticky top-0 z-10 shadow-sm text-xs uppercase">
               <tr>
+                <th className="px-4 py-4 w-[60px] border-b text-center">
+                  <div className="flex flex-col items-center gap-1">
+                    <span className="text-[10px]">Sync</span>
+                    <Checkbox 
+                        checked={isAllSynced} 
+                        onCheckedChange={(c) => handleToggleAllSync(!!c)}
+                        title="전체 박스단가로 동기화"
+                    />
+                  </div>
+                </th>
                 <th className="px-6 py-4 w-[10%] border-b">Code</th>
                 <th className="px-6 py-4 w-[25%] border-b">Product Info</th>
-                <th className="px-4 py-4 w-[8%] border-b text-right bg-slate-50/50 text-slate-600 border-r border-slate-100">Cost</th>
-                
-                <th className="px-2 py-3 w-[25%] bg-blue-50/30 text-center border-r border-b border-blue-100">
+                <th className="px-4 py-4 w-[8%] border-b text-right bg-slate-50/50">Cost</th>
+                <th className="px-2 py-3 w-[24%] bg-blue-50/30 text-center border-r border-b border-blue-100">
                   <span className="text-blue-700">CARTON (CTN)</span>
-                  <div className="flex justify-center gap-6 mt-1.5 px-2 text-[10px] text-slate-400 font-normal tracking-wide">
+                  <div className="flex justify-center gap-6 mt-1.5 text-[10px] text-slate-400 font-normal">
                     <span className="w-16 text-right">Base</span>
                     <span className="w-20 text-center">Discount %</span>
-                    <span className="w-16 text-right">Your Price</span>
+                    <span className="w-16 text-right">Final</span>
                   </div>
                 </th>
-
-                <th className="px-2 py-3 w-[25%] bg-amber-50/30 text-center border-b border-amber-100">
+                <th className="px-2 py-3 w-[24%] bg-amber-50/30 text-center border-b border-amber-100">
                   <span className="text-amber-700">PACK (PK)</span>
-                  <div className="flex justify-center gap-6 mt-1.5 px-2 text-[10px] text-slate-400 font-normal tracking-wide">
+                  <div className="flex justify-center gap-6 mt-1.5 text-[10px] text-slate-400 font-normal">
                     <span className="w-16 text-right">Base</span>
                     <span className="w-20 text-center">Discount %</span>
-                    <span className="w-16 text-right">Your Price</span>
+                    <span className="w-16 text-right">Final</span>
                   </div>
                 </th>
-                <th className="px-2 py-3 w-[5%] text-center border-b">
-                    Action
-                </th>
+                <th className="px-2 py-3 w-[5%] text-center border-b">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 bg-white">
               {loading && items.length === 0 ? (
-                <tr><td colSpan={6} className="p-20 text-center"><Loader2 className="w-10 h-10 animate-spin mx-auto text-slate-300"/></td></tr>
-              ) : displayItems.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="p-24 text-center text-slate-400">
-                    <div className="flex flex-col items-center">
-                      <Package className="w-16 h-16 mb-4 opacity-10" />
-                      <p className="text-lg font-medium text-slate-500">No items found.</p>
-                      <p className="text-sm mt-1">Use the "Global Search" above to add products.</p>
-                    </div>
-                  </td>
-                </tr>
+                <tr><td colSpan={7} className="p-20 text-center"><Loader2 className="w-10 h-10 animate-spin mx-auto text-slate-300"/></td></tr>
               ) : displayItems.map((item, index) => {
-                
                 const unitName = item.unit_name?.toLowerCase() || "";
                 const isCarton = unitName.includes('ctn') || unitName.includes('carton');
-
-                const hasCtnRate = item.custom_price_ctn !== "" && Number(item.custom_price_ctn) > 0;
-                const hasPackRate = item.custom_price_pack !== "" && Number(item.custom_price_pack) > 0;
-
                 const resultCtn = calculateFinalPrice(item.sell_price_ctn, item.custom_price_ctn);
                 const resultPack = calculateFinalPrice(item.sell_price_pack, item.custom_price_pack);
 
                 return (
-                  <tr key={item.id} className={`hover:bg-slate-50/80 transition-colors ${item.is_new ? "bg-green-50/20" : ""}`}>
-                    <td className="px-6 py-4 font-mono text-xs text-slate-500 border-b border-slate-50">
-                      {item.product_barcode}
-                      {item.is_new && <span className="block mt-1 text-[9px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded w-fit font-bold">NEW</span>}
+                  <tr key={item.id} className={cn("hover:bg-slate-50/80 transition-colors", item.sync_enabled && "bg-green-50/20")}>
+                    <td className="px-2 py-4 text-center border-b border-slate-50">
+                      <Checkbox 
+                        checked={item.sync_enabled} 
+                        onCheckedChange={() => handleToggleSync(item.id)}
+                      />
                     </td>
-                    
+                    <td className="px-6 py-4 font-mono text-xs text-slate-500 border-b border-slate-50">{item.product_barcode}</td>
                     <td className="px-6 py-4 border-b border-slate-50">
                         <div className="font-bold text-slate-700 text-sm">{item.product_name}</div>
-                        <div className="text-xs text-slate-400 mt-1 flex items-center gap-1">
-                            Unit: <span className="font-semibold bg-slate-100 px-1 rounded">{item.unit_name || "N/A"}</span>
-                        </div>
+                        <div className="text-[10px] text-slate-400">{item.total_pack_ctn} PK/CTN</div>
                     </td>
-
-                    <td className="px-4 py-4 text-right border-b border-r border-slate-100 bg-slate-50/30">
-                        <span className="font-mono text-xs text-slate-600 font-bold">
-                            {/* [NEW] safeFixed 적용 */}
-                            ${safeFixed(item.buy_price)}
-                        </span>
-                    </td>
+                    <td className="px-4 py-4 text-right border-b border-r border-slate-100 bg-slate-50/30 font-mono text-xs font-bold">${safeFixed(item.buy_price)}</td>
                     
-                    <td className={`px-2 py-4 border-r border-b border-slate-50 ${!isCarton ? 'bg-slate-50 opacity-60' : hasCtnRate ? "bg-blue-50/10" : ""}`}>
+                    <td className={`px-2 py-4 border-r border-b border-slate-50 ${!isCarton && 'opacity-60'}`}>
                       <div className="flex items-center gap-3 justify-center">
-                        <span className="text-xs text-slate-400 w-16 text-right font-mono">
-                          {/* [NEW] safeFixed 적용 */}
-                          ${safeFixed(item.sell_price_ctn)}
-                        </span>
-                        
+                        <span className="text-xs text-slate-400 w-16 text-right font-mono">${safeFixed(item.sell_price_ctn)}</span>
                         <div className="relative w-20">
                           <Input 
                             type="number" 
                             disabled={!isCarton}
-                            className={`h-9 text-center pr-6 font-bold transition-all 
-                                ${!isCarton 
-                                    ? "bg-slate-100 text-slate-300 border-slate-200 cursor-not-allowed" 
-                                    : hasCtnRate 
-                                        ? "border-blue-300 text-blue-700 bg-blue-50 ring-2 ring-blue-100" 
-                                        : "bg-white text-slate-600 border-slate-200"
-                                }`}
+                            className="h-9 text-center pr-6 font-bold"
                             value={item.custom_price_ctn}
                             onChange={(e) => handleRateChange(item.id, 'ctn', e.target.value)}
-                            placeholder={isCarton ? "0" : "-"}
                           />
-                          <span className={`absolute right-2 top-2.5 text-xs font-bold ${!isCarton ? "text-slate-300" : "text-slate-400"}`}>%</span>
+                          <span className="absolute right-2 top-2.5 text-xs font-bold text-slate-400">%</span>
                         </div>
-                        
-                        <div className={`w-16 text-right font-bold text-sm ${!isCarton ? "text-slate-300 decoration-slate-300 line-through" : hasCtnRate ? "text-blue-600" : "text-slate-300"}`}>
-                          {/* [NEW] safeFixed 적용 */}
-                          ${safeFixed(resultCtn)}
-                        </div>
+                        <div className="w-16 text-right font-bold text-sm text-blue-600">${safeFixed(resultCtn)}</div>
                       </div>
                     </td>
 
-                    <td className={`px-2 py-4 border-b border-slate-50 ${hasPackRate ? "bg-amber-50/10" : ""}`}>
+                    <td className={`px-2 py-4 border-b border-slate-50 ${item.sync_enabled && 'bg-green-50/30'}`}>
                       <div className="flex items-center gap-3 justify-center">
-                        <span className="text-xs text-slate-400 w-16 text-right font-mono">
-                          {/* [NEW] safeFixed 적용 */}
-                          ${safeFixed(item.sell_price_pack)}
-                        </span>
-                        
+                        <span className="text-xs text-slate-400 w-16 text-right font-mono">${safeFixed(item.sell_price_pack)}</span>
                         <div className="relative w-20">
                           <Input 
                             type="number" 
-                            className={`h-9 text-center pr-6 font-bold transition-all ${hasPackRate ? "border-amber-300 text-amber-700 bg-amber-50 ring-2 ring-amber-100" : "bg-white text-slate-600 border-slate-200"}`}
+                            disabled={item.sync_enabled}
+                            className={cn("h-9 text-center pr-6 font-bold", item.sync_enabled && "bg-white border-green-500 text-green-700")}
                             value={item.custom_price_pack}
                             onChange={(e) => handleRateChange(item.id, 'pack', e.target.value)}
-                            placeholder="0"
                           />
-                          <span className="absolute right-2 top-2.5 text-xs text-slate-400 font-bold">%</span>
+                          <span className="absolute right-2 top-2.5 text-xs font-bold text-slate-400">%</span>
                         </div>
-
-                        <div className={`w-16 text-right font-bold text-sm ${hasPackRate ? "text-amber-600" : "text-slate-300"}`}>
-                          {/* [NEW] safeFixed 적용 */}
+                        <div className={cn("w-16 text-right font-bold text-sm", item.sync_enabled ? "text-green-600" : "text-amber-600")}>
                           ${safeFixed(resultPack)}
                         </div>
                       </div>
                     </td>
 
                     <td className="px-2 py-4 border-b border-slate-50 text-center">
-                        <Button 
-                            size="icon" 
-                            variant="ghost" 
-                            className="text-slate-300 hover:text-red-500 hover:bg-red-50 w-8 h-8 rounded-full"
-                            onClick={() => handleDeleteItem(index, item.table_id)}
-                            title="Remove Item"
-                        >
-                            <Trash2 className="w-4 h-4" />
-                        </Button>
+                        <Button size="icon" variant="ghost" className="text-slate-300 hover:text-red-500 w-8 h-8 rounded-full" onClick={() => handleDeleteItem(index, item.table_id)}><Trash2 className="w-4 h-4" /></Button>
                     </td>
                   </tr>
                 );
@@ -471,14 +462,15 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
         </div>
 
         {/* Footer */}
-        <div className="p-5 border-t border-slate-100 bg-white flex justify-between items-center rounded-b-xl shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] z-30">
-          <div className="text-xs text-slate-400">
-            * Saving updates both CTN and PACK discount rates.
+        <div className="p-5 border-t border-slate-100 bg-white flex justify-between items-center rounded-b-xl z-30">
+          <div className="text-xs text-slate-400 flex items-center gap-2">
+            <CheckSquare className="w-3 h-3 text-green-500"/>
+            "Sync"를 체크하면 박스 단가에 맞춰 낱개 할인율이 자동 계산됩니다. 해제 시 원래 할인율로 복구됩니다.
           </div>
           <div className="flex gap-3">
-            <Button variant="ghost" onClick={onClose} className="text-slate-500 hover:text-slate-700">Cancel</Button>
-            <Button onClick={handleSave} disabled={saving} className="bg-slate-900 hover:bg-slate-800 min-w-[160px] shadow-lg shadow-slate-200">
-                {saving ? <><Loader2 className="w-4 h-4 animate-spin mr-2"/> Saving...</> : <><Save className="w-4 h-4 mr-2"/> Save Changes</>}
+            <Button variant="ghost" onClick={onClose}>Cancel</Button>
+            <Button onClick={handleSave} disabled={saving} className="bg-slate-900 min-w-[160px]">
+                {saving ? <Loader2 className="w-4 h-4 animate-spin mr-2"/> : <Save className="w-4 h-4 mr-2"/>} Save Changes
             </Button>
           </div>
         </div>

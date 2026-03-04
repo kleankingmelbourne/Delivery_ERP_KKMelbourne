@@ -12,6 +12,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
+import { Badge } from "@/components/ui/badge";
+
+// ✅ [추가] Google Maps 로드를 위해 추가 (Geocoding용)
+import Script from "next/script";
 
 // 타입 정의
 interface CompanySettings {
@@ -26,6 +30,9 @@ interface CompanySettings {
   suburb: string;
   state: string;
   postcode: string;
+  // ✅ 좌표 추가
+  lat?: number | null;
+  lng?: number | null;
   // Bank Info
   bank_name: string;
   account_name: string;
@@ -43,6 +50,7 @@ interface CompanySettings {
 const INITIAL_DATA: CompanySettings = {
   company_name: "", abn: "", email: "", phone: "", website: "",
   address_line1: "", address_line2: "", suburb: "", state: "VIC", postcode: "",
+  lat: null, lng: null,
   bank_name: "", account_name: "", bsb_number: "", account_number: "", 
   bank_payid: "", 
   gst_rate: 10,
@@ -56,6 +64,7 @@ export default function InfoSettingPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [formData, setFormData] = useState<CompanySettings>(INITIAL_DATA);
+  const GOOGLE_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
 
   // 데이터 조회
   useEffect(() => {
@@ -72,7 +81,6 @@ export default function InfoSettingPage() {
         }
 
         if (data) {
-          // ✅ [수정됨] DB의 null 값을 빈 문자열("")로 변환하여 React State 오류 방지
           setFormData({
             id: data.id,
             company_name: data.company_name ?? "",
@@ -85,11 +93,13 @@ export default function InfoSettingPage() {
             suburb: data.suburb ?? "",
             state: data.state ?? "VIC",
             postcode: data.postcode ?? "",
+            lat: data.lat ?? null,
+            lng: data.lng ?? null,
             bank_name: data.bank_name ?? "",
             account_name: data.account_name ?? "",
             bsb_number: data.bsb_number ?? "",
             account_number: data.account_number ?? "",
-            bank_payid: data.bank_payid ?? "", // null이면 ""로
+            bank_payid: data.bank_payid ?? "", 
             gst_rate: data.gst_rate ?? 10,
             invoice_info: data.invoice_info ?? "",
             statement_info: data.statement_info ?? "",
@@ -103,9 +113,8 @@ export default function InfoSettingPage() {
       }
     };
     fetchData();
-  }, []);
+  }, [supabase]);
 
-  // 입력 핸들러 (Input용)
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
     setFormData(prev => ({
@@ -114,7 +123,6 @@ export default function InfoSettingPage() {
     }));
   };
 
-  // 입력 핸들러 (Textarea용)
   const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const { name, value } = e.target;
     setFormData(prev => ({
@@ -123,18 +131,48 @@ export default function InfoSettingPage() {
     }));
   };
 
-  // 저장 핸들러
+  // ✅ [수정] 저장 시 주소를 좌표로 변환하는 Geocoding 로직 추가
   const handleSave = async () => {
     setSaving(true);
     try {
+      let finalLat = formData.lat;
+      let finalLng = formData.lng;
+
+      // 주소가 하나라도 입력되어 있고 구글 맵이 로드되어 있다면 좌표 변환 시도
+      const fullAddress = [formData.address_line1, formData.address_line2, formData.suburb, formData.state, formData.postcode]
+        .filter(p => p && p.trim() !== "").join(", ");
+
+      if (fullAddress && window.google && window.google.maps) {
+        const geocoder = new window.google.maps.Geocoder();
+        await new Promise<void>((resolve) => {
+          geocoder.geocode({ address: fullAddress }, (results: any, status: any) => {
+            if (status === 'OK' && results[0]) {
+              finalLat = results[0].geometry.location.lat();
+              finalLng = results[0].geometry.location.lng();
+            } else {
+              console.warn(`Geocoding failed: ${status}`);
+            }
+            resolve();
+          });
+        });
+      }
+
+      // 변환된 좌표를 포함하여 DB에 업데이트
+      const payloadToSave = {
+          ...formData,
+          lat: finalLat,
+          lng: finalLng
+      };
+
       const { error } = await supabase
         .from('company_settings')
-        .upsert(formData)
+        .upsert(payloadToSave)
         .select()
         .single();
 
       if (error) throw error;
       
+      setFormData(payloadToSave); // State도 업데이트
       alert("Settings saved successfully!");
     } catch (error: any) {
       alert("Failed to save: " + error.message);
@@ -148,8 +186,14 @@ export default function InfoSettingPage() {
   }
 
   return (
+    <>
+    {/* ✅ [추가] Geocoding API 사용을 위한 Google Maps 스크립트 로드 */}
+    <Script 
+        src={`https://maps.googleapis.com/maps/api/js?key=${GOOGLE_API_KEY}&libraries=places,geometry&loading=async`}
+        strategy="lazyOnload"
+    />
+
     <div className="flex flex-col h-[calc(100vh-65px)] bg-slate-50/50">
-      
       {/* Header */}
       <div className="h-16 border-b border-slate-200 bg-white px-8 flex items-center justify-between shrink-0 sticky top-0 z-10 shadow-sm">
         <div className="flex items-center gap-3">
@@ -218,6 +262,12 @@ export default function InfoSettingPage() {
           <CardHeader className="pb-4">
             <CardTitle className="text-base font-bold text-slate-800 flex items-center gap-2">
               <MapPin className="w-5 h-5 text-slate-500"/> Address
+              {/* ✅ 저장된 좌표 상태를 보여주는 뱃지 */}
+              {formData.lat && formData.lng && (
+                  <Badge variant="secondary" className="ml-2 bg-emerald-100 text-emerald-700 font-normal text-[10px]">
+                      GPS Mapped
+                  </Badge>
+              )}
             </CardTitle>
             <CardDescription>Registered business address.</CardDescription>
           </CardHeader>
@@ -344,5 +394,6 @@ export default function InfoSettingPage() {
 
       </div>
     </div>
+    </>
   );
 }

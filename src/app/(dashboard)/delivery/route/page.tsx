@@ -23,10 +23,10 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 
-// [NEW] Pdf Download / Print Import
+// Pdf Download / Print Import
 import { printBulkPdf } from "@/utils/downloadPdf";
 
-// [NEW] DnD Kit Imports
+// DnD Kit Imports
 import {
   DndContext, 
   closestCenter,
@@ -80,9 +80,17 @@ interface InvoiceItem {
 interface DriverRouteInfo {
     driverId: string;
     driverName: string;
-    run: number; // 1 or 2
+    run: number; 
     count: number;
     completedCount: number;
+}
+
+// 위치 정보 타입
+interface LocationData {
+    address: string;
+    lat: number | null;
+    lng: number | null;
+    route_prefs?: any; 
 }
 
 const DEFAULT_LOCATION = { lat: -37.8197, lng: 145.1238 }; 
@@ -95,12 +103,6 @@ const getMelbourneDate = () => {
   const formatter = new Intl.DateTimeFormat('en-CA', options); 
   return formatter.format(now);
 };
-
-declare global {
-  interface Window {
-    google: any;
-  }
-}
 
 export default function DeliveryRoutePage() {
   const supabase = createClient();
@@ -115,20 +117,25 @@ export default function DeliveryRoutePage() {
   const [originalInvoices, setOriginalInvoices] = useState<Invoice[]>([]); 
   const [loading, setLoading] = useState(false);
 
-  // Address States
-  const [companyAddress, setCompanyAddress] = useState("");
-  const [driverProfileAddress, setDriverProfileAddress] = useState("");
-  const [finalDestType, setFinalDestType] = useState<'company' | 'home' | 'custom'>('company');
+  // 회사 정보 및 기사 위치 캐싱 데이터
+  const [companyLoc, setCompanyLoc] = useState<LocationData | null>(null);
+  const [driverLocations, setDriverLocations] = useState<Record<string, LocationData>>({});
+
+  const currentDriverId = selectedRouteKey ? selectedRouteKey.split('_')[0] : null;
+  const driverLoc = currentDriverId ? driverLocations[currentDriverId] : null;
+
+  // 출발지(Start)와 도착지(Final) 상태 분리 및 기본값 설정
+  const [startDestType, setStartDestType] = useState<'company' | 'home' | 'custom'>('company');
+  const [finalDestType, setFinalDestType] = useState<'company' | 'home' | 'custom'>('home');
   
   // Custom Address States
-  const [customDest, setCustomDest] = useState("");
-  const [isCustomSet, setIsCustomSet] = useState(false); 
-  const [finalAddress, setFinalAddress] = useState("");
+  const [customStart, setCustomStart] = useState("");
+  const [isCustomStartSet, setIsCustomStartSet] = useState(false); 
+  const [customFinal, setCustomFinal] = useState("");
+  const [isCustomFinalSet, setIsCustomFinalSet] = useState(false); 
   
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [isRouteChanged, setIsRouteChanged] = useState(false);
-
-  // [NEW] Printing State
   const [printingRouteKey, setPrintingRouteKey] = useState<string | null>(null);
 
   // Map
@@ -143,7 +150,9 @@ export default function DeliveryRoutePage() {
   const [invoiceItems, setInvoiceItems] = useState<InvoiceItem[]>([]);
   const [loadingItems, setLoadingItems] = useState(false);
 
-  // Sensors for DnD
+  // ✅ [NEW] 실시간 통신 폭주 방지를 위한 디바운스 타이머 참조
+  const refreshTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
@@ -164,40 +173,12 @@ export default function DeliveryRoutePage() {
     }
   }, []);
 
-  useEffect(() => {
-      if (selectedRouteKey) {
-          const [driverId] = selectedRouteKey.split('_');
-          const fetchDriverAddr = async () => {
-              const { data } = await supabase.from('profiles').select('address').eq('id', driverId).maybeSingle();
-              if (data?.address) setDriverProfileAddress(data.address);
-              else setDriverProfileAddress("");
-          };
-          fetchDriverAddr();
-      }
-  }, [selectedRouteKey]);
-
-  useEffect(() => {
-      if (finalDestType === 'company') setFinalAddress(companyAddress);
-      else if (finalDestType === 'home') setFinalAddress(driverProfileAddress);
-      else if (finalDestType === 'custom') setFinalAddress(isCustomSet ? customDest : ""); 
-  }, [finalDestType, companyAddress, driverProfileAddress, customDest, isCustomSet]);
-
   const fetchCompanySettings = async () => {
-      const { data } = await supabase.from('company_settings').select('address_line1, address_line2, suburb, state, postcode').maybeSingle();
+      const { data } = await supabase.from('company_settings').select('address_line1, address_line2, suburb, state, postcode, lat, lng').maybeSingle();
       if (data) {
           const parts = [data.address_line1, data.address_line2, data.suburb, data.state, data.postcode].filter(p => p && p.trim() !== "");
-          setCompanyAddress(parts.join(", "));
+          setCompanyLoc({ address: parts.join(", "), lat: data.lat, lng: data.lng });
       }
-  };
-
-  const handleSetCustomDest = () => {
-      if (!customDest.trim()) return alert("Please enter an address.");
-      setIsCustomSet(true);
-      setFinalAddress(customDest);
-  };
-
-  const handleEditCustomDest = () => {
-      setIsCustomSet(false);
   };
 
   const fetchRoutes = async () => {
@@ -205,7 +186,7 @@ export default function DeliveryRoutePage() {
     try {
         const { data, error } = await supabase
             .from("invoices")
-            .select(`driver_id, delivery_run, is_completed, profiles:driver_id ( display_name )`)
+            .select(`driver_id, delivery_run, is_completed, profiles:driver_id ( display_name, address, lat, lng, route_prefs )`)
             .eq("invoice_date", selectedDate)
             .neq("status", "Paid")
             .is("is_pickup", false) 
@@ -214,15 +195,30 @@ export default function DeliveryRoutePage() {
         if (error) throw error;
 
         const groups: Record<string, DriverRouteInfo> = {};
+        const locMap: Record<string, LocationData> = {}; 
+
         data?.forEach((item: any) => {
             const dId = item.driver_id;
-            const dName = item.profiles?.display_name || "Unknown";
+            const profile = Array.isArray(item.profiles) ? item.profiles[0] : item.profiles;
+            const dName = profile?.display_name || "Unknown";
+            
+            if (!locMap[dId]) {
+                locMap[dId] = {
+                    address: profile?.address || "",
+                    lat: profile?.lat || null,
+                    lng: profile?.lng || null,
+                    route_prefs: profile?.route_prefs || null
+                };
+            }
+
             const run = (item.delivery_run === 0 || item.delivery_run === null) ? 1 : item.delivery_run;
             const key = `${dId}_${run}`;
             if (!groups[key]) groups[key] = { driverId: dId, driverName: dName, run: run, count: 0, completedCount: 0 };
             groups[key].count += 1;
             if (item.is_completed) groups[key].completedCount += 1;
         });
+
+        setDriverLocations(locMap);
 
         const sortedRoutes = Object.values(groups).sort((a, b) => {
             const nameCompare = a.driverName.localeCompare(b.driverName);
@@ -270,22 +266,59 @@ export default function DeliveryRoutePage() {
       setLoading(false);
   };
 
-  // ✅ [NEW] Print Route Invoices Function
+  useEffect(() => {
+      if (!currentDriverId) return;
+      const prefs = driverLocations[currentDriverId]?.route_prefs;
+
+      if (prefs) {
+          setStartDestType(prefs.startDestType || 'company');
+          setCustomStart(prefs.customStart || '');
+          setIsCustomStartSet(prefs.isCustomStartSet || false);
+          
+          setFinalDestType(prefs.finalDestType || 'home');
+          setCustomFinal(prefs.customFinal || '');
+          setIsCustomFinalSet(prefs.isCustomFinalSet || false);
+      } else {
+          setStartDestType('company');
+          setCustomStart('');
+          setIsCustomStartSet(false);
+          setFinalDestType('home');
+          setCustomFinal('');
+          setIsCustomFinalSet(false);
+      }
+  }, [currentDriverId, driverLocations]);
+
+  const saveRoutePrefsToDB = async (updates: any) => {
+      if (!currentDriverId) return;
+      const currentPrefs = {
+          startDestType, customStart, isCustomStartSet,
+          finalDestType, customFinal, isCustomFinalSet
+      };
+      const finalPrefs = { ...currentPrefs, ...updates };
+
+      setDriverLocations(prev => ({
+          ...prev,
+          [currentDriverId]: {
+              ...prev[currentDriverId],
+              route_prefs: finalPrefs
+          }
+      }));
+
+      try {
+          await supabase.from('profiles').update({ route_prefs: finalPrefs }).eq('id', currentDriverId);
+      } catch(e) { console.error("Failed to save DB route prefs", e); }
+  };
+
   const handlePrintRoute = async (e: React.MouseEvent, driverId: string, run: number) => {
-    e.stopPropagation(); // 라우트 선택(클릭) 이벤트 방지
+    e.stopPropagation(); 
     const routeKey = `${driverId}_${run}`;
     
-    // 만약 현재 열려있는 탭이고 수정사항이 저장되지 않았다면 경고창 띄우기
     if (selectedRouteKey === routeKey && isRouteChanged) {
-        if (!confirm("You have unsaved sorting changes. Do you want to print the saved version from the database?")) {
-            return;
-        }
+        if (!confirm("You have unsaved sorting changes. Do you want to print the saved version from the database?")) return;
     }
-
     setPrintingRouteKey(routeKey);
 
     try {
-        // DB에서 최신 저장된 해당 기사의 순서대로 인보이스 아이디 가져오기
         const { data, error } = await supabase
             .from("invoices")
             .select("id, delivery_run")
@@ -298,32 +331,25 @@ export default function DeliveryRoutePage() {
         if (error) throw error;
 
         if (data) {
-            // 정확히 해당 Run(1 또는 2)의 인보이스만 필터링
             const filtered = data.filter(item => {
                 const itemRun = (item.delivery_run === 0 || item.delivery_run === null) ? 1 : item.delivery_run;
                 return itemRun === run;
             });
-
             const invoiceIds = filtered.map(inv => inv.id);
-
             if (invoiceIds.length === 0) {
                 alert("No invoices found to print for this route.");
                 setPrintingRouteKey(null);
                 return;
             }
-
-            // PDF 병합 및 프린트 함수 호출
             await printBulkPdf(invoiceIds);
         }
     } catch (err: any) {
-        console.error("Print Error:", err);
         alert("Error printing invoices: " + err.message);
     } finally {
         setPrintingRouteKey(null);
     }
   };
 
-  // Drag End Handler
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     if (active.id !== over?.id) {
@@ -332,13 +358,32 @@ export default function DeliveryRoutePage() {
             const newIndex = items.findIndex((item) => item.id === over?.id);
             return arrayMove(items, oldIndex, newIndex);
         });
-        setIsRouteChanged(true); // Enable Save Button
+        setIsRouteChanged(true); 
     }
+  };
+
+  const resolveLocation = (type: 'company' | 'home' | 'custom', customText: string): { lat: number, lng: number } | string | null => {
+      if (type === 'company' && companyLoc) {
+          return (companyLoc.lat && companyLoc.lng) ? { lat: companyLoc.lat, lng: companyLoc.lng } : companyLoc.address;
+      }
+      if (type === 'home' && driverLoc) {
+          return (driverLoc.lat && driverLoc.lng) ? { lat: driverLoc.lat, lng: driverLoc.lng } : driverLoc.address;
+      }
+      if (type === 'custom' && customText) {
+          return customText;
+      }
+      return null;
   };
 
   const handleOptimizeRoute = () => {
       if (!window.google || !window.google.maps) return alert("Google Maps API not loaded yet.");
       if (invoices.length < 2) return alert("Need at least 2 stops to optimize.");
+
+      const startLocation = resolveLocation(startDestType, customStart);
+      const finalLocation = resolveLocation(finalDestType, customFinal);
+
+      if (!startLocation) return alert("Please set a valid Start point.");
+      if (!finalLocation) return alert("Please set a valid Final Destination.");
 
       setIsOptimizing(true);
       const ds = new window.google.maps.DirectionsService();
@@ -348,14 +393,13 @@ export default function DeliveryRoutePage() {
           const lat = c.delivery_lat || c.lat;
           const lng = c.delivery_lng || c.lng;
           if (lat && lng) return { location: { lat, lng }, stopover: true };
-          return null;
+          const addr = [c.delivery_address || c.address, c.suburb].filter(Boolean).join(", ");
+          return addr ? { location: addr, stopover: true } : null;
       }).filter(Boolean);
 
-      const destination = finalAddress && finalAddress.length > 5 ? finalAddress : warehouseLocation;
-
       ds.route({
-          origin: warehouseLocation,
-          destination: destination,
+          origin: startLocation,
+          destination: finalLocation,
           // @ts-ignore
           waypoints: waypoints,
           travelMode: window.google.maps.TravelMode.DRIVING,
@@ -380,11 +424,7 @@ export default function DeliveryRoutePage() {
               id: inv.id,
               delivery_order: index + 1
           }));
-
-          await Promise.all(updates.map(u => 
-              supabase.from('invoices').update({ delivery_order: u.delivery_order }).eq('id', u.id)
-          ));
-
+          await Promise.all(updates.map(u => supabase.from('invoices').update({ delivery_order: u.delivery_order }).eq('id', u.id)));
           setOriginalInvoices(invoices); 
           setIsRouteChanged(false); 
           alert("Route order saved successfully!");
@@ -429,14 +469,25 @@ export default function DeliveryRoutePage() {
   useEffect(() => { fetchRoutes(); }, [selectedDate]);
   useEffect(() => { fetchInvoices(); }, [selectedRouteKey]);
 
+  // ✅ [NEW] 실시간 통신 폭주를 막기 위한 Debounce 적용
   useEffect(() => {
     const channel = supabase.channel('route_view_changes')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'invoices', filter: `invoice_date=eq.${selectedDate}` }, () => {
-            fetchRoutes();
-            if (selectedRouteKey && !isRouteChanged) fetchInvoices(); 
+            
+            // 50번의 알림이 와도, 마지막 알림 이후 0.5초 뒤에 딱 한 번만 데이터를 다시 가져옵니다.
+            if (refreshTimeoutRef.current) clearTimeout(refreshTimeoutRef.current);
+            
+            refreshTimeoutRef.current = setTimeout(() => {
+                fetchRoutes();
+                if (selectedRouteKey && !isRouteChanged) fetchInvoices(); 
+            }, 500); // 500ms 딜레이
         })
         .subscribe();
-    return () => { supabase.removeChannel(channel); };
+        
+    return () => { 
+        supabase.removeChannel(channel); 
+        if (refreshTimeoutRef.current) clearTimeout(refreshTimeoutRef.current);
+    };
   }, [selectedDate, selectedRouteKey, isRouteChanged]);
 
 
@@ -530,8 +581,6 @@ export default function DeliveryRoutePage() {
                               </span>
                               {isDone && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
                           </div>
-
-                          {/* ✅ [NEW] Print Button */}
                           <div 
                               onClick={(e) => handlePrintRoute(e, route.driverId, route.run)}
                               className={cn(
@@ -585,47 +634,117 @@ export default function DeliveryRoutePage() {
               {/* Optimization Controls */}
               {invoices.length > 0 && (
                   <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-4">
-                      {/* Destination Type Selector */}
+                      
+                      {/* Start Location Selector */}
                       <div className="flex items-center justify-between">
-                          <span className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1"><Home className="w-3.5 h-3.5"/> Final Stop</span>
+                          <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider flex items-center gap-1"><MapPin className="w-3.5 h-3.5"/> Start Point</span>
                           <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
-                              <button onClick={() => { setFinalDestType('company'); setIsCustomSet(false); }} className={cn("px-3 py-1 rounded-md text-xs font-bold transition-all", finalDestType === 'company' ? "bg-white text-slate-800 shadow-sm" : "text-slate-500")}>Company</button>
-                              <button onClick={() => { setFinalDestType('home'); setIsCustomSet(false); }} className={cn("px-3 py-1 rounded-md text-xs font-bold transition-all", finalDestType === 'home' ? "bg-white text-slate-800 shadow-sm" : "text-slate-500")}>Home</button>
-                              <button onClick={() => setFinalDestType('custom')} className={cn("px-3 py-1 rounded-md text-xs font-bold transition-all", finalDestType === 'custom' ? "bg-white text-slate-800 shadow-sm" : "text-slate-500")}>Custom</button>
+                              <button onClick={() => { 
+                                  setStartDestType('company'); setIsCustomStartSet(false); 
+                                  saveRoutePrefsToDB({ startDestType: 'company', isCustomStartSet: false }); 
+                              }} className={cn("px-3 py-1 rounded-md text-xs font-bold transition-all", startDestType === 'company' ? "bg-white text-emerald-700 shadow-sm" : "text-slate-500")}>Company</button>
+                              
+                              <button onClick={() => { 
+                                  setStartDestType('home'); setIsCustomStartSet(false); 
+                                  saveRoutePrefsToDB({ startDestType: 'home', isCustomStartSet: false }); 
+                              }} className={cn("px-3 py-1 rounded-md text-xs font-bold transition-all", startDestType === 'home' ? "bg-white text-emerald-700 shadow-sm" : "text-slate-500")}>Home</button>
+                              
+                              <button onClick={() => { 
+                                  setStartDestType('custom'); 
+                                  saveRoutePrefsToDB({ startDestType: 'custom' }); 
+                              }} className={cn("px-3 py-1 rounded-md text-xs font-bold transition-all", startDestType === 'custom' ? "bg-white text-emerald-700 shadow-sm" : "text-slate-500")}>Custom</button>
                           </div>
                       </div>
-
-                      {/* Address Preview / Input */}
                       <div className="flex gap-2">
-                          {finalDestType === 'custom' ? (
+                          {startDestType === 'custom' ? (
                               <div className="flex-1 flex gap-2">
                                   <Input 
-                                      placeholder="Enter address..." 
-                                      className={cn("h-9 text-xs transition-all", isCustomSet ? "bg-slate-100 text-slate-500 border-slate-200" : "bg-white border-indigo-300")}
-                                      value={customDest} 
-                                      onChange={(e) => setCustomDest(e.target.value)}
-                                      onKeyDown={(e) => e.key === 'Enter' && !isCustomSet && handleSetCustomDest()}
-                                      disabled={isCustomSet}
+                                      placeholder="Enter start address..." 
+                                      className={cn("h-9 text-xs transition-all", isCustomStartSet ? "bg-slate-100 text-slate-500 border-slate-200" : "bg-white border-emerald-300")}
+                                      value={customStart} 
+                                      onChange={(e) => {
+                                          setCustomStart(e.target.value);
+                                          saveRoutePrefsToDB({ customStart: e.target.value });
+                                      }}
+                                      disabled={isCustomStartSet}
                                   />
-                                  {isCustomSet ? (
-                                      <Button size="sm" onClick={handleEditCustomDest} className="h-9 bg-amber-500 hover:bg-amber-600 text-white text-xs px-3">
-                                          <Edit2 className="w-3 h-3 mr-1"/> Edit
-                                      </Button>
+                                  {isCustomStartSet ? (
+                                      <Button size="sm" onClick={() => { 
+                                          setIsCustomStartSet(false); 
+                                          saveRoutePrefsToDB({ isCustomStartSet: false }); 
+                                      }} className="h-9 bg-amber-500 hover:bg-amber-600 text-white text-xs px-3">Edit</Button>
                                   ) : (
-                                      <Button size="sm" onClick={handleSetCustomDest} className="h-9 bg-slate-800 text-xs px-3">
-                                          <Check className="w-3 h-3 mr-1"/> Set
-                                      </Button>
+                                      <Button size="sm" onClick={() => {
+                                          if(customStart.trim()) { 
+                                              setIsCustomStartSet(true); 
+                                              saveRoutePrefsToDB({ isCustomStartSet: true, customStart: customStart.trim() }); 
+                                          }
+                                      }} className="h-9 bg-slate-800 text-xs px-3">Set</Button>
                                   )}
                               </div>
                           ) : (
                               <div className="flex-1 bg-slate-50 border border-slate-100 rounded-md px-3 flex items-center text-xs text-slate-500 h-9 truncate">
-                                  {finalAddress || "No address available"}
+                                  {startDestType === 'company' ? (companyLoc?.address || "No company address set") : (driverLoc?.address || "No driver address set")}
+                              </div>
+                          )}
+                      </div>
+
+                      {/* Final Destination Selector */}
+                      <div className="flex items-center justify-between border-t border-slate-100 pt-4 mt-2">
+                          <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider flex items-center gap-1"><Home className="w-3.5 h-3.5"/> Final Stop</span>
+                          <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
+                              <button onClick={() => { 
+                                  setFinalDestType('company'); setIsCustomFinalSet(false); 
+                                  saveRoutePrefsToDB({ finalDestType: 'company', isCustomFinalSet: false }); 
+                              }} className={cn("px-3 py-1 rounded-md text-xs font-bold transition-all", finalDestType === 'company' ? "bg-white text-emerald-700 shadow-sm" : "text-slate-500")}>Company</button>
+                              
+                              <button onClick={() => { 
+                                  setFinalDestType('home'); setIsCustomFinalSet(false); 
+                                  saveRoutePrefsToDB({ finalDestType: 'home', isCustomFinalSet: false }); 
+                              }} className={cn("px-3 py-1 rounded-md text-xs font-bold transition-all", finalDestType === 'home' ? "bg-white text-emerald-700 shadow-sm" : "text-slate-500")}>Home</button>
+                              
+                              <button onClick={() => { 
+                                  setFinalDestType('custom'); 
+                                  saveRoutePrefsToDB({ finalDestType: 'custom' }); 
+                              }} className={cn("px-3 py-1 rounded-md text-xs font-bold transition-all", finalDestType === 'custom' ? "bg-white text-emerald-700 shadow-sm" : "text-slate-500")}>Custom</button>
+                          </div>
+                      </div>
+                      <div className="flex gap-2">
+                          {finalDestType === 'custom' ? (
+                              <div className="flex-1 flex gap-2">
+                                  <Input 
+                                      placeholder="Enter final address..." 
+                                      className={cn("h-9 text-xs transition-all", isCustomFinalSet ? "bg-slate-100 text-slate-500 border-slate-200" : "bg-white border-emerald-300")}
+                                      value={customFinal} 
+                                      onChange={(e) => {
+                                          setCustomFinal(e.target.value);
+                                          saveRoutePrefsToDB({ customFinal: e.target.value });
+                                      }}
+                                      disabled={isCustomFinalSet}
+                                  />
+                                  {isCustomFinalSet ? (
+                                      <Button size="sm" onClick={() => { 
+                                          setIsCustomFinalSet(false); 
+                                          saveRoutePrefsToDB({ isCustomFinalSet: false }); 
+                                      }} className="h-9 bg-amber-500 hover:bg-amber-600 text-white text-xs px-3">Edit</Button>
+                                  ) : (
+                                      <Button size="sm" onClick={() => {
+                                          if(customFinal.trim()) { 
+                                              setIsCustomFinalSet(true); 
+                                              saveRoutePrefsToDB({ isCustomFinalSet: true, customFinal: customFinal.trim() }); 
+                                          }
+                                      }} className="h-9 bg-slate-800 text-xs px-3">Set</Button>
+                                  )}
+                              </div>
+                          ) : (
+                              <div className="flex-1 bg-slate-50 border border-slate-100 rounded-md px-3 flex items-center text-xs text-slate-500 h-9 truncate">
+                                  {finalDestType === 'company' ? (companyLoc?.address || "No company address set") : (driverLoc?.address || "No driver address set")}
                               </div>
                           )}
                       </div>
 
                       {/* Action Buttons */}
-                      <div className="pt-2 border-t border-slate-100 flex gap-2">
+                      <div className="pt-4 border-t border-slate-100 flex gap-2">
                           {isRouteChanged ? (
                               <>
                                   <Button 
@@ -667,7 +786,6 @@ export default function DeliveryRoutePage() {
                     </div>
                 )}
                 
-                {/* [NEW] Dnd Context Wrap */}
                 <DndContext 
                     sensors={sensors} 
                     collisionDetection={closestCenter} 
@@ -763,22 +881,21 @@ export default function DeliveryRoutePage() {
         </DialogContent>
     </Dialog>
 
-    {/* Map Dialog (Visual Preview Only) */}
+    {/* Map Dialog */}
     <RouteMapDialog 
         isOpen={isMapOpen} 
         onClose={() => setIsMapOpen(false)} 
         driverName={currentRouteInfo?.driverName || "Driver"}
         driverId={currentRouteInfo?.driverId} 
         invoices={invoices}
-        warehouseLocation={warehouseLocation}
-        finalDestination={finalAddress} 
+        startLocation={resolveLocation(startDestType, customStart)}
+        finalLocation={resolveLocation(finalDestType, customFinal)} 
         isGoogleLoaded={isGoogleLoaded}
     />
     </>
   );
 }
 
-// [NEW] Sortable Item Component
 function SortableInvoiceCard({ invoice, index, onClick }: { invoice: Invoice, index: number, onClick: () => void }) {
     const {
         attributes,
@@ -797,6 +914,7 @@ function SortableInvoiceCard({ invoice, index, onClick }: { invoice: Invoice, in
     };
 
     const isCompleted = invoice.is_completed;
+    const isNew = invoice.delivery_order === 0 || invoice.delivery_order === null; 
 
     return (
         <Card 
@@ -809,7 +927,6 @@ function SortableInvoiceCard({ invoice, index, onClick }: { invoice: Invoice, in
             )}
         >
             <CardContent className="p-3 flex items-start gap-4">
-                {/* Drag Handle */}
                 <div 
                     {...attributes} 
                     {...listeners} 
@@ -818,15 +935,17 @@ function SortableInvoiceCard({ invoice, index, onClick }: { invoice: Invoice, in
                     <GripVertical className="w-5 h-5" />
                 </div>
 
-                {/* Main Content (Clickable) */}
                 <div className="flex items-start gap-4 flex-1 cursor-pointer" onClick={onClick}>
                     <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold shrink-0 shadow-sm border", isCompleted ? "bg-slate-200 text-slate-500 border-slate-300" : "bg-white text-slate-700 border-slate-200")}>
                         {isCompleted ? <CheckCircle2 className="w-5 h-5" /> : (index + 1)}
                     </div>
                     <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                            <span className={cn("font-bold text-sm truncate", isCompleted ? "text-slate-400 line-through" : "text-slate-800")}>
+                            <span className={cn("font-bold text-sm truncate flex items-center gap-2", isCompleted ? "text-slate-400 line-through" : "text-slate-800")}>
                                 {invoice.customers?.name || invoice.invoice_to || "Unknown"}
+                                {isNew && !isCompleted && (
+                                    <Badge className="bg-emerald-500 text-white text-[9px] h-4 px-1.5 hover:bg-emerald-600">NEW</Badge>
+                                )}
                             </span>
                         </div>
                         <div className="flex items-center gap-1 text-[11px] text-slate-500 mt-0.5 truncate">
@@ -849,11 +968,10 @@ function SortableInvoiceCard({ invoice, index, onClick }: { invoice: Invoice, in
     );
 }
 
-// 4. Map Dialog (Visual Preview Only)
 function RouteMapDialog({ 
-    isOpen, onClose, driverName, driverId, invoices, warehouseLocation, finalDestination, isGoogleLoaded 
+    isOpen, onClose, driverName, driverId, invoices, startLocation, finalLocation, isGoogleLoaded 
 }: { 
-    isOpen: boolean, onClose: () => void, driverName: string, driverId?: string, invoices: Invoice[], warehouseLocation: any, finalDestination: string, isGoogleLoaded: boolean 
+    isOpen: boolean, onClose: () => void, driverName: string, driverId?: string, invoices: Invoice[], startLocation: any, finalLocation: any, isGoogleLoaded: boolean 
 }) {
     const supabase = createClient();
     const mapRef = useRef<HTMLDivElement>(null);
@@ -894,7 +1012,6 @@ function RouteMapDialog({
         return () => { supabase.removeChannel(channel); };
     }, [isOpen, driverId]);
 
-    // Draw Map with current sequence (Visual Only)
     useEffect(() => {
         if (!isOpen || !isGoogleLoaded || !window.google || !window.google.maps) return;
 
@@ -903,8 +1020,8 @@ function RouteMapDialog({
 
             if (!mapInstance.current) {
                 mapInstance.current = new window.google.maps.Map(mapRef.current, {
-                    center: warehouseLocation,
-                    zoom: 12,
+                    center: DEFAULT_LOCATION,
+                    zoom: 10,
                     disableDefaultUI: false,
                     streetViewControl: false,
                 });
@@ -915,7 +1032,6 @@ function RouteMapDialog({
                 });
             }
 
-            // Clean previous markers
             markersRef.current.forEach(m => m.setMap(null));
             markersRef.current = [];
             
@@ -923,26 +1039,11 @@ function RouteMapDialog({
                 directionsRenderer.current.setDirections({ routes: [] });
             }
 
-            // [NEW] 1. Mark START (S) at Warehouse/Current Location
-            const startMarker = new window.google.maps.Marker({
-                position: warehouseLocation,
-                map: mapInstance.current,
-                label: { text: "S", color: "white", fontWeight: "bold" },
-                title: "Start Point",
-                icon: {
-                    path: window.google.maps.SymbolPath.CIRCLE,
-                    scale: 10,
-                    fillColor: "#10b981", // Emerald Green
-                    fillOpacity: 1,
-                    strokeWeight: 2,
-                    strokeColor: "white",
-                }
-            });
-            markersRef.current.push(startMarker);
+            const finalOrigin = startLocation || DEFAULT_LOCATION;
+            const finalDest = finalLocation || DEFAULT_LOCATION;
 
             const waypoints: any[] = [];
             
-            // [NEW] 2. Mark Delivery Stops (1, 2, 3...)
             invoices.forEach((inv, idx) => {
                 const c = inv.customers;
                 const lat = c.delivery_lat || c.lat;
@@ -950,14 +1051,6 @@ function RouteMapDialog({
 
                 if (lat && lng && lat !== 0 && lng !== 0) {
                     const location = { lat, lng };
-                    const marker = new window.google.maps.Marker({
-                        position: location,
-                        map: mapInstance.current,
-                        label: { text: `${idx + 1}`, color: "white", fontWeight: "bold" },
-                        title: c.name,
-                        opacity: inv.is_completed ? 0.5 : 1.0,
-                    });
-                    markersRef.current.push(marker);
                     waypoints.push({ location: location, stopover: true });
                 }
             });
@@ -965,12 +1058,9 @@ function RouteMapDialog({
             if (waypoints.length > 0) {
                 const ds = new window.google.maps.DirectionsService();
                 
-                // Determine destination
-                const destination = finalDestination && finalDestination.length > 5 ? finalDestination : warehouseLocation;
-
                 ds.route({
-                    origin: warehouseLocation,
-                    destination: destination, 
+                    origin: finalOrigin,
+                    destination: finalDest, 
                     // @ts-ignore
                     waypoints: waypoints,
                     travelMode: window.google.maps.TravelMode.DRIVING,
@@ -979,21 +1069,48 @@ function RouteMapDialog({
                     if (status === 'OK') {
                         if (directionsRenderer.current) directionsRenderer.current.setDirections(res);
                         
-                        // [NEW] 3. Mark FINISH (F) at the actual destination of the route
                         const route = res.routes[0];
                         if (route && route.legs.length > 0) {
-                            const lastLeg = route.legs[route.legs.length - 1];
-                            const endLocation = lastLeg.end_location;
+                            
+                            const startMarker = new window.google.maps.Marker({
+                                position: route.legs[0].start_location,
+                                map: mapInstance.current,
+                                label: { text: "S", color: "white", fontWeight: "bold" },
+                                title: "Start Point",
+                                icon: {
+                                    path: window.google.maps.SymbolPath.CIRCLE,
+                                    scale: 10,
+                                    fillColor: "#10b981", 
+                                    fillOpacity: 1,
+                                    strokeWeight: 2,
+                                    strokeColor: "white",
+                                }
+                            });
+                            markersRef.current.push(startMarker);
 
+                            invoices.forEach((inv, idx) => {
+                                if (route.legs[idx]) {
+                                    const marker = new window.google.maps.Marker({
+                                        position: route.legs[idx].end_location,
+                                        map: mapInstance.current,
+                                        label: { text: `${idx + 1}`, color: "white", fontWeight: "bold" },
+                                        title: inv.customers?.name,
+                                        opacity: inv.is_completed ? 0.5 : 1.0,
+                                    });
+                                    markersRef.current.push(marker);
+                                }
+                            });
+
+                            const lastLeg = route.legs[route.legs.length - 1];
                             const finishMarker = new window.google.maps.Marker({
-                                position: endLocation,
+                                position: lastLeg.end_location,
                                 map: mapInstance.current,
                                 label: { text: "F", color: "white", fontWeight: "bold" },
                                 title: "Final Destination",
                                 icon: {
                                     path: window.google.maps.SymbolPath.CIRCLE,
                                     scale: 10,
-                                    fillColor: "#ef4444", // Red
+                                    fillColor: "#10b981", 
                                     fillOpacity: 1,
                                     strokeWeight: 2,
                                     strokeColor: "white",
@@ -1005,17 +1122,15 @@ function RouteMapDialog({
                 });
             } else {
                 if (mapInstance.current) {
-                    mapInstance.current.setCenter(warehouseLocation);
-                    mapInstance.current.setZoom(12);
+                    mapInstance.current.setCenter(DEFAULT_LOCATION);
                 }
             }
         }, 300); 
 
         return () => clearTimeout(timer); 
 
-    }, [isOpen, isGoogleLoaded, invoices, warehouseLocation, finalDestination]); 
+    }, [isOpen, isGoogleLoaded, invoices, startLocation, finalLocation]); 
 
-    // Driver Marker
     useEffect(() => {
         if (!mapInstance.current || !window.google) return;
         if (!driverLocation) {

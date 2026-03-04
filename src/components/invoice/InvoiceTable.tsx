@@ -726,10 +726,10 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
             <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-500 text-xs uppercase font-bold tracking-wide whitespace-nowrap">
               <tr>
                 <th className="px-2 py-4 w-[4%]"><input type="checkbox" checked={isAllSelected} onChange={handleSelectAll} className="w-4 h-4"/></th>
-                <th className="px-2 py-4 w-[8%]">Invoice #</th>
+                <th className="px-2 py-4 w-[10%]">Invoice #</th>
                 <th className="px-2 py-4 w-[20%]">Customer</th>
-                <th className="px-2 py-4 w-[9%]">Date</th>
-                <th className="px-2 py-4 w-[9%]">Due Date</th>
+                <th className="px-2 py-4 w-[8%]">Date</th>
+                <th className="px-2 py-4 w-[8%]">Due Date</th>
                 <th className="px-2 py-4 w-[10%] text-right">Total</th>
                 <th className="px-2 py-4 w-[12%] text-center">Delivery By</th>
                 <th className="px-2 py-4 w-[10%] text-center">Delivered?</th>

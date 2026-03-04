@@ -4,7 +4,7 @@ import { useEffect, useState, useMemo } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { 
   Plus, Search, Trash2, Edit, Loader2, X, Shield, Phone, Mail, Lock, ChevronLeft, ChevronRight, MapPin, Eye, Send 
-} from "lucide-react"; // [NEW] Send 아이콘 추가
+} from "lucide-react"; 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -18,11 +18,11 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
+import Script from "next/script"; // ✅ [추가] Google Maps API 호출용
 
 // [NEW] sendPasswordResetEmailAction 추가
 import { deleteStaffAction, saveStaffAction, sendPasswordResetEmailAction } from "./actions";
 
-// ... (USER_LEVELS, INITIAL_FORM_DATA 등 기존 코드 유지) ...
 const USER_LEVELS = ["ADMIN", "MANAGER", "STAFF", "DRIVER"];
 
 const INITIAL_FORM_DATA = {
@@ -35,12 +35,14 @@ const INITIAL_FORM_DATA = {
   login_permit: true,
   status: "active",
   password: "", 
+  lat: null as number | null, // ✅ [추가] 폼 데이터에 좌표 포함
+  lng: null as number | null, // ✅ [추가] 폼 데이터에 좌표 포함
 };
 
 export default function StaffPage() {
-  // ... (기존 State들 유지) ...
   const supabase = createClient();
   const { toast } = useToast();
+  const GOOGLE_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY; // ✅ [추가]
 
   const [staffList, setStaffList] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -57,13 +59,12 @@ export default function StaffPage() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   
-  // [NEW] 메일 발송 로딩 상태
+  // 메일 발송 로딩 상태
   const [isSendingEmail, setIsSendingEmail] = useState(false);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState(INITIAL_FORM_DATA);
 
-  // ... (useEffect, fetchCurrentUser, fetchStaff, filteredStaff, paginatedStaff 등 기존 로직 유지) ...
   useEffect(() => {
     fetchStaff();
     fetchCurrentUser();
@@ -109,7 +110,6 @@ export default function StaffPage() {
 
   const totalPages = itemsPerPage === "all" ? 1 : Math.ceil(filteredStaff.length / parseInt(itemsPerPage));
 
-  // --- Handlers (Select, BulkDelete 등 기존 유지) ---
   const handleSelectAll = (checked: boolean) => {
     if (checked) setSelectedIds(filteredStaff.map((s) => s.id)); else setSelectedIds([]);
   };
@@ -123,16 +123,16 @@ export default function StaffPage() {
     setIsDeleting(true);
     const result = await deleteStaffAction(selectedIds);
     if (result.success) {
-      toast({ title: "Deleted", description: "Staff deleted successfully." });
+      toast({ title: "Deleted", description: "Staff deleted successfully.", duration: 4000 });
       await fetchStaff();
       setSelectedIds([]);
     } else {
-      toast({ title: "Error", description: result.error, variant: "destructive" });
+      toast({ title: "Error", description: result.error, variant: "destructive", duration: 4000 });
     }
     setIsDeleting(false);
   };
 
-  // [NEW] 비밀번호 재설정 메일 발송 핸들러
+  // 비밀번호 재설정 메일 발송 핸들러
   const handleSendResetEmail = async () => {
     if (!formData.email) return;
     if (!confirm(`Send password reset email to ${formData.email}?`)) return;
@@ -141,9 +141,9 @@ export default function StaffPage() {
     const result = await sendPasswordResetEmailAction(formData.email);
     
     if (result.success) {
-      toast({ title: "Email Sent", description: result.message });
+      toast({ title: "Email Sent", description: result.message, duration: 4000 });
     } else {
-      toast({ title: "Error", description: result.error, variant: "destructive" });
+      toast({ title: "Error", description: result.error, variant: "destructive", duration: 4000 });
     }
     setIsSendingEmail(false);
   };
@@ -160,6 +160,8 @@ export default function StaffPage() {
         login_permit: staff.login_permit ?? true,
         status: staff.status || "active",
         password: "", 
+        lat: staff.lat || null, // ✅ [추가] 모달 열 때 기존 좌표 불러오기
+        lng: staff.lng || null, // ✅ [추가] 모달 열 때 기존 좌표 불러오기
     } : INITIAL_FORM_DATA);
     setIsModalOpen(true);
   };
@@ -176,13 +178,35 @@ export default function StaffPage() {
     }
 
     setIsSaving(true);
-    const result = await saveStaffAction(formData, !!editingId, editingId || undefined);
+    let finalPayload = { ...formData };
+
+    // 🚀 [추가] 주소가 있고 구글맵이 켜져있다면, 좌표(Lat, Lng) 변환을 시도합니다!
+    if (finalPayload.address && window.google && window.google.maps) {
+      const geocoder = new window.google.maps.Geocoder();
+      await new Promise<void>((resolve) => {
+        geocoder.geocode({ address: finalPayload.address }, (results: any, status: any) => {
+          if (status === 'OK' && results[0]) {
+            finalPayload.lat = results[0].geometry.location.lat();
+            finalPayload.lng = results[0].geometry.location.lng();
+          } else {
+            console.warn(`Geocoding failed: ${status}`);
+            // 실패해도 저장은 진행하도록 null로 세팅
+            finalPayload.lat = null;
+            finalPayload.lng = null; 
+          }
+          resolve();
+        });
+      });
+    }
+
+    // 🚀 `saveStaffAction`에 좌표가 포함된 `finalPayload`를 전달합니다.
+    const result = await saveStaffAction(finalPayload, !!editingId, editingId || undefined);
     if (result.success) {
-      toast({ title: "Success", description: result.message });
+      toast({ title: "Success", description: result.message, duration: 4000 });
       setIsModalOpen(false);
       fetchStaff();
     } else {
-      toast({ title: "Error", description: result.error, variant: "destructive" });
+      toast({ title: "Error", description: result.error, variant: "destructive", duration: 4000});
     }
     setIsSaving(false);
   };
@@ -192,6 +216,13 @@ export default function StaffPage() {
   const isAdmin = currentUserLevel === 'ADMIN';
 
   return (
+    <>
+    {/* ✅ [추가] Geocoding API 사용을 위한 Google Maps 스크립트 로드 */}
+    <Script 
+        src={`https://maps.googleapis.com/maps/api/js?key=${GOOGLE_API_KEY}&libraries=places,geometry&loading=async`}
+        strategy="lazyOnload"
+    />
+
     <div className="p-6 max-w-[1600px] mx-auto space-y-6">
       
       {/* Header */}
@@ -335,7 +366,7 @@ export default function StaffPage() {
                         <Lock className="absolute right-3 top-2.5 w-4 h-4 text-slate-400" />
                     </div>
                     
-                    {/* [NEW] 메일 발송 버튼 및 안내 문구 */}
+                    {/* 메일 발송 버튼 및 안내 문구 */}
                     <div className="flex items-center justify-between">
                         <p className="text-[10px] text-slate-400 ml-1 flex items-center gap-1">
                             * Min 6 chars required
@@ -368,9 +399,15 @@ export default function StaffPage() {
               <Input className="col-span-3" type="date" value={formData.birth_date} onChange={(e) => setFormData({...formData, birth_date: e.target.value})} disabled={isReadOnly}/>
             </div>
 
+            {/* ✅ [수정] Address 입력 필드와 뱃지 */}
             <div className="grid grid-cols-4 items-center gap-4">
-              <Label className="text-right">Address</Label>
-              <Input className="col-span-3" value={formData.address} onChange={(e) => setFormData({...formData, address: e.target.value})} placeholder="Full address" disabled={isReadOnly}/>
+              <Label className="text-right flex flex-col items-end">
+                  Address
+                  {formData.lat && formData.lng && (
+                      <Badge variant="secondary" className="mt-1 bg-emerald-100 text-emerald-700 text-[9px] px-1 font-normal">GPS Mapped</Badge>
+                  )}
+              </Label>
+              <Input className="col-span-3" value={formData.address} onChange={(e) => setFormData({...formData, address: e.target.value})} placeholder="Full address (e.g. 123 Main St, Suburb VIC 3000)" disabled={isReadOnly}/>
             </div>
 
             <div className="grid grid-cols-4 items-center gap-4">
@@ -406,5 +443,6 @@ export default function StaffPage() {
         </DialogContent>
       </Dialog>
     </div>
+    </>
   );
 }

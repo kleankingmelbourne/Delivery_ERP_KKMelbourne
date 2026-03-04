@@ -60,7 +60,6 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select...",
   const inputRef = useRef<HTMLInputElement>(null);
   
   const isKeyboardNav = useRef(false);
-  // 💡 [핵심] 사용자가 마우스로 직접 클릭해서 포커스가 왔는지, 키보드(Tab)로 왔는지 구분하는 장치
   const isMouseAction = useRef(false); 
 
   const debouncedSearchTerm = useDebounce(searchTerm, 300);
@@ -136,16 +135,15 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select...",
       <div 
         id={id}             
         tabIndex={0} 
-        onMouseDown={() => { isMouseAction.current = true; }} // 💡 마우스 클릭 시 기록!
+        onMouseDown={() => { isMouseAction.current = true; }} 
         onFocus={(e) => { 
             if (onOuterFocus) onOuterFocus(); 
             
-            // 💡 [핵심] 마우스 클릭이 아니고(즉, Tab 키 이동) & 이 껍데기가 직접 포커스 되었을 때 자동으로 창 열기!
             if (!isMouseAction.current && !disabled && !isOpen && e.target === e.currentTarget) {
                 setIsOpen(true);
                 setTimeout(() => inputRef.current?.focus(), 10);
             }
-            isMouseAction.current = false; // 플래그 초기화
+            isMouseAction.current = false; 
         }} 
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
@@ -368,12 +366,12 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
           if (!isEditMode) calculateDueDate(invoiceDate, customerData.due_date);
           if (!currentDriverId) setCurrentDriverId(customerData.in_charge_delivery); 
 
-          const apData = customerData.customer_products || []; 
+          const apData = customerData.customer_products?.filter((item: any) => item.products && item.products.is_active === true) || []; 
           if (apData.length > 0) {
               const mappedAllowed = apData.map((item: any) => ({ product_id: item.product_id, discount_ctn: item.custom_price_ctn || 0, discount_pack: item.custom_price_pack || 0 }));
               setAllowedProducts(mappedAllowed);
 
-              const fetchedProducts = apData.map((item: any) => item.products).filter(Boolean).map((p: any) => ({ ...p, unit_name: p.product_units?.unit_name || "CTN" }));
+              const fetchedProducts = apData.map((item: any) => item.products).map((p: any) => ({ ...p, unit_name: p.product_units?.unit_name || "CTN" }));
               setAllProducts(prev => {
                   const existingIds = new Set(prev.map(p => p.id));
                   const newProducts = fetchedProducts.filter((p: any) => !existingIds.has(p.id));
@@ -413,7 +411,13 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
   const handleSearchProducts = useCallback(async (term: string) => {
       if (!term.trim() || !showAllProducts) return;
-      const { data } = await supabase.from("products").select("*, product_units (unit_name)").or(`product_name.ilike.%${term}%,vendor_product_id.ilike.%${term}%`).limit(20); 
+      const { data } = await supabase
+          .from("products")
+          .select("*, product_units (unit_name)")
+          .eq("is_active", true) 
+          .or(`product_name.ilike.%${term}%,vendor_product_id.ilike.%${term}%`)
+          .limit(20); 
+
       if (data && data.length > 0) {
           const newProducts = data.map((p: any) => ({ ...p, unit_name: p.product_units?.unit_name || "CTN" }));
           setAllProducts(prev => {
@@ -451,6 +455,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
   const productOptions = useMemo(() => {
     return allProducts.filter(p => {
+        if (p.is_active === false) return false;
         if (showAllProducts) return true;
         const isAllowed = allowedProducts.some(ap => ap.product_id === p.id);
         const isSelected = items.some(i => i.productId === p.id);
@@ -510,6 +515,14 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
   const subTotal = roundAmount(items.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0));
   const gstTotal = roundAmount(subTotal * 0.1);
   const grandTotal = roundAmount(subTotal + gstTotal);
+
+  const prevGrandTotalRef = useRef(grandTotal);
+  useEffect(() => {
+      if (prevGrandTotalRef.current >= 0 && grandTotal < 0) {
+          setIsPickup(true);
+      }
+      prevGrandTotalRef.current = grandTotal;
+  }, [grandTotal]);
   
   const checkStockAvailability = async (itemList: InvoiceItem[]) => {
       const insufficientItems: string[] = [];
@@ -728,15 +741,42 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     setAllProducts([]); 
   };
 
+  // ✅ [NEW 핵심] Ctrl + S 단축키 핸들러 추가
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ctrl + S (Mac의 경우 Cmd + S 포함하려면 e.metaKey 추가 가능)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault(); // 브라우저 기본 저장창 방지
+        
+        // 로딩 중이 아닐 때만 저장 실행
+        if (!loading) {
+          if (isEditMode) {
+            // 수정 모드: 저장 후 리스트로 (redirect: true)
+            handleSave(true);
+          } else {
+            // 신규 모드: 저장 후 새로 만들기 (redirect: false)
+            handleSave(false);
+          }
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [loading, isEditMode, items, selectedCustomerId, invoiceDate, dueDate, memo, staffNote, isPickup, currentDriverId]);
+
   if (loading && items.length === 0 && isEditMode) {
     return <div className="flex justify-center items-center h-screen"><Loader2 className="w-10 h-10 animate-spin text-slate-400"/></div>;
   }
 
   return (
     <div className="p-6 max-w-[1800px] mx-auto space-y-6 pb-24">
-      <div className="flex items-center gap-4">
-        <Link href="/invoice"><Button variant="ghost" size="icon" className="rounded-full"><ArrowLeft className="w-5 h-5 text-slate-600" /></Button></Link>
-        <h1 className="text-2xl font-bold text-slate-900">{isEditMode ? <>Edit Invoice <span className="text-slate-400">#{invoiceId}</span></> : "New Invoice"}</h1>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <Link href="/invoice"><Button variant="ghost" size="icon" className="rounded-full"><ArrowLeft className="w-5 h-5 text-slate-600" /></Button></Link>
+          <h1 className="text-2xl font-bold text-slate-900">{isEditMode ? <>Edit Invoice <span className="text-slate-400">#{invoiceId}</span></> : "New Invoice"}</h1>
+        </div>
+        <div className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-1 rounded border border-slate-200 uppercase tracking-tighter">Shortcut: Ctrl + S to Save</div>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
@@ -752,7 +792,12 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                 <div className="space-y-2"><label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2"><CreditCard className="w-3.5 h-3.5" /> Due Date</label><Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className="bg-white text-slate-900" /></div>
               </div>
             </div>
-            <div className="flex items-center space-x-2"><Checkbox id="pickup" checked={isPickup} onCheckedChange={(c) => setIsPickup(!!c)} /><label htmlFor="pickup" className="text-sm font-bold text-slate-700">Customer Pick Up (No Delivery)</label></div>
+            
+            <div className="flex items-center space-x-2">
+                <Checkbox id="pickup" checked={isPickup} onCheckedChange={(c) => setIsPickup(!!c)} />
+                <label htmlFor="pickup" className="text-sm font-bold text-slate-700">Customer Pick Up (No Delivery)</label>
+            </div>
+
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-4 border-t border-slate-100">
                 <label className="text-xs font-bold text-slate-500 uppercase">Items</label>
                 <div className="flex items-center gap-6">
@@ -761,7 +806,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                     <label htmlFor="showAll" className="text-xs font-bold text-slate-500">Allow Search All Products</label>
                   </div>
                   <div className="flex items-center space-x-2">
-                    {/* ✅ Auto-Add 체크박스에서 Tab 누르면 가장 마지막 칸으로 점프! */}
                     <Checkbox id="autoAdd" checked={autoAddProduct} onCheckedChange={(c) => setAutoAddProduct(!!c)}
                       onKeyDown={(e) => {
                         if (e.key === 'Tab' && !e.shiftKey) {
@@ -796,7 +840,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                         <tr key={idx} className="hover:bg-slate-50/50">
                           <td className="p-2 text-center text-xs text-slate-400 font-bold">{idx + 1}</td>
                           <td className="p-2">
-                            {/* 💡 id 속성을 추가하여 document.getElementById 로 추적하게 만듭니다. */}
                             <SearchableSelect 
                                 id={`product-search-${idx}`} 
                                 options={productOptions} 
@@ -807,11 +850,9 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                                 onClick={() => handleProductClick(idx)} 
                                 onSearch={handleSearchProducts} 
                                 onOuterFocus={() => {
-                                  // 마지막 줄에 포커스가 닿으면 한 줄 추가
                                   if (idx === items.length - 1) addItem();
                                 }}
                                 onTabPress={() => {
-                                  // Tab 누르면 현재 줄의 Disc% 칸으로 바로 텔레포트
                                   document.getElementById(`disc-input-${idx}`)?.focus();
                                 }} 
                             />

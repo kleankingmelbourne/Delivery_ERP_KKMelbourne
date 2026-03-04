@@ -1,7 +1,7 @@
-// src/components/providers/AuthProvider.tsx
 "use client";
 
-import { createContext, useContext, ReactNode } from "react";
+import { createContext, useContext, ReactNode, useEffect, useState } from "react";
+import { createClient } from "@/utils/supabase/client";
 
 // 1. 담아둘 데이터의 모양(Type)을 정의합니다.
 type AuthContextType = {
@@ -9,12 +9,13 @@ type AuthContextType = {
   profile: any | null;
   currentUserName: string;
   productUnits: any[];
+  // ✅ [추가] 회사 위치 & 드라이버 본인 집 위치 전역 저장
+  companyLocation: { lat: number; lng: number; address: string } | null;
+  driverLocation: { lat: number; lng: number; address: string } | null; 
 };
 
-// 2. 빈 그릇(Context)을 만듭니다.
 const AuthContext = createContext<AuthContextType | null>(null);
 
-// 3. 데이터를 채워서 하위 컴포넌트들에 뿌려주는 공급자(Provider) 컴포넌트입니다.
 export function AuthProvider({ 
   children, 
   user, 
@@ -26,17 +27,54 @@ export function AuthProvider({
   profile: any;
   productUnits: any[];
 }) {
-  // 이름 계산 로직을 여기서 한 번만 처리해 둡니다.
   const currentUserName = profile?.display_name || user?.email?.split('@')[0] || "Unknown";
+  
+  // ✅ 위치 상태 변수 2개 준비
+  const [companyLocation, setCompanyLocation] = useState<{ lat: number; lng: number; address: string } | null>(null);
+  const [driverLocation, setDriverLocation] = useState<{ lat: number; lng: number; address: string } | null>(null);
+
+  useEffect(() => {
+    // 🚨 프로필이 있고, 드라이버 권한일 때만 좌표를 가져옴
+    const isDriver = profile?.user_level?.toLowerCase() === 'driver' || profile?.role === 'driver';
+
+    if (isDriver && user?.id) {
+      const fetchLocations = async () => {
+        const supabase = createClient();
+        
+        // 🚀 회사 설정과 기사 본인의 프로필에서 좌표를 동시에 가져옵니다. (0.1초 컷)
+        const [compRes, profRes] = await Promise.all([
+          supabase.from('company_settings').select('lat, lng, address_line1, address_line2, suburb, state, postcode').maybeSingle(),
+          supabase.from('profiles').select('lat, lng, address').eq('id', user.id).single()
+        ]);
+
+        // 1. 회사 좌표 저장
+        if (compRes.data && compRes.data.lat && compRes.data.lng) {
+          const fullAddress = [compRes.data.address_line1, compRes.data.address_line2, compRes.data.suburb, compRes.data.state, compRes.data.postcode]
+            .filter(p => p && p.trim() !== "").join(", ");
+          setCompanyLocation({ lat: compRes.data.lat, lng: compRes.data.lng, address: fullAddress });
+        }
+
+        // 2. 드라이버 집 좌표 저장
+        if (profRes.data && profRes.data.lat && profRes.data.lng) {
+          setDriverLocation({ 
+            lat: profRes.data.lat, 
+            lng: profRes.data.lng, 
+            address: profRes.data.address || profile?.address || "" 
+          });
+        }
+      };
+      
+      fetchLocations();
+    }
+  }, [profile, user]);
 
   return (
-    <AuthContext.Provider value={{ user, profile, currentUserName, productUnits }}>
+    <AuthContext.Provider value={{ user, profile, currentUserName, productUnits, companyLocation, driverLocation }}>
       {children}
     </AuthContext.Provider>
   );
 }
 
-// 4. 어디서든 쉽게 꺼내 쓸 수 있도록 도와주는 커스텀 훅입니다.
 export function useAuth() {
   const context = useContext(AuthContext);
   if (!context) {

@@ -247,7 +247,6 @@ export default function SetDeliveryPage() {
       });
   };
 
-  // ✅ [수정] Picking List -> Excel (with Borders)
   const handleGeneratePickingList = () => {
     if (selectedColumns.size === 0) return alert("Please select drivers first.");
 
@@ -307,7 +306,6 @@ export default function SetDeliveryPage() {
     });
     const driverTitle = Array.from(driverNamesSet).join(', ');
 
-    // 🚀 새 탭 열기 (스타일 적용 스크립트 포함)
     const printWindow = window.open('', '', 'width=900,height=700');
     if (!printWindow) return;
 
@@ -363,11 +361,9 @@ export default function SetDeliveryPage() {
           </style>
           <script>
             function exportToExcel() {
-                // 1. 테이블 원본 복사
                 var originalTable = document.getElementById("pickingTable");
                 var tableClone = originalTable.cloneNode(true);
                 
-                // 2. 제목 및 날짜 행 추가 (엑셀 상단)
                 var titleRow = tableClone.insertRow(0);
                 var titleCell = titleRow.insertCell(0);
                 titleCell.colSpan = 5;
@@ -381,14 +377,11 @@ export default function SetDeliveryPage() {
                 var emptyRow = tableClone.insertRow(2);
                 emptyRow.insertCell(0).colSpan = 5;
 
-                // 3. 워크북 생성
                 var wb = XLSX.utils.table_to_book(tableClone, {sheet: "Picking List"});
                 var ws = wb.Sheets["Picking List"];
 
-                // 4. [핵심] 테두리 스타일 적용 (데이터 영역만)
                 var range = XLSX.utils.decode_range(ws['!ref']);
                 
-                // 스타일 정의 (검은색 얇은 테두리)
                 var borderStyle = {
                     top: { style: "thin", color: { rgb: "000000" } },
                     bottom: { style: "thin", color: { rgb: "000000" } },
@@ -396,36 +389,27 @@ export default function SetDeliveryPage() {
                     right: { style: "thin", color: { rgb: "000000" } }
                 };
 
-                // 헤더(Row 3)부터 끝까지 반복
                 for(var R = 3; R <= range.e.r; ++R) {
                     for(var C = range.s.c; C <= range.e.c; ++C) {
                         var cell_address = {c:C, r:R};
                         var cell_ref = XLSX.utils.encode_cell(cell_address);
                         
-                        // 셀이 존재하지 않으면 빈 셀 객체 생성
                         if(!ws[cell_ref]) ws[cell_ref] = { t: "s", v: "" };
-                        
                         if(!ws[cell_ref].s) ws[cell_ref].s = {};
-                        
-                        // 테두리 적용
                         ws[cell_ref].s.border = borderStyle;
                         
-                        // 제목/헤더 행 스타일
                         if (R === 3) {
                             ws[cell_ref].s.font = { bold: true };
                             ws[cell_ref].s.fill = { fgColor: { rgb: "EEEEEE" } };
                             ws[cell_ref].s.alignment = { horizontal: "center", vertical: "center" };
-                        } 
-                        // 데이터 행 스타일 (가운데 정렬 등)
-                        else {
-                            if(C === 1 || C === 2) { // Unit, Qty
+                        } else {
+                            if(C === 1 || C === 2) {
                                 ws[cell_ref].s.alignment = { horizontal: "center" };
                             }
                         }
                     }
                 }
 
-                // 5. 제목 스타일 (병합된 셀)
                 var titleRef = XLSX.utils.encode_cell({c:0, r:0});
                 if(ws[titleRef]) {
                     if(!ws[titleRef].s) ws[titleRef].s = {};
@@ -438,7 +422,6 @@ export default function SetDeliveryPage() {
                     ws[metaRef].s.alignment = { horizontal: "center" };
                 }
 
-                // 6. 진짜 엑셀 파일 다운로드
                 XLSX.writeFile(wb, "Picking_List_${selectedDate}.xlsx");
             }
           </script>
@@ -480,7 +463,6 @@ export default function SetDeliveryPage() {
     printWindow.document.write(htmlContent);
     printWindow.document.close();
   };
-
 
   const handleAddDriver = (driverId: string) => {
     const driverToAdd = allStaff.find(s => s.id === driverId);
@@ -575,10 +557,22 @@ export default function SetDeliveryPage() {
       }
 
       const updates = changedInvoices.map(inv => {
+        const original = originalInvoicesMap.get(inv.id);
         const runToSave = inv.current_driver_id ? (inv.current_run || 1) : 0;
+        
+        // ✅ [핵심 추가] 기사가 변경되었거나 새롭게 배정된 경우 delivery_order를 0으로 초기화
+        let orderToSave = inv.delivery_order;
+        if (
+            (original && inv.current_driver_id !== original.current_driver_id) || // 기사가 바뀌었을 때
+            (original && !original.current_driver_id && inv.current_driver_id)    // 미배정에서 배정으로 갔을 때
+        ) {
+            orderToSave = 0;
+        }
+
         return supabase.from("invoices").update({ 
             driver_id: inv.current_driver_id, 
-            delivery_run: runToSave
+            delivery_run: runToSave,
+            delivery_order: orderToSave // 순서 0으로 초기화!
         }).eq("id", inv.id);
       });
 
@@ -590,10 +584,19 @@ export default function SetDeliveryPage() {
           const isChanged = changedInvoices.some(c => c.id === inv.id);
           const isAssigned = !!inv.current_driver_id;
           
+          let updatedOrder = inv.delivery_order;
+          if (isChanged) {
+              const original = originalInvoicesMap.get(inv.id);
+              if ((original && inv.current_driver_id !== original.current_driver_id) || (original && !original.current_driver_id && inv.current_driver_id)) {
+                  updatedOrder = 0;
+              }
+          }
+
           const updatedInv = { 
               ...inv, 
               is_new_arrival: !isAssigned, 
-              delivery_run: isAssigned ? (inv.current_run || 1) : 0
+              delivery_run: isAssigned ? (inv.current_run || 1) : 0,
+              delivery_order: updatedOrder
           };
           
           newMap.set(updatedInv.id, updatedInv);

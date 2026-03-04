@@ -94,10 +94,10 @@ export default function ProductPage() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  
   const { productUnits } = useAuth();
 
   const initialFormState = {
+    id: "", 
     buy_price: 0,
     sell_price_ctn: 0,
     margin_ctn: 0,
@@ -120,16 +120,11 @@ export default function ProductPage() {
   };
   const [formData, setFormData] = useState<any>(initialFormState);
 
-  // 🚀 [핵심 최적화] Data Fetching Logic
-  // 여러 개의 비동기 함수를 하나로 통합하고 Promise.all을 통해 "단 한 번의 병렬 통신"으로 압축했습니다.
   const fetchAllData = async () => {
     setLoading(true);
     
     try {
-      // 1. 필요한 모든 데이터를 한 번에 던집니다 (Parallel Execution)
-      // Products 테이블은 꼭 필요한 컬럼만 지정하여 데이터 다이어트를 수행했습니다.
       const [categoriesRes, vendorsRes, productsRes] = await Promise.all([
-        //supabase.from("product_units").select("id, unit_name"),
         supabase.from("product_categories").select("id, category_name"),
         supabase.from("product_vendors").select("id, vendor_name"),
         supabase.from("products").select(`
@@ -138,10 +133,9 @@ export default function ProductPage() {
             sell_price_ctn, margin_ctn, sell_price_pack, margin_pack, buy_price,
             current_stock_level, current_stock_level_pack, min_stock_level, product_image, is_active,
             product_units(unit_name)
-        `).order("id", { ascending: false }).limit(5000) // 💡 루프를 제거하고 limit(5000)으로 한방에 가져옵니다.
+        `).order("id", { ascending: false }).limit(5000)
       ]);
 
-      // 2. Reference Data (드롭다운 및 맵핑 데이터) 조립
       const newSchema = JSON.parse(JSON.stringify(PRODUCT_SCHEMA));
       const uMap: Record<string, string> = {};
       const vMap: Record<string, string> = {};
@@ -172,7 +166,6 @@ export default function ProductPage() {
       setVendorMap(vMap);
       setDynamicSchema(newSchema);
 
-      // 3. Product Data 처리 (Stock Value 및 Low Stock 계산)
       if (productsRes.data) {
         const calculatedData = productsRes.data.map((item: any) => {
           const price = Number(item.buy_price) || 0;
@@ -189,7 +182,6 @@ export default function ProductPage() {
           };
         });
 
-        // 대시보드 통계 업데이트
         const totalCount = calculatedData.length;
         const activeCount = calculatedData.filter((p: any) => p.is_active).length;
         setTotalProductsDisplay(`${activeCount} / ${totalCount}`);
@@ -222,7 +214,6 @@ export default function ProductPage() {
     fetchAllData();
   }, []);
 
-  // --- Export Function ---
   const handleExport = async () => {
     const exportData = products.map(p => ({
         id: p.id, 
@@ -261,7 +252,6 @@ export default function ProductPage() {
     document.body.removeChild(link);
   };
 
-  // --- Import Function ---
   const handleImportClick = () => {
     if (fileInputRef.current) {
         fileInputRef.current.value = ""; 
@@ -286,40 +276,74 @@ export default function ProductPage() {
                 return;
             }
 
-            const upsertData = rows.map(row => {
-                if (!row.product_name) return null;
-                return {
-                    ...(row.id && row.id.trim() !== "" ? { id: row.id } : {}),
-                    product_name: row.product_name,
-                    is_active: String(row.is_active).toUpperCase() === 'TRUE', 
-                    product_barcode: row.product_barcode || null,
-                    vendor_product_id: row.vendor_product_id || null,
-                    location: row.location || null,
-                    gst: String(row.gst).toUpperCase() === 'TRUE',
-                    category_id: row.category_id || null,
-                    vendor_id: row.vendor_id || null,
-                    default_unit_id: row.default_unit_id || null,
-                    total_pack_ctn: Number(row.total_pack_ctn) || 1,
-                    sell_price_ctn: Number(row.sell_price_ctn) || 0,
-                    margin_ctn: Number(row.margin_ctn) || 0,
-                    sell_price_pack: Number(row.sell_price_pack) || 0,
-                    margin_pack: Number(row.margin_pack) || 0,
-                    buy_price: Number(row.buy_price) || 0,
-                    current_stock_level: Number(row.current_stock_level) || 0,
-                    current_stock_level_pack: Number(row.current_stock_level_pack) || 0,
-                    min_stock_level: Number(row.min_stock_level) || 0,
-                    product_image: row.product_image || null,
-                };
-            }).filter(Boolean); 
-
             try {
+                // ✅ [수정] 엑셀 올릴 때도 기존 가장 큰 P번호 찾아서 이어가기
+                const { data: lastProd } = await supabase
+                    .from('products')
+                    .select('id')
+                    .like('id', 'P%')
+                    .order('id', { ascending: false })
+                    .limit(1)
+                    .maybeSingle();
+
+                let currentMaxIdNumber = 0;
+                if (lastProd?.id) {
+                    const match = lastProd.id.match(/^P(\d{5})$/);
+                    if (match) currentMaxIdNumber = parseInt(match[1], 10);
+                }
+
+                // 엑셀 파일 내부에 이미 P번호가 있다면 비교해서 제일 높은 번호 갱신
+                rows.forEach((row: any) => {
+                    const id = row.id?.trim();
+                    if (id) {
+                        const match = id.match(/^P(\d{5})$/);
+                        if (match) {
+                            const num = parseInt(match[1], 10);
+                            if (num > currentMaxIdNumber) currentMaxIdNumber = num;
+                        }
+                    }
+                });
+
+                const upsertData = rows.map(row => {
+                    if (!row.product_name) return null;
+                    
+                    let rowId = row.id?.trim();
+                    if (!rowId) {
+                        currentMaxIdNumber++;
+                        rowId = `P${String(currentMaxIdNumber).padStart(5, '0')}`;
+                    }
+
+                    return {
+                        id: rowId,
+                        product_name: row.product_name,
+                        is_active: String(row.is_active).toUpperCase() === 'TRUE', 
+                        product_barcode: row.product_barcode || null,
+                        vendor_product_id: row.vendor_product_id || null,
+                        location: row.location || null,
+                        gst: String(row.gst).toUpperCase() === 'TRUE',
+                        category_id: row.category_id || null,
+                        vendor_id: row.vendor_id || null,
+                        default_unit_id: row.default_unit_id || null,
+                        total_pack_ctn: Number(row.total_pack_ctn) || 1,
+                        sell_price_ctn: Number(row.sell_price_ctn) || 0,
+                        margin_ctn: Number(row.margin_ctn) || 0,
+                        sell_price_pack: Number(row.sell_price_pack) || 0,
+                        margin_pack: Number(row.margin_pack) || 0,
+                        buy_price: Number(row.buy_price) || 0,
+                        current_stock_level: Number(row.current_stock_level) || 0,
+                        current_stock_level_pack: Number(row.current_stock_level_pack) || 0,
+                        min_stock_level: Number(row.min_stock_level) || 0,
+                        product_image: row.product_image || null,
+                    };
+                }).filter(Boolean); 
+
                 const { error } = await supabase
                     .from('products')
                     .upsert(upsertData, { onConflict: 'id' }); 
 
                 if (error) throw error;
                 alert(`Successfully imported/updated ${upsertData.length} items.`);
-                fetchAllData(); // 💡 fetchProduct 대신 통합 함수 호출
+                fetchAllData();
             } catch (error: any) {
                 console.error("Import Error:", error);
                 alert("Import failed: " + error.message);
@@ -335,7 +359,6 @@ export default function ProductPage() {
     });
   };
 
-  // --- 3. Form Handling ---
   useEffect(() => {
     if (isModalOpen) {
         if (editingProduct) {
@@ -506,20 +529,43 @@ export default function ProductPage() {
           .eq("id", editingProduct.id);
         if (error) throw error;
       } else {
+        // ✅ [수정] 새 상품 생성 시 P00000 포맷으로 ID 자동 생성
+        const { data: lastProd } = await supabase
+            .from('products')
+            .select('id')
+            .like('id', 'P%')
+            .order('id', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+        let currentMax = 0;
+        if (lastProd?.id) {
+            const match = lastProd.id.match(/^P(\d{5})$/);
+            if (match) {
+                currentMax = parseInt(match[1], 10);
+            }
+        }
+        const finalId = `P${String(currentMax + 1).padStart(5, '0')}`;
+
         const { error } = await supabase
           .from("products")
-          .insert(dbPayload);
+          .insert({
+              ...dbPayload,
+              id: finalId 
+          });
         if (error) throw error;
       }
 
-      await fetchAllData(); // 💡 갱신 시에도 통합 함수 호출
+      await fetchAllData(); 
       setIsModalOpen(false);
       setEditingProduct(null);
       setImageFile(null);
       alert("Product saved successfully!");
     } catch (error: any) {
       console.error("Save Error:", error);
-      if (error.message.includes("products_product_barcode_key")) {
+      if (error.message?.includes("products_pkey")) {
+        alert("Error: This Product ID already exists.");
+      } else if (error.message?.includes("products_product_barcode_key")) {
         alert("Error: This barcode already exists. Please generate a new one.");
       } else {
         alert("Error saving product: " + error.message);
@@ -562,14 +608,13 @@ export default function ProductPage() {
 
         alert("Deleted successfully.");
         setSelectedIds(new Set());
-        fetchAllData(); // 💡 삭제 후 데이터 갱신
+        fetchAllData(); 
 
     } catch (error: any) {
       alert("Failed to delete: " + error.message);
     }
   };
 
-  // --- Use Handlers & Rendering ---
   const handleOpenUseModal = async (product: any) => {
     setCurrentUsageProduct(product);
     setIsUseModalOpen(true);
@@ -651,6 +696,7 @@ export default function ProductPage() {
     if (searchTerm) {
         const lowerTerm = searchTerm.toLowerCase();
         result = result.filter(p => 
+            p.id?.toLowerCase().includes(lowerTerm) || // ✅ 검색 시 ID도 포함
             p.product_name?.toLowerCase().includes(lowerTerm) ||
             p.product_barcode?.toLowerCase().includes(lowerTerm) ||
             p.vendor_product_id?.toLowerCase().includes(lowerTerm)
@@ -664,8 +710,9 @@ export default function ProductPage() {
     }
     if (sortConfig) {
       result.sort((a, b) => {
-        const valA = Number(a[sortConfig.key]) || 0;
-        const valB = Number(b[sortConfig.key]) || 0;
+        // ID 정렬도 지원하기 위해 문자열 비교 허용
+        const valA = a[sortConfig.key] || "";
+        const valB = b[sortConfig.key] || "";
         if (valA < valB) return sortConfig.direction === 'asc' ? -1 : 1;
         if (valA > valB) return sortConfig.direction === 'asc' ? 1 : -1;
         return 0;
@@ -742,8 +789,8 @@ export default function ProductPage() {
                         <SelectValue placeholder="Select..." />
                     </SelectTrigger>
                     <SelectContent>
-                        {field.options?.map((opt: any) => (
-                            <SelectItem key={opt.value} value={String(opt.value)}>{opt.label}</SelectItem>
+                        {field.options?.map((opt: any, idx: number) => (
+                            <SelectItem key={`${opt.value}-${idx}`} value={String(opt.value)}>{opt.label}</SelectItem>
                         ))}
                     </SelectContent>
                 </Select>
@@ -770,7 +817,8 @@ export default function ProductPage() {
                         }
                     }}
                     disabled={disabled || field.readOnly}
-                    className={`h-9 ${disabled ? "bg-slate-50 text-slate-300 border-slate-200" : (field.readOnly ? "bg-slate-100 text-slate-500" : "")}`}
+                    placeholder={key === 'id' ? (value ? "" : "Auto Generated (PXXXXX)") : ""}
+                    className={`h-9 ${disabled ? "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed font-mono text-xs font-bold" : (field.readOnly ? "bg-slate-100 text-slate-500" : "bg-white font-mono text-xs")}`}
                 />
             )}
         </div>
@@ -918,8 +966,8 @@ export default function ProductPage() {
                         </SelectTrigger>
                         <SelectContent>
                             <SelectItem value="all">All Categories</SelectItem>
-                            {categoryOptions.map(opt => (
-                                <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                            {categoryOptions.map((opt, idx) => (
+                                <SelectItem key={`${opt.value}-${idx}`} value={opt.value}>{opt.label}</SelectItem>
                             ))}
                         </SelectContent>
                     </Select>
@@ -934,8 +982,8 @@ export default function ProductPage() {
                         </SelectTrigger>
                         <SelectContent>
                             <SelectItem value="all">All Vendors</SelectItem>
-                            {vendorOptions.map(opt => (
-                                <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                            {vendorOptions.map((opt, idx) => (
+                                <SelectItem key={`${opt.value}-${idx}`} value={opt.value}>{opt.label}</SelectItem>
                             ))}
                         </SelectContent>
                     </Select>
@@ -965,8 +1013,12 @@ export default function ProductPage() {
                                 onCheckedChange={(c) => handleSelectAll(!!c)}
                             />
                         </th>
-                        <th className="px-4 py-3 w-[25%] truncate">Product Name</th>
-                        <th className="px-4 py-3 w-[15%] truncate">Vendor ID</th>
+                        {/* ✅ [추가] Product ID 컬럼을 Table 헤더에 추가 */}
+                        <th className="px-4 py-3 w-[10%] truncate cursor-pointer hover:bg-slate-100" onClick={() => handleSort('id')}>
+                            <div className="flex items-center gap-1">ID <ArrowUpDown className="w-3 h-3"/></div>
+                        </th>
+                        <th className="px-4 py-3 w-[20%] truncate">Product Name</th>
+                        <th className="px-4 py-3 w-[10%] truncate">Vendor ID</th>
                         <th className="px-4 py-3 w-[10%] text-right cursor-pointer hover:bg-slate-100 truncate" onClick={() => handleSort('stock_value')}>
                             <div className="flex items-center justify-end gap-1">Value <ArrowUpDown className="w-3 h-3"/></div>
                         </th>
@@ -978,7 +1030,7 @@ export default function ProductPage() {
                         <th className="px-4 py-3 w-[10%] text-center cursor-pointer hover:bg-slate-100 truncate" onClick={() => handleSort('current_stock_level')}>
                             <div className="flex items-center justify-center gap-1">Stock <ArrowUpDown className="w-3 h-3"/></div>
                         </th>
-                        <th className="px-4 py-3 w-[10%] text-center truncate">Actions</th>
+                        <th className="px-4 py-3 w-[5%] text-center truncate">Actions</th>
                     </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -1006,6 +1058,10 @@ export default function ProductPage() {
                                             checked={isSelected}
                                             onCheckedChange={() => handleSelectOne(product.id)}
                                         />
+                                    </td>
+                                    {/* ✅ [추가] Product ID 컬럼 데이터를 화면에 출력 */}
+                                    <td className="px-4 py-3 font-mono text-xs text-slate-500 truncate" title={product.id}>
+                                        {product.id}
                                     </td>
                                     <td className="px-4 py-3 font-medium text-slate-900 truncate" title={product.product_name}>
                                         <div className="flex items-center gap-2 overflow-hidden">
@@ -1096,8 +1152,11 @@ export default function ProductPage() {
                         </h3>
                         {renderField('is_active')}
                     </div>
+                    
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                        <div className="md:col-span-3">{renderField('product_name')}</div>
+                        {/* ID는 무조건 읽기전용(true) */}
+                        <div className="md:col-span-1">{renderField('id', 'Product ID', '', true)}</div>
+                        <div className="md:col-span-2">{renderField('product_name')}</div>
                         <div className="md:col-span-1">{renderField('location')}</div>
                         
                         <div className="md:col-span-2">{renderField('category_id')}</div>

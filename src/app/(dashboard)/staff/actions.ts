@@ -53,7 +53,9 @@ export async function saveStaffAction(data: any, isEdit: boolean, targetId?: str
           birth_date: data.birth_date,
           user_level: data.user_level,
           login_permit: data.login_permit,
-          status: initialStatus // 상태 자동 설정
+          status: initialStatus, // 상태 자동 설정
+          lat: data.lat, // ✅ [추가] 위도 저장
+          lng: data.lng  // ✅ [추가] 경도 저장
         })
         .eq("id", newUser.user.id);
 
@@ -80,6 +82,8 @@ export async function saveStaffAction(data: any, isEdit: boolean, targetId?: str
         address: data.address,
         birth_date: data.birth_date,
         updated_at: new Date().toISOString(),
+        lat: data.lat, // ✅ [추가] 위도 업데이트
+        lng: data.lng  // ✅ [추가] 경도 업데이트
       };
 
       // ADMIN 전용 수정 항목
@@ -125,10 +129,7 @@ export async function saveStaffAction(data: any, isEdit: boolean, targetId?: str
   return { success: false, error: "Invalid Request" };
 }
 
-// ... (deleteStaffAction은 기존과 동일) ...
 export async function deleteStaffAction(ids: string[]) {
-    // 기존에 수정한 FK 해제 로직이 포함된 코드를 그대로 사용하세요.
-    // (이전 답변의 deleteStaffAction 코드 유지)
     const supabase = await createServerClient();
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return { success: false, error: "Login required" };
@@ -179,8 +180,6 @@ export async function sendPasswordResetEmailAction(email: string) {
 
   try {
     // 3. 재설정 메일 발송
-    // redirectTo: 사용자가 메일의 링크를 클릭했을 때 이동할 주소입니다.
-    // (이 주소에서 새 비밀번호를 입력받는 로직이 있어야 합니다. 보통 /update-password 같은 경로)
     const { error } = await supabaseAdmin.auth.resetPasswordForEmail(email, {
       redirectTo: `${process.env.NEXT_PUBLIC_BASE_URL}/auth/callback?next=/update-password`,
     });

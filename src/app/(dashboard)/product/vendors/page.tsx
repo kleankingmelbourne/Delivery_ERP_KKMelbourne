@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect, useMemo, useRef } from "react"
 import { createClient } from "@/utils/supabase/client"
 import { 
   Plus, Search, MoreHorizontal, Edit, Trash2, Loader2, 
@@ -52,7 +52,6 @@ export default function VendorPage() {
   const [searchTerm, setSearchTerm] = useState("")
   const [currentPage, setCurrentPage] = useState(1)
   
-  // [NEW] 한 페이지에 표시할 개수 상태 추가
   const [itemsPerPage, setItemsPerPage] = useState<number | 'all'>(10)
   
   const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' } | null>(null)
@@ -77,58 +76,113 @@ export default function VendorPage() {
   const [addressSuggestions, setAddressSuggestions] = useState<any[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [isSearchingAddress, setIsSearchingAddress] = useState(false);
+  const [addressHighlightedIndex, setAddressHighlightedIndex] = useState(0);
+  const searchCache = useRef<Record<string, any[]>>({});
 
-  // 단순 입력 핸들러 (API 호출 제거)
+  // 단순 입력 핸들러
   const handleAddressChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setFormData(prev => ({ ...prev, address: e.target.value }));
-    // 사용자가 타이핑을 시작하면 드롭다운을 열 준비를 합니다.
     if (e.target.value.length >= 3) {
       setShowSuggestions(true);
     }
   };
 
   // 디바운싱 useEffect (0.5초 대기 후 서버 요청)
-  useEffect(() => {
-    // 1. 드롭다운이 닫혀있거나, 주소가 짧으면 검색 안 함
-    if (!showSuggestions || !formData.address || formData.address.length < 3) {
+useEffect(() => {
+    const query = formData.address;
+
+    if (!showSuggestions || !query || query.length < 3) {
       setAddressSuggestions([]);
       return;
     }
 
-    // 2. 타이머 설정 (0.5초 디바운싱)
+    // 이미 검색했던 주소라면 API 호출 없이 캐시에서 즉시 불러옴 (딜레이 0초)
+    if (searchCache.current[query]) {
+        setAddressSuggestions(searchCache.current[query]);
+        setAddressHighlightedIndex(0);
+        return;
+    }
+
+    // 🚀 기존 500ms -> 200ms로 대기 시간 단축 (너무 짧으면 API 비용이 증가하므로 200이 최적)
     const timer = setTimeout(async () => {
       setIsSearchingAddress(true);
       try {
-        const suggestions = await getPlaceSuggestions(formData.address);
+        const suggestions = await getPlaceSuggestions(query);
+        
+        // 검색 결과를 캐시에 저장
+        searchCache.current[query] = suggestions;
+        
         setAddressSuggestions(suggestions);
+        setAddressHighlightedIndex(0); 
       } catch (err) {
         console.error(err);
       } finally {
         setIsSearchingAddress(false);
       }
-    }, 500); // 500ms 딜레이
+    }, 200);
 
-    // 3. 클린업 (사용자가 계속 타이핑하면 이전 타이머 취소)
     return () => clearTimeout(timer);
   }, [formData.address, showSuggestions]);
 
+  // 🚀 [핵심 수정 1] 키보드(엔터/방향키) 동작 완벽 제어
+  const handleAddressKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (!showSuggestions || addressSuggestions.length === 0) return;
 
-  // 주소 선택 핸들러
+      if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          setAddressHighlightedIndex(prev => (prev < addressSuggestions.length - 1 ? prev + 1 : prev));
+      } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          setAddressHighlightedIndex(prev => (prev > 0 ? prev - 1 : 0));
+      } else if (e.key === 'Enter') {
+          e.preventDefault(); // 폼 제출 등 엉뚱한 동작 방지
+          e.stopPropagation();
+          const selected = addressSuggestions[addressHighlightedIndex];
+          if (selected) {
+              handleSelectAddress(selected.place_id, selected.description);
+          }
+      } else if (e.key === 'Escape') {
+          setShowSuggestions(false);
+      }
+  };
+
+  // 🚀 [핵심 수정 2] Shop 1 등 서브 주소 절대 안 날아가는 철통 방어 로직
   const handleSelectAddress = async (placeId: string, description: string) => {
-    // 선택 시 드롭다운을 닫아서 useEffect가 다시 발동하지 않도록 함
     setShowSuggestions(false); 
-    setFormData(prev => ({ ...prev, address: description }));
     
-    // 상세 주소 가져오기
-    const details = await getPlaceDetails(placeId);
-    if (details) {
-        setFormData(prev => ({
-            ...prev,
-            address: details.address,
-            suburb: details.suburb,
-            state: details.state,
-            postcode: details.postcode
-        }));
+    // 1. Google 자동완성 description 예: "Shop 1/5 Main St, Box Hill VIC, Australia"
+    // 혹은 "Shop 1, 5 Main St, Box Hill VIC, Australia"
+    // 뒤에서부터 뻔한 지역 정보(호주, 주/우편번호)만 정확하게 떼어냅니다.
+    const parts = description.split(',').map(s => s.trim());
+    
+    if (parts.length > 2) {
+        parts.pop(); // 맨 끝 'Australia' 제거
+        parts.pop(); // 그 앞의 'Box Hill VIC' 제거
+    } else if (parts.length === 2) {
+        parts.pop(); // 예외적으로 2개일 때 맨 끝 제거
+    }
+    
+    // 남은 조각들을 다시 합치면 'Shop 1, 5 Main St' 만 깔끔하게 남습니다!
+    const refinedAddress = parts.join(', ').trim();
+
+    // 화면(Input)에 즉시 샵 번호가 포함된 주소 표시 (깜빡임 방지)
+    setFormData(prev => ({ ...prev, address: refinedAddress }));
+    
+    try {
+        // 백그라운드에서 suburb, state, postcode를 가져옵니다.
+        const details = await getPlaceDetails(placeId);
+        
+        if (details) {
+            setFormData(prev => ({
+                ...prev,
+                address: refinedAddress, // 잘라둔 주소 절대 사수
+                suburb: details.suburb || prev.suburb,
+                state: details.state || prev.state,
+                postcode: details.postcode || prev.postcode
+            }));
+        }
+    } catch (e) {
+        console.error("Map Details Error:", e);
     }
   };
 
@@ -258,7 +312,6 @@ export default function VendorPage() {
     return result
   }, [vendors, searchTerm, sortConfig])
 
-  // [NEW] 페이지네이션 로직 적용
   const currentItemsPerPage = itemsPerPage === 'all' ? processedData.length : itemsPerPage
   const totalPages = currentItemsPerPage > 0 ? Math.ceil(processedData.length / currentItemsPerPage) : 1
   
@@ -328,13 +381,12 @@ export default function VendorPage() {
         <div className="p-4 border-b border-slate-100 flex flex-col md:flex-row items-center justify-between bg-slate-50/50 gap-4">
           <div className="flex items-center gap-3 w-full md:w-auto flex-1">
             
-            {/* [NEW] Row Count Selector */}
             <div className="w-[130px]">
                 <Select 
                     value={String(itemsPerPage)} 
                     onValueChange={(val) => {
                         setItemsPerPage(val === 'all' ? 'all' : Number(val));
-                        setCurrentPage(1); // 옵션 변경 시 1페이지로 리셋
+                        setCurrentPage(1); 
                     }}
                 >
                     <SelectTrigger className="bg-white">
@@ -361,7 +413,7 @@ export default function VendorPage() {
                 value={searchTerm}
                 onChange={(e) => {
                   setSearchTerm(e.target.value);
-                  setCurrentPage(1); // 검색 시 1페이지로 리셋
+                  setCurrentPage(1); 
                 }}
               />
             </div>
@@ -510,7 +562,7 @@ export default function VendorPage() {
                 </div>
             </div>
 
-            {/* Address Info (Server Action + Custom Dropdown + Debounce) */}
+            {/* Address Info */}
             <div className="border p-4 rounded-xl bg-slate-50/50">
                 <h3 className="text-sm font-bold text-slate-900 mb-3 flex items-center gap-2">
                     <MapPin className="w-4 h-4 text-slate-500" /> Address (Auto-fill by Google)
@@ -523,9 +575,11 @@ export default function VendorPage() {
                             <MapPin className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
                             <Input 
                                 placeholder="Start typing address..." 
+                                autoComplete="off" // 브라우저 기본 자동완성 끄기
                                 className="pl-9 bg-white border-blue-200 focus:border-blue-500 transition-colors"
                                 value={formData.address}
                                 onChange={handleAddressChange} 
+                                onKeyDown={handleAddressKeyDown}
                                 onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
                                 onFocus={() => formData.address && formData.address.length >= 3 && setShowSuggestions(true)}
                             />
@@ -536,11 +590,12 @@ export default function VendorPage() {
                         {/* Suggestions Dropdown */}
                         {showSuggestions && addressSuggestions.length > 0 && (
                             <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                                {addressSuggestions.map((prediction) => (
+                                {addressSuggestions.map((prediction, index) => (
                                     <div
                                         key={prediction.place_id}
-                                        className="px-4 py-2 text-sm hover:bg-blue-50 cursor-pointer flex items-center gap-2"
-                                        onMouseDown={() => handleSelectAddress(prediction.place_id, prediction.description)}
+                                        className={`px-4 py-2 text-sm cursor-pointer flex items-center gap-2 ${index === addressHighlightedIndex ? 'bg-blue-50 text-slate-900' : 'hover:bg-blue-50'}`}
+                                        onMouseEnter={() => setAddressHighlightedIndex(index)}
+                                        onMouseDown={(e) => { e.preventDefault(); handleSelectAddress(prediction.place_id, prediction.description); }}
                                     >
                                         <MapPin className="w-3 h-3 text-slate-400 flex-shrink-0" />
                                         <span className="truncate">{prediction.description}</span>

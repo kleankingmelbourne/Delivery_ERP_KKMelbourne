@@ -1,16 +1,17 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { 
   X, Save, Eye, EyeOff, CheckCircle2, XCircle, 
-  Ban, ShieldCheck, Loader2, ChevronDown, MapPin, Users 
+  Ban, ShieldCheck, Loader2, ChevronDown, MapPin, Users
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { cn } from "@/lib/utils";
 
 // 📍 Server Action 임포트
 import { getPlaceSuggestions, getPlaceDetails } from "@/app/actions/google-maps";
@@ -37,9 +38,16 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
   const [suggestions, setSuggestions] = useState<any[]>([]);
   const [activeSearchField, setActiveSearchField] = useState<'billing' | 'delivery' | null>(null);
   const [isSearching, setIsSearching] = useState(false);
+  const [addressHighlightedIndex, setAddressHighlightedIndex] = useState(0); 
+
+  // 🚀 [추가] 외부 클릭 감지를 위한 Ref
+  const billingRef = useRef<HTMLDivElement>(null);
+  const deliveryRef = useRef<HTMLDivElement>(null);
+
+  const searchCache = useRef<Record<string, any[]>>({});
 
   const initialData = {
-    name: "", company: "", email: "", password: "", mobile: "", tel: "", abn: "",
+    name: "", company: "", email: "", password: "", contact_name: "", mobile: "", tel: "", abn: "",
     group_id: "", 
     in_charge_sale: "",     
     in_charge_delivery: "", 
@@ -52,7 +60,22 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
 
   const [formData, setFormData] = useState(initialData);
 
-  // 1. 기초 데이터 Fetching
+  // 🚀 [추가] 외부 클릭 시 자동 완성 목록 닫기 로직
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (activeSearchField === 'billing' && billingRef.current && !billingRef.current.contains(event.target as Node)) {
+        setActiveSearchField(null);
+        setSuggestions([]);
+      }
+      if (activeSearchField === 'delivery' && deliveryRef.current && !deliveryRef.current.contains(event.target as Node)) {
+        setActiveSearchField(null);
+        setSuggestions([]);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [activeSearchField]);
+
   useEffect(() => {
     const fetchData = async () => {
       try {
@@ -70,11 +93,9 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
     fetchData();
   }, [supabase]);
 
-  // 2. 데이터 세팅 및 초기화
   useEffect(() => {
     if (isOpen) {
       if (customerData) {
-        // [EDIT MODE]
         const { customer_groups, ...cleanData } = customerData;
         setFormData({
           ...initialData,
@@ -82,6 +103,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
           name: cleanData.name || "",
           company: cleanData.company || "",
           email: cleanData.email || "",
+          contact_name: cleanData.contact_name || "", 
           mobile: cleanData.mobile || "",
           tel: cleanData.tel || "",
           abn: cleanData.abn || "",
@@ -100,7 +122,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
           note: cleanData.note || "",
           credit_limit: cleanData.credit_limit || "",
           group_id: cleanData.group_id || "", 
-          in_charge_sale: cleanData.in_charge_sale || "",         
+          in_charge_sale: cleanData.in_charge_sale || "",        
           in_charge_delivery: cleanData.in_charge_delivery || "", 
           password: "", 
         });
@@ -109,7 +131,6 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
         setIsSameAddress(isSame);
 
       } else {
-        // [ADD MODE]
         setFormData(initialData);
         setIsSameAddress(false);
       }
@@ -117,6 +138,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
       setShowPassword(false);
       setSuggestions([]); 
       setActiveSearchField(null);
+      setAddressHighlightedIndex(0);
     }
   }, [isOpen, customerData]);
 
@@ -124,7 +146,6 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
     setFormData(prev => ({ ...prev, [field]: value }));
   };
 
-  // Google Maps Auto-complete Logic
   useEffect(() => {
     let isActive = true;
     const targetAddress = activeSearchField === 'billing' ? formData.address : formData.delivery_address;
@@ -134,17 +155,27 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
       return;
     }
 
+    if (searchCache.current[targetAddress]) {
+        setSuggestions(searchCache.current[targetAddress]);
+        setAddressHighlightedIndex(0);
+        return;
+    }
+
     const timer = setTimeout(async () => {
       setIsSearching(true);
       try {
         const results = await getPlaceSuggestions(targetAddress);
-        if (isActive) setSuggestions(results);
+        if (isActive) {
+            searchCache.current[targetAddress] = results; 
+            setSuggestions(results);
+            setAddressHighlightedIndex(0); 
+        }
       } catch (err) {
         console.error(err);
       } finally {
         if (isActive) setIsSearching(false);
       }
-    }, 300);
+    }, 200);
 
     return () => {
       isActive = false;
@@ -161,6 +192,27 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
     }
   };
 
+  const handleAddressKeyDown = (e: React.KeyboardEvent<HTMLInputElement>, field: 'billing' | 'delivery') => {
+      if (suggestions.length > 0) {
+          if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              setAddressHighlightedIndex(prev => (prev < suggestions.length - 1 ? prev + 1 : prev));
+          } else if (e.key === 'ArrowUp') {
+              e.preventDefault();
+              setAddressHighlightedIndex(prev => (prev > 0 ? prev - 1 : 0));
+          } else if (e.key === 'Enter') {
+              e.preventDefault();
+              const selected = suggestions[addressHighlightedIndex];
+              if (selected) {
+                  handleSelectPlace(selected.place_id, selected.description, field);
+              }
+          } else if (e.key === 'Escape') {
+              setActiveSearchField(null);
+              setSuggestions([]);
+          }
+      }
+  };
+
   const handleSelectPlace = async (placeId: string, description: string, field: 'billing' | 'delivery') => {
     setActiveSearchField(null);
     setSuggestions([]);
@@ -173,24 +225,41 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
 
     try {
         const details = await getPlaceDetails(placeId);
+        
         if (details) {
+            let refinedAddress = description;
+            
+            if (details.address && description.includes(details.address)) {
+                const endIndex = description.indexOf(details.address) + details.address.length;
+                refinedAddress = description.substring(0, endIndex);
+            } else {
+                const parts = description.split(',').map(s => s.trim());
+                if (parts.length > 0 && parts[parts.length - 1] === 'Australia') {
+                    parts.pop();
+                }
+                if (parts.length > 0 && details.suburb && parts[parts.length - 1].includes(details.suburb)) {
+                    parts.pop();
+                }
+                refinedAddress = parts.join(', ').trim();
+            }
+
             if (field === 'billing') {
                 setFormData(prev => ({
                     ...prev,
-                    address: details.address,
-                    suburb: details.suburb,
-                    state: details.state,
-                    postcode: details.postcode,
+                    address: refinedAddress, 
+                    suburb: details.suburb || prev.suburb,
+                    state: details.state || prev.state,
+                    postcode: details.postcode || prev.postcode,
                     lat: details.lat, 
                     lng: details.lng  
                 }));
             } else {
                 setFormData(prev => ({
                     ...prev,
-                    delivery_address: details.address,
-                    delivery_suburb: details.suburb,
-                    delivery_state: details.state,
-                    delivery_postcode: details.postcode,
+                    delivery_address: refinedAddress,
+                    delivery_suburb: details.suburb || prev.delivery_suburb,
+                    delivery_state: details.state || prev.delivery_state,
+                    delivery_postcode: details.postcode || prev.delivery_postcode,
                     delivery_lat: details.lat, 
                     delivery_lng: details.lng  
                 }));
@@ -202,10 +271,8 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
   };
 
   const handleSubmit = async () => {
-    // 1. 필수값 체크: 이름
     if (!formData.name) return alert("Customer Name is required.");
 
-    // 2. 필수값 체크: 비밀번호 (신규 고객일 때만 체크)
     if (!customerData?.id && (!formData.password || formData.password.trim() === "")) {
         return alert("Password is required for new customers.");
     }
@@ -213,45 +280,11 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
     setLoading(true);
     
     try {
-      // 🚨 [수정 로직 시작] 주소 변경 여부 체크
-      const isBillingAddressChanged = customerData ? (
-          customerData.address !== formData.address || 
-          customerData.suburb !== formData.suburb || 
-          customerData.postcode !== formData.postcode
-      ) : true;
-
-      const isDeliveryAddressChanged = customerData ? (
-          customerData.delivery_address !== formData.delivery_address || 
-          customerData.delivery_suburb !== formData.delivery_suburb || 
-          customerData.delivery_postcode !== formData.delivery_postcode
-      ) : true;
-
       let finalLat = formData.lat;
       let finalLng = formData.lng;
       let finalDeliveryLat = formData.delivery_lat;
       let finalDeliveryLng = formData.delivery_lng;
 
-      // 주소가 바뀌었을 때만 좌표 보정 로직 실행
-      try {
-          if (isBillingAddressChanged && (!finalLat || !finalLng) && formData.address.length > 5) {
-              const suggestions = await getPlaceSuggestions(formData.address);
-              if (suggestions.length > 0) {
-                  const details = await getPlaceDetails(suggestions[0].place_id);
-                  if (details && details.lat) { finalLat = details.lat; finalLng = details.lng; }
-              }
-          }
-          if (!isSameAddress && isDeliveryAddressChanged && (!finalDeliveryLat || !finalDeliveryLng) && formData.delivery_address.length > 5) {
-              const suggestions = await getPlaceSuggestions(formData.delivery_address);
-              if (suggestions.length > 0) {
-                  const details = await getPlaceDetails(suggestions[0].place_id);
-                  if (details && details.lat) { finalDeliveryLat = details.lat; finalDeliveryLng = details.lng; }
-              }
-          }
-      } catch (mapError) {
-          console.warn("Map Auto-fetch failed, continuing save:", mapError);
-      }
-
-      // 최종 데이터 구성
       const finalDeliveryFields = isSameAddress ? {
         delivery_address: formData.address,
         delivery_suburb: formData.suburb,
@@ -268,8 +301,6 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
         delivery_lng: finalDeliveryLng
       };
 
-      // ID 제외 및 데이터 정제
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { id, password, customer_groups, profiles, created_at, lat, lng, delivery_lat, delivery_lng, ...restData } = formData as any;
       
       const payload: any = {
@@ -283,13 +314,23 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
         in_charge_delivery: formData.in_charge_delivery || null,
       };
 
-      // 주소가 변경되지 않았다면 좌표 필드 제거 (기존 DB 값 보존)
+      const isBillingAddressChanged = customerData ? (
+          customerData.address !== formData.address || 
+          customerData.suburb !== formData.suburb || 
+          customerData.postcode !== formData.postcode
+      ) : true;
+
+      const isDeliveryAddressChanged = customerData ? (
+          customerData.delivery_address !== formData.delivery_address || 
+          customerData.delivery_suburb !== formData.delivery_suburb || 
+          customerData.delivery_postcode !== formData.delivery_postcode
+      ) : true;
+
       if (customerData && !isBillingAddressChanged) {
           delete payload.lat;
           delete payload.lng;
       }
       
-      // 배송 주소가 변경되지 않았다면 배송 좌표 필드 제거 (단, '배송지 동일' 체크가 아닐 때만)
       if (customerData && !isSameAddress && !isDeliveryAddressChanged) {
           delete payload.delivery_lat;
           delete payload.delivery_lng;
@@ -301,16 +342,13 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
 
       let error;
       
-      // 4. DB 요청
       if (customerData?.id) {
-        // [UPDATE]
         const { error: updateError } = await supabase
             .from("customers")
             .update(payload)
             .eq("id", customerData.id);
         error = updateError;
       } else {
-        // [INSERT]
         const { error: insertError } = await supabase
             .from("customers")
             .insert({ ...payload, created_at: new Date().toISOString() });
@@ -383,9 +421,11 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
                 <div className="space-y-2"><Label>Company Name</Label><Input value={formData.company} onChange={(e) => handleChange("company", e.target.value)} placeholder="Company Pty Ltd" /></div>
                 <div className="space-y-2"><Label>Email</Label><Input type="email" value={formData.email} onChange={(e) => handleChange("email", e.target.value)} placeholder="name@example.com" /></div>
                 <div className="space-y-2"><Label>Customer Group</Label><div className="relative"><select value={formData.group_id} onChange={(e) => handleChange("group_id", e.target.value)} className="flex h-10 w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-slate-900 appearance-none"><option value="">No Group</option>{groupOptions.map((g) => (<option key={g.id} value={g.id}>{g.name}</option>))}</select><ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" /></div></div>
+                <div className="space-y-2"><Label>ABN</Label><Input value={formData.abn} onChange={(e) => handleChange("abn", e.target.value)} placeholder="XX XXX XXX XXX" /></div>
+                
+                <div className="space-y-2"><Label>Contact Name</Label><Input value={formData.contact_name} onChange={(e) => handleChange("contact_name", e.target.value)} placeholder="Manager or Contact Person" /></div>
                 <div className="space-y-2"><Label>Mobile</Label><Input value={formData.mobile} onChange={(e) => handleChange("mobile", e.target.value)} placeholder="0400 000 000" /></div>
                 <div className="space-y-2"><Label>Tel</Label><Input value={formData.tel} onChange={(e) => handleChange("tel", e.target.value)} placeholder="03 0000 0000" /></div>
-                <div className="space-y-2"><Label>ABN</Label><Input value={formData.abn} onChange={(e) => handleChange("abn", e.target.value)} placeholder="XX XXX XXX XXX" /></div>
               </div>
             </section>
 
@@ -406,14 +446,18 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
             </section>
 
             <section className="space-y-8">
-              <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider border-b pb-2 flex items-center gap-2">
-                  Address Details 
-                  <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full border border-blue-200 font-normal normal-case">Google Maps Auto-complete</span>
+              <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider border-b pb-2 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    Address Details 
+                    <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full border border-blue-200 font-normal normal-case">Google Maps Auto-complete</span>
+                  </div>
               </h3>
               
-              <div className="bg-slate-50 p-5 rounded-lg border border-slate-200 space-y-4 relative">
-                <h4 className="font-bold text-slate-800 flex items-center gap-2"><MapPin className="w-4 h-4 text-blue-600"/> Billing Address</h4>
-                
+              {/* Billing Address Section */}
+              <div ref={billingRef} className="bg-slate-50 p-5 rounded-lg border border-slate-200 space-y-4 relative">
+                <h4 className="font-bold text-slate-800 flex items-center gap-2">
+                    <MapPin className="w-4 h-4 text-blue-600"/> Billing Address
+                </h4>
                 <div className="space-y-3 pt-2">
                   <div className="grid grid-cols-12 gap-3">
                     <div className="col-span-12 relative">
@@ -422,14 +466,18 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
                             value={formData.address}
                             onChange={(e) => handleAddressInput('billing', e.target.value)}
                             onFocus={() => setActiveSearchField('billing')}
+                            onKeyDown={(e) => handleAddressKeyDown(e, 'billing')}
+                            autoComplete="off"
                             placeholder="Start typing billing address..."
                         />
                         {isSearching && activeSearchField === 'billing' && <Loader2 className="absolute right-3 top-8 w-4 h-4 animate-spin text-slate-400" />}
                         {activeSearchField === 'billing' && suggestions.length > 0 && (
                             <div className="absolute z-10 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                                {suggestions.map((p) => (
-                                    <div key={p.place_id} className="px-4 py-2 text-sm hover:bg-blue-50 cursor-pointer flex gap-2"
-                                         onMouseDown={() => handleSelectPlace(p.place_id, p.description, 'billing')}>
+                                {suggestions.map((p, index) => (
+                                    <div key={p.place_id} 
+                                         className={`px-4 py-2 text-sm cursor-pointer flex gap-2 ${index === addressHighlightedIndex ? 'bg-blue-50 text-slate-900' : 'hover:bg-blue-50'}`}
+                                         onMouseEnter={() => setAddressHighlightedIndex(index)}
+                                         onMouseDown={(e) => { e.preventDefault(); handleSelectPlace(p.place_id, p.description, 'billing'); }}>
                                         <MapPin className="w-3 h-3 text-slate-400 mt-1" />
                                         <span>{p.description}</span>
                                     </div>
@@ -448,9 +496,10 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
               <div className="flex items-center space-x-2 pl-1"><Checkbox id="sameAddress" checked={isSameAddress} onCheckedChange={(c) => setIsSameAddress(!!c)} className="border-slate-400 data-[state=checked]:bg-slate-900" /><label htmlFor="sameAddress" className="text-sm font-medium leading-none cursor-pointer select-none text-slate-700">Delivery address is same as billing address</label></div>
 
               {!isSameAddress && (
-                <div className="bg-slate-50 p-5 rounded-lg border border-slate-200 space-y-4 animate-in slide-in-from-top-2 fade-in relative">
-                  <h4 className="font-bold text-slate-800 flex items-center gap-2"><MapPin className="w-4 h-4 text-emerald-600"/> Delivery Address</h4>
-                  
+                <div ref={deliveryRef} className="bg-slate-50 p-5 rounded-lg border border-slate-200 space-y-4 animate-in slide-in-from-top-2 fade-in relative">
+                  <h4 className="font-bold text-slate-800 flex items-center gap-2">
+                      <MapPin className="w-4 h-4 text-emerald-600"/> Delivery Address
+                  </h4>
                   <div className="space-y-3 pt-2">
                     <div className="grid grid-cols-12 gap-3">
                       <div className="col-span-12 relative">
@@ -459,14 +508,18 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
                             value={formData.delivery_address}
                             onChange={(e) => handleAddressInput('delivery', e.target.value)}
                             onFocus={() => setActiveSearchField('delivery')}
+                            onKeyDown={(e) => handleAddressKeyDown(e, 'delivery')}
+                            autoComplete="off"
                             placeholder="Start typing delivery address..."
                           />
                           {isSearching && activeSearchField === 'delivery' && <Loader2 className="absolute right-3 top-8 w-4 h-4 animate-spin text-slate-400" />}
                           {activeSearchField === 'delivery' && suggestions.length > 0 && (
                               <div className="absolute z-10 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                                  {suggestions.map((p) => (
-                                      <div key={p.place_id} className="px-4 py-2 text-sm hover:bg-blue-50 cursor-pointer flex gap-2"
-                                           onMouseDown={() => handleSelectPlace(p.place_id, p.description, 'delivery')}>
+                                  {suggestions.map((p, index) => (
+                                      <div key={p.place_id} 
+                                           className={`px-4 py-2 text-sm cursor-pointer flex gap-2 ${index === addressHighlightedIndex ? 'bg-blue-50 text-slate-900' : 'hover:bg-blue-50'}`}
+                                           onMouseEnter={() => setAddressHighlightedIndex(index)}
+                                           onMouseDown={(e) => { e.preventDefault(); handleSelectPlace(p.place_id, p.description, 'delivery'); }}>
                                           <MapPin className="w-3 h-3 text-slate-400 mt-1" />
                                           <span>{p.description}</span>
                                       </div>

@@ -44,10 +44,10 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select..." 
         onClick={() => setIsOpen(!isOpen)}
         className="flex items-center justify-between w-full px-3 py-2 text-sm border border-slate-200 rounded-md cursor-pointer bg-white hover:border-slate-400"
       >
-        <span className={selected ? "text-slate-900 font-medium" : "text-slate-400"}>
+        <span className={selected ? "text-slate-900 font-medium truncate" : "text-slate-400 truncate"}>
           {selected ? selected.label : placeholder}
         </span>
-        <ChevronDown className="w-4 h-4 text-slate-400" />
+        <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
       </div>
       {isOpen && (
         <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-60 overflow-auto p-1">
@@ -72,8 +72,8 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select..." 
               onClick={() => { onChange(opt.id); setIsOpen(false); setSearchTerm(""); }}
               className={`px-2 py-1.5 text-sm cursor-pointer rounded flex justify-between items-center ${opt.id === value ? "bg-slate-100 font-bold" : "hover:bg-slate-50"}`}
             >
-              {opt.label}
-              {opt.id === value && <Check className="w-3.5 h-3.5" />}
+              <span className="truncate pr-2">{opt.label}</span>
+              {opt.id === value && <Check className="w-3.5 h-3.5 shrink-0" />}
             </div>
           ))}
         </div>
@@ -83,8 +83,10 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select..." 
 }
 
 // --- Types ---
+// 🚀 [수정] 순수매출(Net)과 총매출(Gross, GST포함)을 구분합니다.
 interface ReportSummary {
-  totalSales: number;
+  totalNetSales: number;
+  totalGrossSales: number;
   totalCost: number;
   totalProfit: number;
   totalQty: number;
@@ -94,6 +96,7 @@ interface ReportSummary {
 interface DetailRow {
   subKey: string;
   subName: string;
+  unit: string; 
   lastDate: string;
   qty: number;
   amount: number;
@@ -139,39 +142,44 @@ export default function SalesReportPage() {
   const [hasSearched, setHasSearched] = useState(false);
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
 
-  // [NEW] Sort States (Main & Detail)
-  const [mainSortConfig, setMainSortConfig] = useState<SortConfig>({ key: "totalSales", direction: "desc" });
-  const [detailSortConfig, setDetailSortConfig] = useState<SortConfig>({ key: "amount", direction: "desc" });
+  // Sort States (Main & Detail)
+  const [mainSortConfig, setMainSortConfig] = useState<SortConfig>({ key: "name", direction: "asc" });
+  const [detailSortConfig, setDetailSortConfig] = useState<SortConfig>({ key: "subName", direction: "asc" });
 
   // 1. Init
   useEffect(() => {
     const loadFilters = async () => {
-      const { data: prodData } = await supabase.from("products").select("id, product_name").order("product_name");
+      const { data: prodData } = await supabase
+        .from("products")
+        .select("id, product_name")
+        .eq("is_active", true) 
+        .order("product_name");
+        
       if (prodData) setProducts(prodData.map(p => ({ id: p.id, label: p.product_name })));
 
       const { data: custData } = await supabase.from("customers").select("id, name").order("name");
       if (custData) setCustomers(custData.map(c => ({ id: c.id, label: c.name })));
     };
     loadFilters();
-  }, []);
+  }, [supabase]);
 
   // 2. Toggle Row
   const toggleRow = (id: string) => {
     setExpandedRows(prev => ({ ...prev, [id]: !prev[id] }));
   };
 
-  // [NEW] Sort Handlers
+  // Sort Handlers
   const handleMainSort = (key: string) => {
     setMainSortConfig(current => ({
       key,
-      direction: current.key === key && current.direction === "desc" ? "asc" : "desc"
+      direction: current.key === key && current.direction === "asc" ? "desc" : "asc"
     }));
   };
 
   const handleDetailSort = (key: string) => {
     setDetailSortConfig(current => ({
       key,
-      direction: current.key === key && current.direction === "desc" ? "asc" : "desc"
+      direction: current.key === key && current.direction === "asc" ? "desc" : "asc"
     }));
   };
 
@@ -189,9 +197,9 @@ export default function SalesReportPage() {
       let query = supabase
         .from("invoice_items")
         .select(`
-          quantity, amount, product_id, description,
+          quantity, amount, product_id, description, unit,
           invoices!inner ( id, invoice_date, customer_id, customers ( name ) ),
-          products ( id, product_name, buy_price )
+          products ( id, product_name, buy_price, total_pack_ctn ) 
         `)
         .gte("invoices.invoice_date", startDate)
         .lte("invoices.invoice_date", endDate);
@@ -208,8 +216,16 @@ export default function SalesReportPage() {
       if (data) {
         data.forEach((item: any) => {
           const itemQty = Number(item.quantity) || 0;
-          const itemAmount = Number(item.amount) || 0;
-          const unitCost = Number(item.products?.buy_price) || 0;
+          const itemAmount = Number(item.amount) || 0; // 순수 매출(Subtotal)
+          const invoiceUnit = item.unit || "-"; 
+          
+          let unitCost = Number(item.products?.buy_price) || 0;
+          const upperUnit = invoiceUnit.toUpperCase();
+          if (!upperUnit.includes("CTN") && !upperUnit.includes("CARTON") && !upperUnit.includes("BOX")) {
+            const packsPerCtn = Math.max(1, Number(item.products?.total_pack_ctn) || 1); 
+            unitCost = unitCost / packsPerCtn;
+          }
+
           const itemCost = unitCost * itemQty;
           const itemProfit = itemAmount - itemCost;
 
@@ -218,12 +234,13 @@ export default function SalesReportPage() {
           totalQty += itemQty;
 
           const isByItem = groupBy === "item";
+          
           const groupKey = isByItem 
-            ? (item.products?.id || "unknown-prod") 
+            ? `${item.products?.id || "unknown-prod"}_${invoiceUnit}`
             : (item.invoices?.customer_id || "unknown-cust");
           
           const groupName = isByItem 
-            ? (item.products?.product_name || item.description || "Unknown Product") 
+            ? `${item.products?.product_name || item.description || "Unknown Product"} (${invoiceUnit})`
             : (item.invoices?.customers?.name || "Unknown Customer");
 
           if (!groupMap.has(groupKey)) {
@@ -242,15 +259,17 @@ export default function SalesReportPage() {
           
           const subKey = isByItem 
             ? (item.invoices?.customer_id || "unknown-cust")
-            : (item.products?.id || "unknown-prod");
+            : `${item.products?.id || "unknown-prod"}_${invoiceUnit}`;
+            
           const subName = isByItem 
             ? (item.invoices?.customers?.name || "Unknown Customer")
             : (item.products?.product_name || item.description);
+            
           const date = item.invoices?.invoice_date;
 
           if (!group.detailsMap.has(subKey)) {
             group.detailsMap.set(subKey, {
-              subKey, subName, lastDate: date,
+              subKey, subName, unit: invoiceUnit, lastDate: date,
               qty: 0, amount: 0, cost: 0, profit: 0
             });
           }
@@ -269,10 +288,16 @@ export default function SalesReportPage() {
         return group;
       });
 
+      // 🚀 [수정] Net Sales와 Gross Sales(10% 부가세 포함)를 구분해서 Summary에 저장
       setSummary({
-        totalSales, totalCost, totalProfit: totalSales - totalCost,
-        totalQty, itemCount: data?.length || 0
+        totalNetSales: totalSales,
+        totalGrossSales: totalSales * 1.1, // 인보이스 Total Amount와 동일해짐
+        totalCost: totalCost,
+        totalProfit: totalSales - totalCost,
+        totalQty: totalQty,
+        itemCount: data?.length || 0
       });
+      
       setGroupedList(finalGroupList);
 
     } catch (e: any) {
@@ -289,8 +314,6 @@ export default function SalesReportPage() {
 
     const rows: any[] = [];
 
-    // [NOTE] 엑셀 다운로드 시에도 정렬을 반영하고 싶다면 여기서 sortMainData를 사용하면 됩니다.
-    // 현재는 원본 순서대로 다운로드 됩니다.
     groupedList.forEach(group => {
       group.details.forEach(detail => {
         const row: any = {
@@ -298,9 +321,11 @@ export default function SalesReportPage() {
           "Group Name": group.name, 
           "Detail Type": groupBy === "item" ? "Customer" : "Product",
           "Detail Name": detail.subName, 
+          "Unit": detail.unit,
           "Last Date": detail.lastDate,
           "Quantity": detail.qty,
-          "Sales ($)": detail.amount,
+          "Net Sales ($)": detail.amount,             // 🚀 엑셀 컬럼명 수정
+          "Gross Sales ($)": detail.amount * 1.1,     // 🚀 Gross 엑셀에도 추가
           "Cost ($)": detail.cost,
           "Profit ($)": detail.profit,
           "Margin (%)": detail.amount > 0 ? ((detail.profit / detail.amount) * 100).toFixed(2) : "0.00"
@@ -321,15 +346,15 @@ export default function SalesReportPage() {
     XLSX.utils.book_append_sheet(workbook, worksheet, "Sales Data");
 
     const wscols = [
-      { wch: 10 }, { wch: 30 }, { wch: 10 }, { wch: 30 },
-      { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 10 }
+      { wch: 10 }, { wch: 40 }, { wch: 10 }, { wch: 40 }, { wch: 8 },
+      { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 10 }
     ];
     worksheet["!cols"] = wscols;
 
     XLSX.writeFile(workbook, `SalesReport_${startDate}_${endDate}.xlsx`);
   };
 
-  // [NEW] Reusable Sortable Header Component
+  // Reusable Sortable Header Component
   const SortableHeader = ({ 
     label, 
     sortKey, 
@@ -369,15 +394,20 @@ export default function SalesReportPage() {
     );
   };
 
-  // [NEW] Main Data Sorting Logic
+  // Main Data Sorting Logic
   const sortedGroupedList = [...groupedList].sort((a, b) => {
     let valA: any = (a as any)[mainSortConfig.key];
     let valB: any = (b as any)[mainSortConfig.key];
 
-    // Margin 계산값 정렬 처리
     if (mainSortConfig.key === "margin") {
       valA = a.totalSales > 0 ? (a.totalProfit / a.totalSales) : 0;
       valB = b.totalSales > 0 ? (b.totalProfit / b.totalSales) : 0;
+    }
+
+    if (typeof valA === "string" && typeof valB === "string") {
+      return mainSortConfig.direction === "asc" 
+        ? valA.localeCompare(valB) 
+        : valB.localeCompare(valA);
     }
 
     if (valA < valB) return mainSortConfig.direction === "asc" ? -1 : 1;
@@ -466,9 +496,22 @@ export default function SalesReportPage() {
           
           {/* Summary Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <Card className="border-l-4 border-l-blue-500 shadow-sm"><CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-slate-500 uppercase flex justify-between">Total Sales <DollarSign className="w-4 h-4 text-blue-500" /></CardTitle></CardHeader><CardContent><div className="text-2xl font-black text-slate-900">${summary?.totalSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div></CardContent></Card>
+            
+            {/* 🚀 [수정] Net Sales 아래에 Gross Sales 표시 박스 추가 */}
+            <Card className="border-l-4 border-l-blue-500 shadow-sm relative overflow-hidden">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium text-slate-500 uppercase flex justify-between">Net Sales (ex GST) <DollarSign className="w-4 h-4 text-blue-500" /></CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-black text-slate-900">${summary?.totalNetSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                <div className="mt-1.5 inline-flex bg-slate-100 px-2 py-1 rounded text-xs font-bold text-slate-500 border border-slate-200">
+                  Gross: ${summary?.totalGrossSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </div>
+              </CardContent>
+            </Card>
+
             <Card className="border-l-4 border-l-red-400 shadow-sm"><CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-slate-500 uppercase flex justify-between">Total Cost <CreditCard className="w-4 h-4 text-red-400" /></CardTitle></CardHeader><CardContent><div className="text-2xl font-black text-slate-900">${summary?.totalCost.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div></CardContent></Card>
-            <Card className="border-l-4 border-l-emerald-500 shadow-sm bg-emerald-50/30"><CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-emerald-700 uppercase flex justify-between">Net Profit <TrendingUp className="w-4 h-4 text-emerald-600" /></CardTitle></CardHeader><CardContent><div className="text-2xl font-black text-emerald-700">${summary?.totalProfit.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div><p className="text-xs text-emerald-600 font-medium mt-1">Margin: {summary && summary.totalSales > 0 ? ((summary.totalProfit / summary.totalSales) * 100).toFixed(1) : 0}%</p></CardContent></Card>
+            <Card className="border-l-4 border-l-emerald-500 shadow-sm bg-emerald-50/30"><CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-emerald-700 uppercase flex justify-between">Net Profit <TrendingUp className="w-4 h-4 text-emerald-600" /></CardTitle></CardHeader><CardContent><div className="text-2xl font-black text-emerald-700">${summary?.totalProfit.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div><p className="text-xs text-emerald-600 font-medium mt-1">Margin: {summary && summary.totalNetSales > 0 ? ((summary.totalProfit / summary.totalNetSales) * 100).toFixed(1) : 0}%</p></CardContent></Card>
             <Card className="border-l-4 border-l-slate-500 shadow-sm"><CardHeader className="pb-2"><CardTitle className="text-sm font-medium text-slate-500 uppercase flex justify-between">Total Qty <Package className="w-4 h-4 text-slate-500" /></CardTitle></CardHeader><CardContent><div className="text-2xl font-black text-slate-900">{summary?.totalQty.toLocaleString()} <span className="text-sm font-normal text-slate-400">Units</span></div></CardContent></Card>
           </div>
 
@@ -490,7 +533,8 @@ export default function SalesReportPage() {
                     <th className="px-4 py-3 w-[40px]"></th>
                     <SortableHeader label={groupBy === 'item' ? "Product Name" : "Customer Name"} sortKey="name" currentSort={mainSortConfig} onSort={handleMainSort} />
                     <SortableHeader label="Total Qty" sortKey="totalQty" align="right" currentSort={mainSortConfig} onSort={handleMainSort} />
-                    <SortableHeader label="Sales" sortKey="totalSales" align="right" currentSort={mainSortConfig} onSort={handleMainSort} />
+                    {/* 🚀 테이블 헤더 명칭 명확하게 변경 */}
+                    <SortableHeader label="Net Sales" sortKey="totalSales" align="right" currentSort={mainSortConfig} onSort={handleMainSort} />
                     <SortableHeader label="Cost" sortKey="totalCost" align="right" currentSort={mainSortConfig} onSort={handleMainSort} />
                     <SortableHeader label="Profit" sortKey="totalProfit" align="right" currentSort={mainSortConfig} onSort={handleMainSort} />
                     <SortableHeader label="Margin" sortKey="margin" align="right" currentSort={mainSortConfig} onSort={handleMainSort} />
@@ -506,6 +550,12 @@ export default function SalesReportPage() {
                     const sortedDetails = [...group.details].sort((a, b) => {
                       const valA = (a as any)[detailSortConfig.key];
                       const valB = (b as any)[detailSortConfig.key];
+                      
+                      if (typeof valA === "string" && typeof valB === "string") {
+                        return detailSortConfig.direction === "asc" 
+                          ? valA.localeCompare(valB) 
+                          : valB.localeCompare(valA);
+                      }
                       
                       if (valA < valB) return detailSortConfig.direction === "asc" ? -1 : 1;
                       if (valA > valB) return detailSortConfig.direction === "asc" ? 1 : -1;
@@ -538,9 +588,10 @@ export default function SalesReportPage() {
                                   <thead className="text-slate-500 border-b border-slate-200 uppercase font-semibold">
                                     <tr>
                                       <SortableHeader label={groupBy === 'item' ? "Customer" : "Product"} sortKey="subName" currentSort={detailSortConfig} onSort={handleDetailSort} />
+                                      <SortableHeader label="Unit" sortKey="unit" align="left" currentSort={detailSortConfig} onSort={handleDetailSort} className="w-20" />
                                       <SortableHeader label="Last Date" sortKey="lastDate" currentSort={detailSortConfig} onSort={handleDetailSort} />
                                       <SortableHeader label="Qty" sortKey="qty" align="right" currentSort={detailSortConfig} onSort={handleDetailSort} />
-                                      <SortableHeader label="Sales" sortKey="amount" align="right" currentSort={detailSortConfig} onSort={handleDetailSort} />
+                                      <SortableHeader label="Net Sales" sortKey="amount" align="right" currentSort={detailSortConfig} onSort={handleDetailSort} />
                                       <SortableHeader label="Profit" sortKey="profit" align="right" currentSort={detailSortConfig} onSort={handleDetailSort} />
                                     </tr>
                                   </thead>
@@ -548,6 +599,7 @@ export default function SalesReportPage() {
                                     {sortedDetails.map((detail, idx) => (
                                       <tr key={idx} className="hover:bg-slate-100/50">
                                         <td className="py-2 font-medium text-slate-800">{detail.subName}</td>
+                                        <td className="py-2 text-slate-500 font-medium">{detail.unit}</td>
                                         <td className="py-2">{detail.lastDate}</td>
                                         <td className="py-2 text-right">{detail.qty}</td>
                                         <td className="py-2 text-right font-bold">${detail.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>

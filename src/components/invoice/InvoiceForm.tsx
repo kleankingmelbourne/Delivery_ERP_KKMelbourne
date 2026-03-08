@@ -33,7 +33,12 @@ function useDebounce<T>(value: T, delay: number): T {
 }
 
 // --- [Component] SearchableSelect ---
-interface Option { id: string; label: string; subLabel?: string; }
+interface Option { 
+  id: string; 
+  label: string; 
+  subLabel?: string; 
+  isAllowed?: boolean; 
+}
 
 interface SearchableSelectProps { 
     options: Option[]; 
@@ -47,9 +52,15 @@ interface SearchableSelectProps {
     id?: string;
     onOuterFocus?: () => void;
     onTabPress?: () => void;
+    onRemoveAllowed?: (productId: string) => void; 
+    onSelectComplete?: () => void; 
 }
 
-function SearchableSelect({ options, value, onChange, placeholder = "Select...", disabled = false, className, onClick, onSearch, id, onOuterFocus, onTabPress }: SearchableSelectProps) {
+function SearchableSelect({ 
+    options, value, onChange, placeholder = "Select...", 
+    disabled = false, className, onClick, onSearch, id, 
+    onOuterFocus, onTabPress, onRemoveAllowed, onSelectComplete
+}: SearchableSelectProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [highlightedIndex, setHighlightedIndex] = useState(0); 
@@ -105,6 +116,16 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select...",
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  const triggerSelect = (selectedId: string) => {
+      onChange(selectedId);
+      setIsOpen(false);
+      setSearchTerm("");
+      
+      if (onSelectComplete) {
+          setTimeout(() => onSelectComplete(), 50);
+      }
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     isKeyboardNav.current = true; 
     
@@ -114,16 +135,19 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select...",
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setHighlightedIndex(prev => (prev > 0 ? prev - 1 : 0));
-    } else if (e.key === "Enter" || e.key === "Tab") {
+    } else if (e.key === "Enter") {
+      e.preventDefault(); 
       if (filteredOptions[highlightedIndex]) {
-        onChange(filteredOptions[highlightedIndex].id);
-        setIsOpen(false);
-        setSearchTerm("");
-        if (e.key === "Enter") e.preventDefault();
+          triggerSelect(filteredOptions[highlightedIndex].id);
       }
-      if (e.key === "Tab" && !e.shiftKey && onTabPress) {
-        e.preventDefault();
-        onTabPress();
+    } else if (e.key === "Tab") {
+      if (!e.shiftKey) {
+          if (filteredOptions[highlightedIndex] && isOpen) {
+              triggerSelect(filteredOptions[highlightedIndex].id);
+          } else if (onTabPress) {
+              e.preventDefault();
+              onTabPress();
+          }
       }
     } else if (e.key === "Escape") {
       setIsOpen(false);
@@ -196,18 +220,41 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select...",
                 <div 
                   key={option.id} 
                   ref={(el) => { optionsRef.current[index] = el; }} 
-                  onClick={() => { onChange(option.id); setIsOpen(false); setSearchTerm(""); }} 
                   onMouseMove={() => { 
                       isKeyboardNav.current = false; 
                       if (highlightedIndex !== index) setHighlightedIndex(index);
                   }}
-                  className={`flex items-center justify-between px-3 py-2 text-sm rounded cursor-pointer ${index === highlightedIndex ? "bg-slate-100 font-bold text-slate-900" : "hover:bg-slate-50 text-slate-700"}`}
+                  className={`flex items-center justify-between px-3 py-2 text-sm rounded cursor-pointer ${index === highlightedIndex ? "bg-slate-100 text-slate-900" : "hover:bg-slate-50 text-slate-700"}`}
                 >
-                  <div className="flex flex-col">
-                    <span>{option.label}</span>
-                    {option.subLabel && <span className="text-[10px] text-slate-400">{option.subLabel}</span>}
+                  <div 
+                    className="flex flex-col flex-1"
+                    onClick={() => { triggerSelect(option.id); }} 
+                  >
+                    <span className="font-bold">{option.label}</span>
+                    {option.subLabel && <span className="text-[10px] text-slate-500">{option.subLabel}</span>}
                   </div>
-                  {option.id === value && <Check className="w-3.5 h-3.5 text-slate-900 shrink-0 ml-2" />}
+                  
+                  <div className="flex items-center gap-2">
+                      {option.isAllowed && onRemoveAllowed && (
+                          <button
+                              onMouseDown={(e) => { 
+                                  e.preventDefault(); 
+                                  e.stopPropagation(); 
+                              }}
+                              onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (confirm(`Remove this item from customer's list?`)) {
+                                      onRemoveAllowed(option.id);
+                                  }
+                              }}
+                              className="p-1 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+                              title="Remove from customer list"
+                          >
+                              <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                      )}
+                      {option.id === value && <Check className="w-3.5 h-3.5 text-slate-900 shrink-0" />}
+                  </div>
                 </div>
               ))
             )}
@@ -234,7 +281,7 @@ interface ProductMaster {
     current_stock_level_pack: number;
     is_active?: boolean;
 } 
-interface AllowedProduct { product_id: string; discount_ctn: number; discount_pack: number; }
+interface AllowedProduct { id: string; product_id: string; discount_ctn: number; discount_pack: number; }
 interface InvoiceItem { productId: string; unit: string; quantity: number; basePrice: number; discountRate: number; unitPrice: number; defaultUnitName?: string; }
 
 interface InvoiceFormProps {
@@ -355,7 +402,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
     const loadCustomerDetail = async () => {
       const [customerRes, paymentsRes, unpaidRes] = await Promise.all([
-          supabase.from("customers").select(`due_date, note, in_charge_delivery, customer_products ( product_id, custom_price_ctn, custom_price_pack, products ( *, product_units ( unit_name ) ) )`).eq("id", selectedCustomerId).single(),
+          supabase.from("customers").select(`due_date, note, in_charge_delivery, customer_products ( id, product_id, custom_price_ctn, custom_price_pack, products ( *, product_units ( unit_name ) ) )`).eq("id", selectedCustomerId).single(),
           supabase.from('payments').select('unallocated_amount').eq('customer_id', selectedCustomerId).gt('unallocated_amount', 0),
           supabase.from("invoices").select("due_date, total_amount, paid_amount").eq("customer_id", selectedCustomerId).neq("status", "Paid")
       ]);
@@ -368,7 +415,12 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
           const apData = customerData.customer_products?.filter((item: any) => item.products && item.products.is_active === true) || []; 
           if (apData.length > 0) {
-              const mappedAllowed = apData.map((item: any) => ({ product_id: item.product_id, discount_ctn: item.custom_price_ctn || 0, discount_pack: item.custom_price_pack || 0 }));
+              const mappedAllowed = apData.map((item: any) => ({ 
+                  id: item.id,
+                  product_id: item.product_id, 
+                  discount_ctn: item.custom_price_ctn || 0, 
+                  discount_pack: item.custom_price_pack || 0 
+              }));
               setAllowedProducts(mappedAllowed);
 
               const fetchedProducts = apData.map((item: any) => item.products).map((p: any) => ({ ...p, unit_name: p.product_units?.unit_name || "CTN" }));
@@ -397,6 +449,21 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     
     loadCustomerDetail();
   }, [selectedCustomerId, isEditMode]); 
+
+  const handleRemoveAllowedProduct = async (productId: string) => {
+      const allowedItem = allowedProducts.find(ap => ap.product_id === productId);
+      if (!allowedItem || !allowedItem.id) return;
+
+      try {
+          const { error } = await supabase.from('customer_products').delete().eq('id', allowedItem.id);
+          if (error) throw error;
+          
+          setAllowedProducts(prev => prev.filter(ap => ap.product_id !== productId));
+      } catch (err: any) {
+          console.error(err);
+          alert("Failed to remove product from customer list: " + err.message);
+      }
+  };
 
   const handleShowAllToggle = (isChecked: boolean) => {
       setShowAllProducts(isChecked);
@@ -454,18 +521,24 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
   };
 
   const productOptions = useMemo(() => {
-    return allProducts.filter(p => {
+    const filteredAndMapped = allProducts.filter(p => {
         if (p.is_active === false) return false;
         if (showAllProducts) return true;
         const isAllowed = allowedProducts.some(ap => ap.product_id === p.id);
         const isSelected = items.some(i => i.productId === p.id);
         const isSearchResult = searchResultIds.has(p.id);
         return isAllowed || isSelected || isSearchResult;
-    }).map(p => ({ 
-        id: p.id, 
-        label: p.product_name, 
-        subLabel: `${p.vendor_product_id ? `[${p.vendor_product_id}] ` : ""}$${p.sell_price_ctn} (CTN) / $${p.sell_price_pack} (PK)` 
-    }));
+    }).map(p => {
+        const isAllowed = allowedProducts.some(ap => ap.product_id === p.id);
+        return { 
+            id: p.id, 
+            label: p.product_name, 
+            subLabel: `${p.vendor_product_id ? `[${p.vendor_product_id}] ` : ""}$${p.sell_price_ctn} (CTN) / $${p.sell_price_pack} (PK)`,
+            isAllowed 
+        };
+    });
+
+    return filteredAndMapped.sort((a, b) => a.label.localeCompare(b.label));
   }, [allProducts, allowedProducts, showAllProducts, items, searchResultIds]);
 
   const customerOptions = useMemo(() => customers.map(c => ({ id: c.id, label: c.name })), [customers]);
@@ -741,20 +814,15 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     setAllProducts([]); 
   };
 
-  // ✅ [NEW 핵심] Ctrl + S 단축키 핸들러 추가
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ctrl + S (Mac의 경우 Cmd + S 포함하려면 e.metaKey 추가 가능)
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-        e.preventDefault(); // 브라우저 기본 저장창 방지
+        e.preventDefault(); 
         
-        // 로딩 중이 아닐 때만 저장 실행
         if (!loading) {
           if (isEditMode) {
-            // 수정 모드: 저장 후 리스트로 (redirect: true)
             handleSave(true);
           } else {
-            // 신규 모드: 저장 후 새로 만들기 (redirect: false)
             handleSave(false);
           }
         }
@@ -785,7 +853,13 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-2">
                 <label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2"><User className="w-3.5 h-3.5" /> Customer</label>
-                <SearchableSelect options={customerOptions} value={selectedCustomerId} onChange={setSelectedCustomerId} placeholder={loading ? "Loading list..." : "Search customer..."} disabled={isEditMode} />
+                <SearchableSelect 
+                  options={customerOptions} 
+                  value={selectedCustomerId} 
+                  onChange={setSelectedCustomerId} 
+                  placeholder={loading ? "Loading list..." : "Search customer..."} 
+                  disabled={isEditMode} 
+                />
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2"><label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2"><Calendar className="w-3.5 h-3.5" /> Date</label><Input type="date" value={invoiceDate} onChange={handleInvoiceDateChange} /></div>
@@ -849,23 +923,71 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                                 className="w-full" 
                                 onClick={() => handleProductClick(idx)} 
                                 onSearch={handleSearchProducts} 
+                                onRemoveAllowed={showAllProducts ? undefined : handleRemoveAllowedProduct} 
+                                // 🚀 [핵심 수정] 상품 선택이 완료되면 바로 옆의 unit select 요소로 포커스 이동!
+                                onSelectComplete={() => {
+                                  const unitSelect = document.getElementById(`unit-select-${idx}`);
+                                  if (unitSelect) unitSelect.focus();
+                                }}
                                 onOuterFocus={() => {
                                   if (idx === items.length - 1) addItem();
                                 }}
                                 onTabPress={() => {
-                                  document.getElementById(`disc-input-${idx}`)?.focus();
+                                  const unitSelect = document.getElementById(`unit-select-${idx}`) as HTMLSelectElement | null;
+                                  if (unitSelect && !unitSelect.disabled) {
+                                      unitSelect.focus();
+                                  } else {
+                                      document.getElementById(`qty-input-${idx}`)?.focus();
+                                  }
                                 }} 
                             />
                           </td>
                           <td className="p-2">
-                              <select className={`w-full p-2 border border-slate-200 rounded text-center font-medium outline-none text-xs ${!isCtnOrPack && item.productId ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : 'bg-slate-50'}`} value={item.unit} onChange={(e) => handleUnitChange(idx, e.target.value as any)} disabled={!isCtnOrPack && !!item.productId}>
+                              {/* 🚀 Unit <select>에 ID 부여 및 포커스 스타일 적용 */}
+                              <select 
+                                id={`unit-select-${idx}`}
+                                className={`w-full p-2 border border-slate-200 rounded text-center font-medium outline-none focus:ring-2 focus:ring-slate-900 focus:border-transparent transition-all text-xs ${!isCtnOrPack && item.productId ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : 'bg-slate-50 hover:bg-white'}`} 
+                                value={item.unit} 
+                                onChange={(e) => handleUnitChange(idx, e.target.value as any)} 
+                                disabled={!isCtnOrPack && !!item.productId}
+                                // 🚀 Enter 쳤을 때 수량(Qty)으로 넘어가게 하기
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        document.getElementById(`qty-input-${idx}`)?.focus();
+                                    }
+                                }}
+                              >
                                 {isCtnOrPack ? (<><option value="CTN">CTN</option><option value="PACK">PK</option></>) : (<option value={item.unit}>{item.unit}</option>)}
                               </select>
                           </td>
                           <td className="p-2 text-right text-slate-400 text-xs line-through decoration-slate-300">${item.basePrice.toFixed(2)}</td>
                           <td className="p-2 text-right font-bold text-blue-700 text-sm">${item.unitPrice.toFixed(2)}</td>
                           <td className="p-2 relative"><Input id={`disc-input-${idx}`} type="number" min="0" max="100" className="text-right h-9 text-xs border-blue-100 focus:border-blue-500 font-bold pr-2 bg-blue-50/50 text-blue-700" value={item.discountRate} onChange={(e) => handleDiscountChange(idx, Number(e.target.value))} /></td>
-                          <td className="p-2"><Input type="number" step="1" onKeyDown={(e) => { if (e.key === '.' || e.key === 'e') e.preventDefault(); }} className="text-center h-9" value={item.quantity} onChange={(e) => { const val = e.target.value; if (val === '') updateItem(idx, "quantity", ''); else updateItem(idx, "quantity", parseInt(val, 10)); }} /></td>
+                          <td className="p-2">
+                              {/* 🚀 Qty <input>에 ID 부여 */}
+                              <Input 
+                                id={`qty-input-${idx}`} 
+                                type="number" 
+                                step="1" 
+                                onKeyDown={(e) => { 
+                                    if (e.key === '.' || e.key === 'e') e.preventDefault(); 
+                                    // 🚀 Qty에서 엔터치면 다음 줄 상품검색창 생성 후 이동 (선택 옵션)
+                                    if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        if (idx === items.length - 1) {
+                                            addItem();
+                                            setTimeout(() => document.getElementById(`product-search-${idx + 1}`)?.focus(), 50);
+                                        } else {
+                                            document.getElementById(`product-search-${idx + 1}`)?.focus();
+                                        }
+                                    }
+                                }} 
+                                className="text-center h-9 focus:ring-2 focus:ring-slate-900" 
+                                value={item.quantity} 
+                                onChange={(e) => { const val = e.target.value; if (val === '') updateItem(idx, "quantity", ''); else updateItem(idx, "quantity", parseInt(val, 10)); }} 
+                              />
+                          </td>
                           <td className="px-4 py-3 text-right font-bold text-slate-900">${(item.quantity * item.unitPrice).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                           <td className="p-2 text-center"><button onClick={() => removeItem(idx)} className="text-slate-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button></td>
                         </tr>

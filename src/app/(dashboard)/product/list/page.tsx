@@ -934,7 +934,7 @@ export default function ProductPage() {
             <div className="flex flex-col md:flex-row items-center gap-2 w-full md:w-auto flex-1">
                 <div className="w-full md:w-[130px]">
                     <Select 
-                        value={[10, 20, 30].includes(itemsPerPage) ? String(itemsPerPage) : 'all'}
+                        value={[10, 30, 50, 100].includes(itemsPerPage) ? String(itemsPerPage) : 'all'}
                         onValueChange={(val) => {
                             if (val === 'all') setItemsPerPage(processedProducts.length || 10000); 
                             else setItemsPerPage(Number(val));
@@ -949,8 +949,9 @@ export default function ProductPage() {
                         </SelectTrigger>
                         <SelectContent>
                             <SelectItem value="10">10 Rows</SelectItem>
-                            <SelectItem value="20">20 Rows</SelectItem>
                             <SelectItem value="30">30 Rows</SelectItem>
+                            <SelectItem value="50">50 Rows</SelectItem>
+                            <SelectItem value="100">100 Rows</SelectItem>
                             <SelectItem value="all">All ({processedProducts.length})</SelectItem>
                         </SelectContent>
                     </Select>
@@ -1300,7 +1301,7 @@ export default function ProductPage() {
 
       {/* 5. Customer Usage Modal */}
       <Dialog open={isUseModalOpen} onOpenChange={setIsUseModalOpen}>
-        <DialogContent className="max-w-5xl max-h-[85vh] overflow-hidden flex flex-col">
+        <DialogContent className="sm:max-w-[1024px] w-[90vw] max-h-[85vh] overflow-hidden flex flex-col">
             <DialogHeader>
                 <DialogTitle className="flex items-center gap-2">
                     <Users className="w-5 h-5 text-indigo-600" />

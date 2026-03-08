@@ -124,16 +124,14 @@ interface UnpaidInvoice {
   customers: { name: string } | null;
 }
 
-// [NEW] Grouped Type for Customer Aggregation
+// Grouped Type for Customer Aggregation
 interface GroupedPaymentData {
   customer_id: string;
   customer_name: string;
   total_received: number;
   total_credit: number;
   last_payment_date: string;
-  payments: Payment[]; // Individual payments for detail view
-  
-  // Outstanding info for this customer
+  payments: Payment[]; 
   outstanding_invoices: UnpaidInvoice[];
   total_outstanding: number;
 }
@@ -159,7 +157,6 @@ export default function PaymentReportPage() {
   const [loading, setLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   
-  // [CHANGED] Store Grouped Data instead of raw list
   const [groupedList, setGroupedList] = useState<GroupedPaymentData[]>([]);
   const [summary, setSummary] = useState<ReportSummary>({ totalReceived: 0, totalOutstanding: 0, avgPayDays: 0 });
   
@@ -173,7 +170,7 @@ export default function PaymentReportPage() {
       if (data) setCustomers(data.map(c => ({ id: c.id, label: c.name })));
     };
     loadData();
-  }, []);
+  }, [supabase]);
 
   const toggleRow = (id: string) => {
     setExpandedRows(prev => ({ ...prev, [id]: !prev[id] }));
@@ -243,8 +240,8 @@ export default function PaymentReportPage() {
             total_credit: 0,
             last_payment_date: pay.payment_date,
             payments: [],
-            outstanding_invoices: [], // 채울 예정
-            total_outstanding: 0      // 채울 예정
+            outstanding_invoices: [], 
+            total_outstanding: 0      
           });
         }
         
@@ -259,16 +256,9 @@ export default function PaymentReportPage() {
         }
       });
 
-      // 2. Map Outstanding to Groups (Even if no payment made? Prompt implies showing payment report, so we focus on payers)
-      // If you want to show customers who paid NOTHING but have outstanding, we need to loop rawUnpaid too.
-      // For now, let's attach outstanding info to the customers who matched the payment filter or just map all outstanding.
-      
-      // Map Unpaid to corresponding groups (if exists)
+      // 2. Map Outstanding to Groups
       rawUnpaid.forEach(inv => {
          const cid = inv.customer_id;
-         // Note: If a customer has outstanding debt but made NO payment in this period, 
-         // they won't be in 'groupMap' currently. 
-         // If you want ONLY customers who paid:
          if (groupMap.has(cid)) {
              const group = groupMap.get(cid)!;
              group.outstanding_invoices.push(inv);
@@ -460,59 +450,67 @@ export default function PaymentReportPage() {
                     <th className="px-4 py-3">Customer</th>
                     <th className="px-4 py-3">Last Pay Date</th>
                     <th className="px-4 py-3 text-right">Total Paid</th>
-                    <th className="px-4 py-3 text-right text-blue-600">Total Credit</th>
-                    <th className="px-4 py-3 text-right text-red-600">Total Outstanding</th>
+                    <th className="px-4 py-3 text-right text-emerald-600">Total Credit</th>
+                    <th className="px-4 py-3 text-right text-red-500">Total Outstanding</th>
+                    <th className="px-4 py-3 text-right text-slate-900 bg-slate-100/50">Net Balance (Sum)</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {groupedList.map((group) => {
                     const isExpanded = expandedRows[group.customer_id];
+                    // 🚀 [추가] Sum 계산 (미수금 - 남은 크레딧)
+                    const netBalance = group.total_outstanding - group.total_credit;
+                    
                     return (
                       <React.Fragment key={group.customer_id}>
                         {/* Main Group Row */}
                         <tr 
                           onClick={() => toggleRow(group.customer_id)}
-                          className={`cursor-pointer transition-colors ${isExpanded ? 'bg-emerald-50/50' : 'hover:bg-slate-50'}`}
+                          className={`cursor-pointer transition-colors ${isExpanded ? 'bg-blue-50/50' : 'hover:bg-slate-50'}`}
                         >
                           <td className="px-4 py-3 text-center">
                             {isExpanded ? <ChevronUp className="w-4 h-4 text-slate-400"/> : <ChevronDown className="w-4 h-4 text-slate-400"/>}
                           </td>
                           <td className="px-4 py-3 font-bold text-slate-800">{group.customer_name}</td>
                           <td className="px-4 py-3 font-medium text-slate-600">{group.last_payment_date}</td>
-                          <td className="px-4 py-3 text-right font-black text-emerald-600">${group.total_received.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                          <td className="px-4 py-3 text-right font-medium text-blue-600">
+                          <td className="px-4 py-3 text-right font-black text-slate-700">${group.total_received.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                          <td className="px-4 py-3 text-right font-medium text-emerald-600">
                              ${group.total_credit.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                           </td>
-                          <td className="px-4 py-3 text-right font-bold text-red-600">
+                          <td className="px-4 py-3 text-right font-medium text-red-500">
                              ${group.total_outstanding.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          </td>
+                          {/* 🚀 Net Balance 표시 부분 */}
+                          <td className={`px-4 py-3 text-right font-black bg-slate-50/50 ${netBalance > 0 ? 'text-red-600' : netBalance < 0 ? 'text-emerald-600' : 'text-slate-500'}`}>
+                             ${netBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                           </td>
                         </tr>
 
                         {/* Expanded Detail View */}
                         {isExpanded && (
-                          <tr className="bg-emerald-50/30 animate-in fade-in slide-in-from-top-1">
-                            <td colSpan={6} className="p-0 border-b border-slate-200">
-                              <div className="grid grid-cols-1 xl:grid-cols-2 gap-0 divide-y xl:divide-y-0 xl:divide-x divide-emerald-200">
+                          <tr className="bg-blue-50/20 animate-in fade-in slide-in-from-top-1">
+                            <td colSpan={7} className="p-0 border-b border-slate-200">
+                              <div className="grid grid-cols-1 xl:grid-cols-2 gap-0 divide-y xl:divide-y-0 xl:divide-x divide-blue-100">
                                 
                                 {/* Left: Individual Payments & Allocations */}
                                 <div className="p-4">
-                                  <p className="text-xs font-bold text-emerald-700 uppercase mb-2 flex items-center gap-2">
+                                  <p className="text-xs font-bold text-blue-700 uppercase mb-2 flex items-center gap-2">
                                     <Receipt className="w-3 h-3" /> Payment Breakdown
                                   </p>
                                   <div className="space-y-3">
                                     {group.payments.map((pay, idx) => (
-                                      <div key={idx} className="bg-white/60 rounded border border-emerald-100 p-3 text-xs">
+                                      <div key={idx} className="bg-white/80 rounded border border-blue-100 p-3 text-xs shadow-sm">
                                         <div className="flex justify-between items-center mb-2">
                                           <div className="flex gap-2 items-center">
                                             <span className="font-bold text-slate-700">{pay.payment_date}</span>
-                                            <span className="bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded">{pay.category}</span>
+                                            <span className="bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded border border-slate-200">{pay.category}</span>
                                           </div>
-                                          <span className="font-bold text-emerald-700 text-sm">${pay.amount.toLocaleString()}</span>
+                                          <span className="font-bold text-blue-700 text-sm">${pay.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                                         </div>
                                         
                                         {/* Allocations Table inside Payment */}
                                         <table className="w-full text-[11px] text-left">
-                                           <thead className="text-slate-400 border-b border-emerald-100/50">
+                                           <thead className="text-slate-400 border-b border-blue-100/50">
                                              <tr>
                                                <th className="pb-1">Invoice</th>
                                                <th className="pb-1">Inv. Date</th>
@@ -528,7 +526,7 @@ export default function PaymentReportPage() {
                                                     <td className="py-1 text-slate-600">#{alloc.invoices?.id.substring(0, 8)}</td>
                                                     <td className="py-1 text-slate-500">{alloc.invoices?.invoice_date}</td>
                                                     <td className="py-1 text-center text-slate-500">{days}d</td>
-                                                    <td className="py-1 text-right font-medium text-slate-800">${alloc.amount.toLocaleString()}</td>
+                                                    <td className="py-1 text-right font-medium text-slate-800">${alloc.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                                                   </tr>
                                                 );
                                              })}
@@ -540,7 +538,7 @@ export default function PaymentReportPage() {
                                 </div>
 
                                 {/* Right: Outstanding Invoices */}
-                                <div className="p-4 bg-red-50/30">
+                                <div className="p-4 bg-red-50/20">
                                   <div className="flex justify-between items-center mb-2">
                                     <p className="text-xs font-bold text-red-600 uppercase flex items-center gap-2">
                                       <AlertCircle className="w-3 h-3" /> Outstanding Invoices
@@ -548,7 +546,7 @@ export default function PaymentReportPage() {
                                   </div>
                                   
                                   {group.outstanding_invoices.length > 0 ? (
-                                    <div className="max-h-[400px] overflow-y-auto custom-scrollbar border border-red-100 rounded bg-white/60">
+                                    <div className="max-h-[400px] overflow-y-auto custom-scrollbar border border-red-100 rounded bg-white/60 shadow-sm">
                                       <table className="w-full text-xs text-left">
                                         <thead className="text-slate-500 border-b border-red-100 bg-red-50/50 sticky top-0">
                                           <tr>
@@ -571,7 +569,7 @@ export default function PaymentReportPage() {
                                       </table>
                                     </div>
                                   ) : (
-                                    <div className="py-4 text-center text-emerald-600 font-medium text-xs bg-emerald-50 rounded border border-emerald-100">
+                                    <div className="py-4 text-center text-emerald-600 font-medium text-xs bg-emerald-50 rounded border border-emerald-100 shadow-sm">
                                       <Check className="w-4 h-4 mx-auto mb-1" />
                                       All clear! No outstanding invoices.
                                     </div>
@@ -587,7 +585,7 @@ export default function PaymentReportPage() {
                   })}
                   
                   {groupedList.length === 0 && (
-                    <tr><td colSpan={6} className="p-8 text-center text-slate-500">No payment data found in this period.</td></tr>
+                    <tr><td colSpan={7} className="p-8 text-center text-slate-500">No payment data found in this period.</td></tr>
                   )}
                 </tbody>
               </table>

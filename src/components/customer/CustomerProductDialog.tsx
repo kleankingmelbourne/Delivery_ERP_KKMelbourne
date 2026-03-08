@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { X, Search, Save, Package, Loader2, User, Plus, Globe, Trash2, CheckSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,7 @@ interface Product {
   id: string; 
   product_name: string;    
   product_barcode: string; 
+  vendor_product_id?: string;
   sell_price_ctn: number;  
   sell_price_pack: number; 
   buy_price: number;
@@ -30,7 +31,7 @@ interface ProductItem extends Product {
   table_id?: string; 
   custom_price_ctn: number | ""; 
   custom_price_pack: number | ""; 
-  original_pack_rate: number | ""; // ✅ 복구용 원래 할인율 저장
+  original_pack_rate: number | ""; 
   is_new?: boolean;
   sync_enabled?: boolean;
 }
@@ -51,6 +52,9 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
   const [globalSearchResults, setGlobalSearchResults] = useState<Product[]>([]);
   const [searchingGlobal, setSearchingGlobal] = useState(false);
   
+  const globalSearchRef = useRef<HTMLDivElement>(null);
+  const [isGlobalDropdownOpen, setIsGlobalDropdownOpen] = useState(false);
+  
   const [items, setItems] = useState<ProductItem[]>([]);
 
   useEffect(() => {
@@ -58,9 +62,25 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
       setLocalSearchTerm("");
       setGlobalSearchTerm("");
       setGlobalSearchResults([]);
+      setIsGlobalDropdownOpen(false);
       fetchMyItems();
     }
   }, [isOpen, customerId]);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (globalSearchRef.current && !globalSearchRef.current.contains(event.target as Node)) {
+        setIsGlobalDropdownOpen(false); 
+      }
+    };
+    
+    if (isOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [isOpen]);
 
   const fetchMyItems = async () => {
     setLoading(true);
@@ -79,7 +99,7 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
     const { data: productsData } = await supabase
       .from("products")
       .select(`
-        id, product_name, product_barcode, 
+        id, product_name, product_barcode, vendor_product_id, 
         sell_price_ctn, sell_price_pack, buy_price, total_pack_ctn,
         product_units (unit_name)
       `)
@@ -96,7 +116,7 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
           table_id: custom?.id,
           custom_price_ctn: custom?.custom_price_ctn ?? "", 
           custom_price_pack: pRate,
-          original_pack_rate: pRate, // ✅ DB에서 불러온 초기값 저장
+          original_pack_rate: pRate, 
           sync_enabled: false,
         };
       });
@@ -105,7 +125,6 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
     setLoading(false);
   };
 
-  // ✅ [로직] 단일 항목 동기화 또는 복구 처리 함수
   const getProcessedItem = (item: ProductItem, shouldSync: boolean): ProductItem => {
     if (shouldSync) {
       const baseCtnPrice = Number(item.sell_price_ctn);
@@ -124,7 +143,6 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
         custom_price_pack: Number(requiredPackDiscount.toFixed(2))
       };
     } else {
-      // ✅ 체크 해제 시 원래 저장되어 있던 할인율로 복원
       return { 
         ...item, 
         sync_enabled: false,
@@ -133,23 +151,22 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
     }
   };
 
-  // 개별 체크박스 토글
   const handleToggleSync = (productId: string) => {
     setItems(prev => prev.map(item => 
       item.id === productId ? getProcessedItem(item, !item.sync_enabled) : item
     ));
   };
 
-  // ✅ 전체 선택 체크박스 상태 계산
   const isAllSynced = useMemo(() => items.length > 0 && items.every(i => i.sync_enabled), [items]);
 
-  // 전체 선택 토글
   const handleToggleAllSync = (checked: boolean) => {
     setItems(prev => prev.map(item => getProcessedItem(item, checked)));
   };
 
   const handleGlobalSearch = async (term: string) => {
     setGlobalSearchTerm(term);
+    setIsGlobalDropdownOpen(true); 
+
     if (term.length < 2) {
         setGlobalSearchResults([]);
         return; 
@@ -159,11 +176,11 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
     const { data: searchResults } = await supabase
       .from("products")
       .select(`
-        id, product_name, product_barcode, 
+        id, product_name, product_barcode, vendor_product_id,
         sell_price_ctn, sell_price_pack, buy_price, total_pack_ctn,
         product_units (unit_name)
       `)
-      .or(`product_name.ilike.%${term}%,product_barcode.ilike.%${term}%`)
+      .or(`product_name.ilike.%${term}%,product_barcode.ilike.%${term}%,vendor_product_id.ilike.%${term}%`)
       .limit(10);
 
     if (searchResults) {
@@ -192,9 +209,12 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
     setItems(prev => [newItem, ...prev]);
     setGlobalSearchTerm("");
     setGlobalSearchResults([]);
+    setIsGlobalDropdownOpen(false); 
+    setLocalSearchTerm(""); 
   };
 
-  const handleDeleteItem = async (index: number, tableId?: string) => {
+  // 🚀 [핵심 수정] index가 아닌 고유 id 값을 기준으로 삭제하도록 변경
+  const handleDeleteItem = async (productId: string, tableId?: string) => {
     if (!confirm("Are you sure you want to remove this item?")) return;
 
     if (tableId) {
@@ -209,7 +229,10 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
             return;
         }
     }
-    setItems(prev => prev.filter((_, i) => i !== index));
+    
+    // 🚀 [핵심 수정] 배열 순서가 아닌 실제 상품 id를 비교하여 삭제
+    setItems(prev => prev.filter(item => item.id !== productId));
+    setLocalSearchTerm("");
   };
 
   const handleRateChange = (id: string, type: 'ctn' | 'pack', value: string) => {
@@ -227,7 +250,6 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
         [type === 'ctn' ? 'custom_price_ctn' : 'custom_price_pack']: newValue 
       };
 
-      // ✅ 동기화 체크 상태에서 박스 할인율 변경 시 낱개 가격 실시간 재계산
       if (type === 'ctn' && updatedItem.sync_enabled) {
         const baseCtnPrice = Number(item.sell_price_ctn);
         const packsPerCtn = Number(item.total_pack_ctn) || 1;
@@ -280,7 +302,9 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
 
   const displayItems = items.filter(item => {
     const term = localSearchTerm.toLowerCase();
-    return (item.product_name?.toLowerCase() || "").includes(term) || (item.product_barcode?.toLowerCase() || "").includes(term);
+    return (item.product_name?.toLowerCase() || "").includes(term) || 
+           (item.product_barcode?.toLowerCase() || "").includes(term) ||
+           (item.vendor_product_id?.toLowerCase() || "").includes(term);
   });
 
   if (!isOpen) return null;
@@ -310,47 +334,76 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
         </div>
 
         {/* Search */}
-        <div className="px-8 py-4 bg-white border-b border-slate-100 space-y-3 sticky top-0 z-20">
-          <div className="flex items-center justify-between">
-             <div className="relative w-full max-w-sm">
+        <div className="px-8 py-4 bg-white border-b border-slate-100 sticky top-0 z-20">
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+            
+            {/* 글로벌 검색창 영역 */}
+            <div className="relative w-full sm:w-2/3 max-w-2xl" ref={globalSearchRef}>
+              <Globe className="absolute left-3 top-3 w-4 h-4 text-blue-500"/>
+              <Input 
+                  placeholder="Search GLOBAL products by name, barcode, or vendor ID..." 
+                  className="pl-9 bg-white w-full border-2 border-blue-100 focus:border-blue-400 h-10 font-medium"
+                  value={globalSearchTerm}
+                  onChange={(e) => handleGlobalSearch(e.target.value)}
+                  onFocus={() => setIsGlobalDropdownOpen(true)} 
+              />
+              
+              {isGlobalDropdownOpen && globalSearchTerm.length >= 2 && (
+                  <div className="absolute top-full left-0 right-0 mt-1 bg-white rounded-lg border border-slate-200 shadow-xl max-h-60 overflow-y-auto z-50">
+                      {searchingGlobal ? (
+                          <div className="p-4 text-center text-slate-400 flex items-center justify-center gap-2"><Loader2 className="w-4 h-4 animate-spin"/> Searching...</div>
+                      ) : globalSearchResults.length === 0 ? (
+                          <div className="p-4 text-center text-slate-400 text-sm">No new products found.</div>
+                      ) : (
+                          <div className="divide-y divide-slate-50">
+                              {globalSearchResults.map(prod => (
+                                  <div key={prod.id} className="flex items-center justify-between p-3 hover:bg-blue-50 transition-colors">
+                                      <div className="flex flex-col">
+                                          <span className="font-bold text-slate-700 text-sm">{prod.product_name}</span>
+                                          <span className="text-xs text-slate-400">
+                                            Code: {prod.vendor_product_id || '-'} | Cost: ${safeFixed(prod.buy_price)}
+                                          </span>
+                                      </div>
+                                      <Button 
+                                          size="sm" 
+                                          onMouseDown={(e) => {
+                                              e.preventDefault(); 
+                                              e.stopPropagation();
+                                              handleAddItem(prod);
+                                          }} 
+                                          className="h-8 bg-white border border-blue-200 text-blue-600 hover:bg-blue-600 hover:text-white"
+                                      >
+                                          <Plus className="w-3 h-3 mr-1"/> Add
+                                      </Button>
+                                  </div>
+                              ))}
+                          </div>
+                      )}
+                  </div>
+              )}
+            </div>
+
+            {/* 오른쪽: Local 필터 검색창 */}
+            <div className="relative w-full sm:w-1/3 max-w-xs ml-auto">
                 <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400"/>
                 <Input 
-                  placeholder="Search loaded items..." 
+                  placeholder="Filter loaded items..." 
                   className="pl-9 bg-slate-50 border-slate-200 text-sm h-9"
                   value={localSearchTerm}
                   onChange={(e) => setLocalSearchTerm(e.target.value)}
                 />
+                {localSearchTerm && (
+                  <button 
+                    onMouseDown={(e) => {
+                        e.preventDefault();
+                        setLocalSearchTerm("");
+                    }}
+                    className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
              </div>
-          </div>
-          <div className="relative w-full">
-            <Globe className="absolute left-3 top-3 w-4 h-4 text-blue-500"/>
-            <Input 
-                placeholder="Search GLOBAL products to add..." 
-                className="pl-9 bg-white w-full border-2 border-blue-100 focus:border-blue-400 h-10 font-medium"
-                value={globalSearchTerm}
-                onChange={(e) => handleGlobalSearch(e.target.value)}
-            />
-            {globalSearchTerm.length >= 2 && (
-                <div className="absolute top-full left-0 right-0 mt-1 bg-white rounded-lg border border-slate-200 shadow-xl max-h-60 overflow-y-auto z-50">
-                    {searchingGlobal ? (
-                        <div className="p-4 text-center text-slate-400 flex items-center justify-center gap-2"><Loader2 className="w-4 h-4 animate-spin"/> Searching...</div>
-                    ) : globalSearchResults.length === 0 ? (
-                        <div className="p-4 text-center text-slate-400 text-sm">No new products found.</div>
-                    ) : (
-                        <div className="divide-y divide-slate-50">
-                            {globalSearchResults.map(prod => (
-                                <div key={prod.id} className="flex items-center justify-between p-3 hover:bg-blue-50 transition-colors">
-                                    <div className="flex flex-col">
-                                        <span className="font-bold text-slate-700 text-sm">{prod.product_name}</span>
-                                        <span className="text-xs text-slate-400">Cost: ${safeFixed(prod.buy_price)}</span>
-                                    </div>
-                                    <Button size="sm" onClick={() => handleAddItem(prod)} className="h-8 bg-white border border-blue-200 text-blue-600 hover:bg-blue-600 hover:text-white"><Plus className="w-3 h-3 mr-1"/> Add</Button>
-                                </div>
-                            ))}
-                        </div>
-                    )}
-                </div>
-            )}
           </div>
         </div>
 
@@ -361,7 +414,7 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
               <tr>
                 <th className="px-4 py-4 w-[60px] border-b text-center">
                   <div className="flex flex-col items-center gap-1">
-                    <span className="text-[10px]">Sync</span>
+                    <span className="text-[10px]">ctn/pack Sync</span>
                     <Checkbox 
                         checked={isAllSynced} 
                         onCheckedChange={(c) => handleToggleAllSync(!!c)}
@@ -394,7 +447,9 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
             <tbody className="divide-y divide-slate-100 bg-white">
               {loading && items.length === 0 ? (
                 <tr><td colSpan={7} className="p-20 text-center"><Loader2 className="w-10 h-10 animate-spin mx-auto text-slate-300"/></td></tr>
-              ) : displayItems.map((item, index) => {
+              ) : displayItems.length === 0 && !loading ? (
+                <tr><td colSpan={7} className="p-20 text-center text-slate-400">No items found matching your search.</td></tr>
+              ) : displayItems.map((item, index) => { // index는 더이상 삭제 로직에 안 쓰임
                 const unitName = item.unit_name?.toLowerCase() || "";
                 const isCarton = unitName.includes('ctn') || unitName.includes('carton');
                 const resultCtn = calculateFinalPrice(item.sell_price_ctn, item.custom_price_ctn);
@@ -408,7 +463,9 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
                         onCheckedChange={() => handleToggleSync(item.id)}
                       />
                     </td>
-                    <td className="px-6 py-4 font-mono text-xs text-slate-500 border-b border-slate-50">{item.product_barcode}</td>
+                    <td className="px-6 py-4 font-mono text-xs text-slate-500 border-b border-slate-50">
+                      {item.vendor_product_id || item.product_barcode || "-"}
+                    </td>
                     <td className="px-6 py-4 border-b border-slate-50">
                         <div className="font-bold text-slate-700 text-sm">{item.product_name}</div>
                         <div className="text-[10px] text-slate-400">{item.total_pack_ctn} PK/CTN</div>
@@ -452,7 +509,15 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
                     </td>
 
                     <td className="px-2 py-4 border-b border-slate-50 text-center">
-                        <Button size="icon" variant="ghost" className="text-slate-300 hover:text-red-500 w-8 h-8 rounded-full" onClick={() => handleDeleteItem(index, item.table_id)}><Trash2 className="w-4 h-4" /></Button>
+                        {/* 🚀 [핵심 수정] index 대신 item.id 를 파라미터로 넘김 */}
+                        <Button 
+                          size="icon" 
+                          variant="ghost" 
+                          className="text-slate-300 hover:text-red-500 w-8 h-8 rounded-full" 
+                          onClick={() => handleDeleteItem(item.id, item.table_id)}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
                     </td>
                   </tr>
                 );

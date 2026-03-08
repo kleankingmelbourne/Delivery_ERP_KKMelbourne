@@ -189,7 +189,7 @@ export const downloadPickingSummary = async (ids: string[]) => {
       summaryMap.get(key).qty += qty;
     } else {
       summaryMap.set(key, { 
-        name: product.name || item.description, 
+        name: product.name || product.product_name || item.description, 
         location: product.location || "", 
         qty, 
         unit: item.unit || product.unit || "EA",
@@ -199,9 +199,19 @@ export const downloadPickingSummary = async (ids: string[]) => {
   });
 
   const summaryList = Array.from(summaryMap.values()).sort((a, b) => (a.location || "").localeCompare(b.location || ""));
-  let content = `Picking Summary\n==========================================\n`;
+  
+  // 🚀 [수정] 텍스트 파일 헤더 및 표 형식 레이아웃 적용
+  let content = `Picking Summary\n====================================================================================\n`;
+  content += `[Location] | Qty & Unit | Vendor ID       | Product Name\n`;
+  content += `------------------------------------------------------------------------------------\n`;
+  
   summaryList.forEach(i => {
-    content += `[${i.location.padEnd(8)}] ${i.name.padEnd(30)} | ${i.qty} ${i.unit}\n`;
+    const loc = (i.location || "-").padEnd(8);
+    const qtyUnit = `${i.qty} ${i.unit}`.padEnd(10);
+    const vId = (i.vendorProductId || "-").padEnd(15);
+    
+    // 🚀 [수정] Location -> Qty -> Vendor ID -> Name 순서로 텍스트 결합
+    content += `[${loc}] | ${qtyUnit} | ${vId} | ${i.name}\n`;
   });
 
   const blob = new Blob([content], { type: "text/plain;charset=utf-8" });

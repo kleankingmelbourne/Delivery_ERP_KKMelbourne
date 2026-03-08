@@ -4,7 +4,8 @@ import React, { useEffect, useState } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { 
   Plus, Search, Filter, X, 
-  Eye, ChevronUp, CreditCard, Trash2, AlertTriangle, MoreHorizontal, FileText
+  Eye, ChevronUp, CreditCard, Trash2, AlertTriangle, MoreHorizontal, FileText,
+  Edit // ✅ Edit 아이콘 사용
 } from "lucide-react";
 import Link from "next/link";
 
@@ -371,6 +372,7 @@ export default function PaymentListPage() {
                       </td>
                       <td className="px-6 py-4 text-center">
                         <div className="flex items-center justify-center gap-2">
+                          {/* 1. Detail Toggle */}
                           <button 
                             onClick={() => toggleRow(pay.id)}
                             className={`p-2 rounded-full transition-all ${isExpanded ? 'bg-slate-200 text-slate-900' : 'text-slate-400 hover:bg-slate-100 hover:text-blue-600'}`}
@@ -378,7 +380,19 @@ export default function PaymentListPage() {
                           >
                             {isExpanded ? <ChevronUp className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                           </button>
+
+                          {/* 2. Edit Payment (새로 추가) */}
+                          <Link href={`/payment/edit/${pay.id}`}>
+                            <button 
+                              onClick={(e) => e.stopPropagation()}
+                              className="p-2 text-slate-400 hover:bg-slate-100 hover:text-blue-600 rounded-full transition-all"
+                              title="Edit Payment"
+                            >
+                              <Edit className="w-4 h-4" />
+                            </button>
+                          </Link>
                           
+                          {/* 3. Delete Payment */}
                           <button 
                             onClick={(e) => {
                               e.stopPropagation();

@@ -1,12 +1,13 @@
 "use client";
 
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import { createClient } from "@/utils/supabase/client";
 import Script from "next/script"; 
 import { 
   Calendar as CalendarIcon, Truck, Map as MapIcon, Navigation, 
   MapPin, CheckCircle2, User, Loader2, MapPin as WarehouseIcon, Radio,
-  Box, X, Circle, FileText, Sparkles, Building2, Home, MousePointerClick, Save, RotateCcw, Edit2, Check, GripVertical, Printer
+  Box, X, Circle, FileText, Sparkles, Building2, Home, MousePointerClick, 
+  Save, RotateCcw, Edit2, Check, GripVertical, Printer, ChevronLeft, ChevronRight, ChevronDown
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -20,8 +21,16 @@ import {
   DialogHeader,
   DialogTitle,
   DialogDescription,
-  DialogFooter,
 } from "@/components/ui/dialog";
+
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 // Pdf Download / Print Import
 import { printBulkPdf } from "@/utils/downloadPdf";
@@ -83,9 +92,9 @@ interface DriverRouteInfo {
     run: number; 
     count: number;
     completedCount: number;
+    newCount: number; // 🚀 [추가] 신규 배송건 개수 추적
 }
 
-// 위치 정보 타입
 interface LocationData {
     address: string;
     lat: number | null;
@@ -117,28 +126,28 @@ export default function DeliveryRoutePage() {
   const [originalInvoices, setOriginalInvoices] = useState<Invoice[]>([]); 
   const [loading, setLoading] = useState(false);
 
-  // 회사 정보 및 기사 위치 캐싱 데이터
   const [companyLoc, setCompanyLoc] = useState<LocationData | null>(null);
   const [driverLocations, setDriverLocations] = useState<Record<string, LocationData>>({});
 
   const currentDriverId = selectedRouteKey ? selectedRouteKey.split('_')[0] : null;
   const driverLoc = currentDriverId ? driverLocations[currentDriverId] : null;
 
-  // 출발지(Start)와 도착지(Final) 상태 분리 및 기본값 설정
+  // 컴팩트 UI용 출발/도착지 상태
   const [startDestType, setStartDestType] = useState<'company' | 'home' | 'custom'>('company');
   const [finalDestType, setFinalDestType] = useState<'company' | 'home' | 'custom'>('home');
   
-  // Custom Address States
   const [customStart, setCustomStart] = useState("");
   const [isCustomStartSet, setIsCustomStartSet] = useState(false); 
   const [customFinal, setCustomFinal] = useState("");
   const [isCustomFinalSet, setIsCustomFinalSet] = useState(false); 
   
   const [isOptimizing, setIsOptimizing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false); 
   const [isRouteChanged, setIsRouteChanged] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saved'>('idle'); 
+
   const [printingRouteKey, setPrintingRouteKey] = useState<string | null>(null);
 
-  // Map
   const [isMapOpen, setIsMapOpen] = useState(false);
   const [isGoogleLoaded, setIsGoogleLoaded] = useState(false);
   const [warehouseLocation, setWarehouseLocation] = useState(DEFAULT_LOCATION);
@@ -146,11 +155,16 @@ export default function DeliveryRoutePage() {
 
   // Detail Dialog State
   const [isDetailOpen, setIsDetailOpen] = useState(false);
-  const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
+  const [currentIndex, setCurrentIndex] = useState<number>(-1);
   const [invoiceItems, setInvoiceItems] = useState<InvoiceItem[]>([]);
   const [loadingItems, setLoadingItems] = useState(false);
+  
+  const [checkedItems, setCheckedItems] = useState<Set<string>>(new Set());
 
-  // ✅ [NEW] 실시간 통신 폭주 방지를 위한 디바운스 타이머 참조
+  // 마우스 드래그(스와이프) 상태
+  const [touchStartX, setTouchStartX] = useState<number | null>(null);
+  const [touchStartY, setTouchStartY] = useState<number | null>(null);
+
   const refreshTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const sensors = useSensors(
@@ -186,7 +200,8 @@ export default function DeliveryRoutePage() {
     try {
         const { data, error } = await supabase
             .from("invoices")
-            .select(`driver_id, delivery_run, is_completed, profiles:driver_id ( display_name, address, lat, lng, route_prefs )`)
+            // 🚀 [추가] delivery_order를 쿼리에 포함하여 새 오더 판단
+            .select(`driver_id, delivery_run, delivery_order, is_completed, profiles:driver_id ( display_name, address, lat, lng, route_prefs )`)
             .eq("invoice_date", selectedDate)
             .neq("status", "Paid")
             .is("is_pickup", false) 
@@ -213,9 +228,19 @@ export default function DeliveryRoutePage() {
 
             const run = (item.delivery_run === 0 || item.delivery_run === null) ? 1 : item.delivery_run;
             const key = `${dId}_${run}`;
-            if (!groups[key]) groups[key] = { driverId: dId, driverName: dName, run: run, count: 0, completedCount: 0 };
+            
+            if (!groups[key]) groups[key] = { driverId: dId, driverName: dName, run: run, count: 0, completedCount: 0, newCount: 0 };
+            
             groups[key].count += 1;
-            if (item.is_completed) groups[key].completedCount += 1;
+            
+            if (item.is_completed) {
+                groups[key].completedCount += 1;
+            }
+            
+            // 🚀 [추가] 순서가 아직 안정해진 새로운 배송건(delivery_order === 0) 카운트 증가
+            if (item.delivery_order === 0 || item.delivery_order === null) {
+                groups[key].newCount += 1;
+            }
         });
 
         setDriverLocations(locMap);
@@ -243,6 +268,8 @@ export default function DeliveryRoutePage() {
 
       setLoading(true);
       setIsRouteChanged(false); 
+      setSaveStatus('idle'); 
+      
       const { data, error } = await supabase
         .from("invoices")
         .select(`
@@ -312,7 +339,6 @@ export default function DeliveryRoutePage() {
   const handlePrintRoute = async (e: React.MouseEvent, driverId: string, run: number) => {
     e.stopPropagation(); 
     const routeKey = `${driverId}_${run}`;
-    
     if (selectedRouteKey === routeKey && isRouteChanged) {
         if (!confirm("You have unsaved sorting changes. Do you want to print the saved version from the database?")) return;
     }
@@ -328,26 +354,16 @@ export default function DeliveryRoutePage() {
             .is("is_pickup", false)
             .order("delivery_order", { ascending: true });
 
-        if (error) throw error;
-
-        if (data) {
+        if (!error && data) {
             const filtered = data.filter(item => {
                 const itemRun = (item.delivery_run === 0 || item.delivery_run === null) ? 1 : item.delivery_run;
                 return itemRun === run;
             });
             const invoiceIds = filtered.map(inv => inv.id);
-            if (invoiceIds.length === 0) {
-                alert("No invoices found to print for this route.");
-                setPrintingRouteKey(null);
-                return;
-            }
-            await printBulkPdf(invoiceIds);
+            if (invoiceIds.length > 0) await printBulkPdf(invoiceIds);
         }
-    } catch (err: any) {
-        alert("Error printing invoices: " + err.message);
-    } finally {
-        setPrintingRouteKey(null);
-    }
+    } catch (err: any) { alert("Error printing invoices: " + err.message); } 
+    finally { setPrintingRouteKey(null); }
   };
 
   const handleDragEnd = (event: DragEndEvent) => {
@@ -359,19 +375,14 @@ export default function DeliveryRoutePage() {
             return arrayMove(items, oldIndex, newIndex);
         });
         setIsRouteChanged(true); 
+        setSaveStatus('idle'); 
     }
   };
 
   const resolveLocation = (type: 'company' | 'home' | 'custom', customText: string): { lat: number, lng: number } | string | null => {
-      if (type === 'company' && companyLoc) {
-          return (companyLoc.lat && companyLoc.lng) ? { lat: companyLoc.lat, lng: companyLoc.lng } : companyLoc.address;
-      }
-      if (type === 'home' && driverLoc) {
-          return (driverLoc.lat && driverLoc.lng) ? { lat: driverLoc.lat, lng: driverLoc.lng } : driverLoc.address;
-      }
-      if (type === 'custom' && customText) {
-          return customText;
-      }
+      if (type === 'company' && companyLoc) return (companyLoc.lat && companyLoc.lng) ? { lat: companyLoc.lat, lng: companyLoc.lng } : companyLoc.address;
+      if (type === 'home' && driverLoc) return (driverLoc.lat && driverLoc.lng) ? { lat: driverLoc.lat, lng: driverLoc.lng } : driverLoc.address;
+      if (type === 'custom' && customText) return customText;
       return null;
   };
 
@@ -382,20 +393,36 @@ export default function DeliveryRoutePage() {
       const startLocation = resolveLocation(startDestType, customStart);
       const finalLocation = resolveLocation(finalDestType, customFinal);
 
-      if (!startLocation) return alert("Please set a valid Start point.");
-      if (!finalLocation) return alert("Please set a valid Final Destination.");
+      if (!startLocation || !finalLocation) return alert("Please set a valid Start and Final Destination.");
 
       setIsOptimizing(true);
       const ds = new window.google.maps.DirectionsService();
       
-      const waypoints = invoices.map(inv => {
+      const validInvoices: Invoice[] = [];
+      const invalidInvoices: Invoice[] = [];
+      const waypoints: any[] = [];
+
+      invoices.forEach(inv => {
           const c = inv.customers;
           const lat = c.delivery_lat || c.lat;
           const lng = c.delivery_lng || c.lng;
-          if (lat && lng) return { location: { lat, lng }, stopover: true };
-          const addr = [c.delivery_address || c.address, c.suburb].filter(Boolean).join(", ");
-          return addr ? { location: addr, stopover: true } : null;
-      }).filter(Boolean);
+          const addressStr = [c.delivery_address || c.address, c.suburb].filter(Boolean).join(", ").trim();
+
+          if (lat && lng && lat !== 0 && lng !== 0) {
+              validInvoices.push(inv);
+              waypoints.push({ location: { lat, lng }, stopover: true });
+          } else if (addressStr.length > 0) {
+              validInvoices.push(inv);
+              waypoints.push({ location: addressStr, stopover: true });
+          } else {
+              invalidInvoices.push(inv);
+          }
+      });
+
+      if (validInvoices.length === 0) {
+          setIsOptimizing(false);
+          return alert("No valid addresses found to optimize.");
+      }
 
       ds.route({
           origin: startLocation,
@@ -403,97 +430,159 @@ export default function DeliveryRoutePage() {
           // @ts-ignore
           waypoints: waypoints,
           travelMode: window.google.maps.TravelMode.DRIVING,
+          avoidTolls: true, 
           optimizeWaypoints: true 
       }, (res: any, status: any) => {
           setIsOptimizing(false);
-          if (status === 'OK' && res.routes[0] && res.routes[0].waypoint_order) {
+          if (status === 'OK' && res.routes[0]) {
               const order = res.routes[0].waypoint_order; 
-              const sortedInvoices = order.map((index: number) => invoices[index]);
-              setInvoices(sortedInvoices);
+              const sortedValidInvoices = order.map((index: number) => validInvoices[index]);
+              
+              setInvoices([...sortedValidInvoices, ...invalidInvoices]);
               setIsRouteChanged(true); 
-          } else {
-              alert("Route optimization failed: " + status);
+              setSaveStatus('idle'); 
+              
+              if (invalidInvoices.length > 0) {
+                  alert(`${invalidInvoices.length} stop(s) skipped due to missing address.\nThey have been placed at the end of the route.`);
+              }
+          } else { 
+              alert("Route optimization failed: " + status); 
           }
       });
   };
 
   const handleSaveRoute = async () => {
-      setIsOptimizing(true); 
+      setIsSaving(true); 
       try {
-          const updates = invoices.map((inv, index) => ({
-              id: inv.id,
-              delivery_order: index + 1
-          }));
+          const updates = invoices.map((inv, index) => ({ id: inv.id, delivery_order: index + 1 }));
           await Promise.all(updates.map(u => supabase.from('invoices').update({ delivery_order: u.delivery_order }).eq('id', u.id)));
-          setOriginalInvoices(invoices); 
+          
+          const savedInvoices = invoices.map((inv, index) => ({ ...inv, delivery_order: index + 1 }));
+          setInvoices(savedInvoices);
+          setOriginalInvoices(savedInvoices); 
           setIsRouteChanged(false); 
-          alert("Route order saved successfully!");
-      } catch (error: any) {
-          alert("Save failed: " + error.message);
-      } finally {
-          setIsOptimizing(false);
-      }
+          setSaveStatus('saved'); 
+          
+          // 🚀 [추가] 저장이 완료되면 좌측 사이드바의 NEW 뱃지도 없애기 위해 리스트 새로고침
+          fetchRoutes(); 
+      } catch (error: any) { alert("Save failed: " + error.message); } 
+      finally { setIsSaving(false); }
   };
 
-  const handleRevert = () => {
-      setInvoices(originalInvoices);
-      setIsRouteChanged(false);
-  };
+  const handleRevert = () => { setInvoices(originalInvoices); setIsRouteChanged(false); };
 
-  const handleInvoiceClick = async (invoice: Invoice) => {
-    setSelectedInvoice(invoice);
-    setIsDetailOpen(true);
-    setLoadingItems(true);
+  const fetchInvoiceItems = useCallback(async (index: number) => {
+    if (index < 0 || index >= invoices.length) return;
     
+    setLoadingItems(true);
+    setCheckedItems(new Set()); 
+
+    const invoice = invoices[index];
     const { data, error } = await supabase
       .from('invoice_items')
       .select('id, description, quantity, unit, products(vendor_product_id)')
       .eq('invoice_id', invoice.id);
       
     if (!error && data) {
-        const formattedItems = data.map((item: any) => ({
+        setInvoiceItems(data.map((item: any) => ({
             id: item.id,
             description: item.description,
             quantity: item.quantity,
             unit: item.unit,
             products: Array.isArray(item.products) ? item.products[0] : item.products
-        }));
-        setInvoiceItems(formattedItems);
-    } else {
-        setInvoiceItems([]);
-    }
-    
+        })));
+    } else { setInvoiceItems([]); }
     setLoadingItems(false);
+  }, [invoices, supabase]);
+
+  const handleInvoiceClick = (index: number) => {
+    setCurrentIndex(index);
+    setIsDetailOpen(true);
+    fetchInvoiceItems(index);
   };
+
+  const handlePrev = () => {
+      if (currentIndex > 0) {
+          const nextIdx = currentIndex - 1;
+          setCurrentIndex(nextIdx);
+          fetchInvoiceItems(nextIdx);
+      }
+  };
+
+  const handleNext = () => {
+      if (currentIndex < invoices.length - 1) {
+          const nextIdx = currentIndex + 1;
+          setCurrentIndex(nextIdx);
+          fetchInvoiceItems(nextIdx);
+      }
+  };
+
+  const toggleItemCheck = (itemId: string) => {
+      setCheckedItems((prev) => {
+          const next = new Set(prev);
+          if (next.has(itemId)) {
+              next.delete(itemId);
+          } else {
+              next.add(itemId);
+          }
+          return next;
+      });
+  };
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+      setTouchStartX(e.clientX);
+      setTouchStartY(e.clientY);
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+      if (touchStartX === null || touchStartY === null) return;
+      const deltaX = touchStartX - e.clientX;
+      const deltaY = touchStartY - e.clientY;
+
+      if (Math.abs(deltaX) > 50 && Math.abs(deltaX) > Math.abs(deltaY)) {
+          if (deltaX > 0) {
+              handleNext(); 
+          } else {
+              handlePrev(); 
+          }
+      }
+      setTouchStartX(null);
+      setTouchStartY(null);
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+        if (!isDetailOpen) return;
+        if (e.key === 'ArrowLeft') handlePrev();
+        if (e.key === 'ArrowRight') handleNext();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isDetailOpen, currentIndex, invoices.length]);
 
   useEffect(() => { fetchRoutes(); }, [selectedDate]);
   useEffect(() => { fetchInvoices(); }, [selectedRouteKey]);
 
-  // ✅ [NEW] 실시간 통신 폭주를 막기 위한 Debounce 적용
   useEffect(() => {
     const channel = supabase.channel('route_view_changes')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'invoices', filter: `invoice_date=eq.${selectedDate}` }, () => {
-            
-            // 50번의 알림이 와도, 마지막 알림 이후 0.5초 뒤에 딱 한 번만 데이터를 다시 가져옵니다.
             if (refreshTimeoutRef.current) clearTimeout(refreshTimeoutRef.current);
-            
             refreshTimeoutRef.current = setTimeout(() => {
                 fetchRoutes();
                 if (selectedRouteKey && !isRouteChanged) fetchInvoices(); 
-            }, 500); // 500ms 딜레이
-        })
-        .subscribe();
-        
-    return () => { 
-        supabase.removeChannel(channel); 
-        if (refreshTimeoutRef.current) clearTimeout(refreshTimeoutRef.current);
-    };
+            }, 500);
+        }).subscribe();
+    return () => { supabase.removeChannel(channel); if (refreshTimeoutRef.current) clearTimeout(refreshTimeoutRef.current); };
   }, [selectedDate, selectedRouteKey, isRouteChanged]);
-
 
   if (!isMounted) return null;
 
   const currentRouteInfo = routeList.find(r => `${r.driverId}_${r.run}` === selectedRouteKey);
+  const activeInvoice = currentIndex !== -1 ? invoices[currentIndex] : null;
+
+  const isOptimized = invoices.length > 0 && invoices.some(inv => inv.delivery_order > 0);
+
+  let currentStopNumber = 1;
 
   return (
     <>
@@ -504,7 +593,6 @@ export default function DeliveryRoutePage() {
     />
 
     <div className="flex flex-col h-[calc(100vh-65px)] bg-slate-50/50">
-      {/* Top Bar */}
       <div className="h-16 border-b border-slate-200 bg-white px-6 flex items-center justify-between shrink-0 z-10 shadow-sm">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2 text-slate-800 font-bold text-lg">
@@ -521,84 +609,44 @@ export default function DeliveryRoutePage() {
             />
           </div>
         </div>
-
-        <div>
-            <Button 
-                variant="outline" 
-                size="sm" 
-                onClick={() => setIsMapOpen(true)}
-                disabled={invoices.length === 0}
-                className="h-9 text-xs font-bold text-slate-600 hover:text-blue-600 hover:bg-blue-50 border border-slate-300 gap-2"
-            >
-                <MapIcon className="w-4 h-4" /> View Map
-            </Button>
-        </div>
+        <Button variant="outline" size="sm" onClick={() => setIsMapOpen(true)} disabled={invoices.length === 0} className="h-9 text-xs font-bold text-slate-600 hover:text-blue-600 hover:bg-blue-50 border border-slate-300 gap-2"><MapIcon className="w-4 h-4" /> View Map</Button>
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* Left Sidebar */}
         <div className="w-64 bg-white border-r border-slate-200 flex flex-col overflow-y-auto shrink-0">
-          <div className="p-4 text-xs font-bold text-slate-400 uppercase tracking-wider bg-slate-50/50 border-b border-slate-100">
-              Active Routes ({routeList.length})
-          </div>
+          <div className="p-4 text-xs font-bold text-slate-400 uppercase tracking-wider bg-slate-50/50 border-b border-slate-100">Active Routes ({routeList.length})</div>
           <div className="flex flex-col p-2 gap-1.5">
-            {routeList.length === 0 && !loading && (
-                <div className="text-center py-10 text-slate-400 text-xs">No deliveries found.</div>
-            )}
             {routeList.map((route) => {
               const key = `${route.driverId}_${route.run}`;
               const isSelected = selectedRouteKey === key;
               const isDone = route.count > 0 && route.count === route.completedCount;
-              const isPrinting = printingRouteKey === key;
-
+              
               return (
-                <button
-                  key={key}
-                  onClick={() => setSelectedRouteKey(key)}
-                  className={cn(
-                    "flex items-center gap-3 p-3 text-left transition-all rounded-lg border",
-                    isSelected 
-                        ? "bg-emerald-50/80 border-emerald-200 shadow-sm" 
-                        : "bg-white hover:bg-slate-50 border-transparent hover:border-slate-200"
-                  )}
-                >
+                <button key={key} onClick={() => setSelectedRouteKey(key)} className={cn("flex items-center gap-3 p-3 text-left transition-all rounded-lg border", isSelected ? "bg-emerald-50/80 border-emerald-200 shadow-sm" : "bg-white hover:bg-slate-50 border-transparent hover:border-slate-200")}>
                   <div className="relative">
-                      <Avatar className="h-9 w-9 border border-white shadow-sm shrink-0">
-                        <AvatarFallback className={cn("text-xs font-bold", isSelected ? "bg-emerald-200 text-emerald-800" : "bg-slate-100 text-slate-500")}>
-                          {route.driverName.slice(0, 1).toUpperCase()}
-                        </AvatarFallback>
-                      </Avatar>
-                      {route.run === 2 && (
-                          <span className="absolute -bottom-1 -right-1 bg-indigo-500 text-white text-[9px] w-4 h-4 flex items-center justify-center rounded-full border-2 border-white font-bold">2</span>
-                      )}
+                      <Avatar className="h-9 w-9 border border-white shadow-sm shrink-0"><AvatarFallback className={cn("text-xs font-bold", isSelected ? "bg-emerald-200 text-emerald-800" : "bg-slate-100 text-slate-500")}>{route.driverName.slice(0, 1).toUpperCase()}</AvatarFallback></Avatar>
+                      {route.run === 2 && (<span className="absolute -bottom-1 -right-1 bg-indigo-500 text-white text-[9px] w-4 h-4 flex items-center justify-center rounded-full border-2 border-white font-bold">2</span>)}
                   </div>
-                  
                   <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between">
                           <div className="flex items-center gap-1.5 truncate">
-                              <span className={cn("font-bold text-sm truncate", isSelected ? "text-emerald-900" : "text-slate-700")}>
-                                  {route.driverName}
-                              </span>
+                              <span className={cn("font-bold text-sm truncate", isSelected ? "text-emerald-900" : "text-slate-700")}>{route.driverName}</span>
                               {isDone && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
                           </div>
-                          <div 
-                              onClick={(e) => handlePrintRoute(e, route.driverId, route.run)}
-                              className={cn(
-                                  "p-1.5 rounded-md transition-colors cursor-pointer shrink-0",
-                                  isPrinting ? "bg-indigo-50" : "text-slate-400 hover:text-indigo-600 hover:bg-indigo-50"
-                              )}
-                              title="Print Route Invoices in Order"
-                          >
-                              {isPrinting ? <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600"/> : <Printer className="w-3.5 h-3.5" />}
-                          </div>
+                          <div onClick={(e) => handlePrintRoute(e, route.driverId, route.run)} className={cn("p-1.5 rounded-md transition-colors cursor-pointer shrink-0", printingRouteKey === key ? "bg-indigo-50" : "text-slate-400 hover:text-indigo-600 hover:bg-indigo-50")}>{printingRouteKey === key ? <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600"/> : <Printer className="w-3.5 h-3.5" />}</div>
                       </div>
                       <div className="flex items-center gap-2 mt-0.5">
                           <Badge variant="secondary" className={cn("text-[9px] px-1.5 h-4 rounded-sm font-normal", route.run === 2 ? "bg-indigo-50 text-indigo-600" : "bg-slate-100 text-slate-500")}>
                               {route.run === 1 ? "1st Run" : "2nd Run"}
                           </Badge>
-                          <span className="text-[10px] text-slate-400 font-medium">
-                              {route.completedCount} / {route.count} stops
-                          </span>
+                          <span className="text-[10px] text-slate-400 font-medium">{route.completedCount} / {route.count} stops</span>
+                          
+                          {/* 🚀 [추가] 신규 배송건이 있을 경우 사이드바에 NEW 뱃지 표시 */}
+                          {route.newCount > 0 && (
+                              <Badge className="bg-amber-500 hover:bg-amber-600 text-white text-[8px] px-1 h-3.5 rounded-sm">
+                                  {route.newCount} NEW
+                              </Badge>
+                          )}
                       </div>
                   </div>
                 </button>
@@ -607,296 +655,266 @@ export default function DeliveryRoutePage() {
           </div>
         </div>
 
-        {/* Right Content */}
         <div className="flex-1 bg-slate-50/50 p-6 overflow-y-auto">
           {selectedRouteKey && currentRouteInfo ? (
             <div className="max-w-xl mx-auto space-y-4">
-              
-              {/* Header Info */}
               <div className="flex items-center justify-between">
-                 <div>
-                     <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
-                         {currentRouteInfo.driverName}
-                         <span className={cn("text-xs px-2 py-0.5 rounded-full border", currentRouteInfo.run === 2 ? "bg-indigo-50 text-indigo-700 border-indigo-200" : "bg-emerald-50 text-emerald-700 border-emerald-200")}>
-                             {currentRouteInfo.run === 1 ? "1st Run" : "2nd Run"}
-                         </span>
-                     </h2>
-                     <p className="text-xs text-slate-500 mt-1">
-                         {isRouteChanged ? <span className="text-amber-600 font-bold">Unsaved changes - Click Save to apply</span> : "Sorted by saved sequence"}
-                     </p>
-                 </div>
-                 <div className="text-right">
-                     <div className="text-2xl font-black text-slate-800">{invoices.length}</div>
-                     <div className="text-[10px] text-slate-400 uppercase font-bold">Stops</div>
-                 </div>
+                  <div><h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">{currentRouteInfo.driverName}<span className={cn("text-xs px-2 py-0.5 rounded-full border", currentRouteInfo.run === 2 ? "bg-indigo-50 text-indigo-700 border-indigo-200" : "bg-emerald-50 text-emerald-700 border-emerald-200")}>{currentRouteInfo.run === 1 ? "1st Run" : "2nd Run"}</span></h2><p className="text-xs text-slate-500 mt-1">{isRouteChanged ? <span className="text-amber-600 font-bold">Unsaved changes - Click Save to apply</span> : "Sorted by saved sequence"}</p></div>
+                  <div className="text-right"><div className="text-2xl font-black text-slate-800">{invoices.length}</div><div className="text-[10px] text-slate-400 uppercase font-bold">Stops</div></div>
               </div>
 
-              {/* Optimization Controls */}
               {invoices.length > 0 && (
-                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-4">
-                      
-                      {/* Start Location Selector */}
-                      <div className="flex items-center justify-between">
-                          <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider flex items-center gap-1"><MapPin className="w-3.5 h-3.5"/> Start Point</span>
-                          <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
-                              <button onClick={() => { 
-                                  setStartDestType('company'); setIsCustomStartSet(false); 
-                                  saveRoutePrefsToDB({ startDestType: 'company', isCustomStartSet: false }); 
-                              }} className={cn("px-3 py-1 rounded-md text-xs font-bold transition-all", startDestType === 'company' ? "bg-white text-emerald-700 shadow-sm" : "text-slate-500")}>Company</button>
-                              
-                              <button onClick={() => { 
-                                  setStartDestType('home'); setIsCustomStartSet(false); 
-                                  saveRoutePrefsToDB({ startDestType: 'home', isCustomStartSet: false }); 
-                              }} className={cn("px-3 py-1 rounded-md text-xs font-bold transition-all", startDestType === 'home' ? "bg-white text-emerald-700 shadow-sm" : "text-slate-500")}>Home</button>
-                              
-                              <button onClick={() => { 
-                                  setStartDestType('custom'); 
-                                  saveRoutePrefsToDB({ startDestType: 'custom' }); 
-                              }} className={cn("px-3 py-1 rounded-md text-xs font-bold transition-all", startDestType === 'custom' ? "bg-white text-emerald-700 shadow-sm" : "text-slate-500")}>Custom</button>
-                          </div>
-                      </div>
-                      <div className="flex gap-2">
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-3">
+                      <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider flex items-center gap-1 w-20 shrink-0">
+                              <MapPin className="w-3.5 h-3.5"/> Start
+                          </span>
+                          <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                  <Button variant="outline" className="h-8 text-xs px-2 w-24 justify-between text-slate-600 bg-slate-50">
+                                      {startDestType.charAt(0).toUpperCase() + startDestType.slice(1)} <ChevronDown className="w-3 h-3 opacity-50"/>
+                                  </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="start">
+                                  <DropdownMenuItem onClick={() => { setStartDestType('company'); setIsCustomStartSet(false); saveRoutePrefsToDB({ startDestType: 'company', isCustomStartSet: false }); }}>Company</DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => { setStartDestType('home'); setIsCustomStartSet(false); saveRoutePrefsToDB({ startDestType: 'home', isCustomStartSet: false }); }}>Home</DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => { setStartDestType('custom'); saveRoutePrefsToDB({ startDestType: 'custom' }); }}>Custom</DropdownMenuItem>
+                              </DropdownMenuContent>
+                          </DropdownMenu>
                           {startDestType === 'custom' ? (
                               <div className="flex-1 flex gap-2">
-                                  <Input 
-                                      placeholder="Enter start address..." 
-                                      className={cn("h-9 text-xs transition-all", isCustomStartSet ? "bg-slate-100 text-slate-500 border-slate-200" : "bg-white border-emerald-300")}
-                                      value={customStart} 
-                                      onChange={(e) => {
-                                          setCustomStart(e.target.value);
-                                          saveRoutePrefsToDB({ customStart: e.target.value });
-                                      }}
-                                      disabled={isCustomStartSet}
-                                  />
+                                  <Input placeholder="Start address..." className={cn("h-8 text-xs", isCustomStartSet ? "bg-slate-100 text-slate-500" : "bg-white border-emerald-300")} value={customStart} onChange={(e) => { setCustomStart(e.target.value); saveRoutePrefsToDB({ customStart: e.target.value }); }} disabled={isCustomStartSet}/>
                                   {isCustomStartSet ? (
-                                      <Button size="sm" onClick={() => { 
-                                          setIsCustomStartSet(false); 
-                                          saveRoutePrefsToDB({ isCustomStartSet: false }); 
-                                      }} className="h-9 bg-amber-500 hover:bg-amber-600 text-white text-xs px-3">Edit</Button>
+                                      <Button size="sm" onClick={() => { setIsCustomStartSet(false); saveRoutePrefsToDB({ isCustomStartSet: false }); }} className="h-8 bg-amber-500 text-white text-xs px-3">Edit</Button>
                                   ) : (
-                                      <Button size="sm" onClick={() => {
-                                          if(customStart.trim()) { 
-                                              setIsCustomStartSet(true); 
-                                              saveRoutePrefsToDB({ isCustomStartSet: true, customStart: customStart.trim() }); 
-                                          }
-                                      }} className="h-9 bg-slate-800 text-xs px-3">Set</Button>
+                                      <Button size="sm" onClick={() => { if(customStart.trim()) { setIsCustomStartSet(true); saveRoutePrefsToDB({ isCustomStartSet: true, customStart: customStart.trim() }); } }} className="h-8 bg-slate-800 text-white text-xs px-3">Set</Button>
                                   )}
                               </div>
                           ) : (
-                              <div className="flex-1 bg-slate-50 border border-slate-100 rounded-md px-3 flex items-center text-xs text-slate-500 h-9 truncate">
-                                  {startDestType === 'company' ? (companyLoc?.address || "No company address set") : (driverLoc?.address || "No driver address set")}
-                              </div>
+                              <span className="text-xs text-slate-500 truncate flex-1" title={startDestType === 'company' ? companyLoc?.address : driverLoc?.address}>{startDestType === 'company' ? (companyLoc?.address || "No company address set") : (driverLoc?.address || "No driver address set")}</span>
                           )}
                       </div>
 
-                      {/* Final Destination Selector */}
-                      <div className="flex items-center justify-between border-t border-slate-100 pt-4 mt-2">
-                          <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider flex items-center gap-1"><Home className="w-3.5 h-3.5"/> Final Stop</span>
-                          <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
-                              <button onClick={() => { 
-                                  setFinalDestType('company'); setIsCustomFinalSet(false); 
-                                  saveRoutePrefsToDB({ finalDestType: 'company', isCustomFinalSet: false }); 
-                              }} className={cn("px-3 py-1 rounded-md text-xs font-bold transition-all", finalDestType === 'company' ? "bg-white text-emerald-700 shadow-sm" : "text-slate-500")}>Company</button>
-                              
-                              <button onClick={() => { 
-                                  setFinalDestType('home'); setIsCustomFinalSet(false); 
-                                  saveRoutePrefsToDB({ finalDestType: 'home', isCustomFinalSet: false }); 
-                              }} className={cn("px-3 py-1 rounded-md text-xs font-bold transition-all", finalDestType === 'home' ? "bg-white text-emerald-700 shadow-sm" : "text-slate-500")}>Home</button>
-                              
-                              <button onClick={() => { 
-                                  setFinalDestType('custom'); 
-                                  saveRoutePrefsToDB({ finalDestType: 'custom' }); 
-                              }} className={cn("px-3 py-1 rounded-md text-xs font-bold transition-all", finalDestType === 'custom' ? "bg-white text-emerald-700 shadow-sm" : "text-slate-500")}>Custom</button>
-                          </div>
-                      </div>
-                      <div className="flex gap-2">
+                      <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider flex items-center gap-1 w-20 shrink-0">
+                              <Home className="w-3.5 h-3.5"/> Final
+                          </span>
+                          <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                  <Button variant="outline" className="h-8 text-xs px-2 w-24 justify-between text-slate-600 bg-slate-50">
+                                      {finalDestType.charAt(0).toUpperCase() + finalDestType.slice(1)} <ChevronDown className="w-3 h-3 opacity-50"/>
+                                  </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="start">
+                                  <DropdownMenuItem onClick={() => { setFinalDestType('company'); setIsCustomFinalSet(false); saveRoutePrefsToDB({ finalDestType: 'company', isCustomFinalSet: false }); }}>Company</DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => { setFinalDestType('home'); setIsCustomFinalSet(false); saveRoutePrefsToDB({ finalDestType: 'home', isCustomFinalSet: false }); }}>Home</DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => { setFinalDestType('custom'); saveRoutePrefsToDB({ finalDestType: 'custom' }); }}>Custom</DropdownMenuItem>
+                              </DropdownMenuContent>
+                          </DropdownMenu>
                           {finalDestType === 'custom' ? (
                               <div className="flex-1 flex gap-2">
-                                  <Input 
-                                      placeholder="Enter final address..." 
-                                      className={cn("h-9 text-xs transition-all", isCustomFinalSet ? "bg-slate-100 text-slate-500 border-slate-200" : "bg-white border-emerald-300")}
-                                      value={customFinal} 
-                                      onChange={(e) => {
-                                          setCustomFinal(e.target.value);
-                                          saveRoutePrefsToDB({ customFinal: e.target.value });
-                                      }}
-                                      disabled={isCustomFinalSet}
-                                  />
+                                  <Input placeholder="Final address..." className={cn("h-8 text-xs", isCustomFinalSet ? "bg-slate-100 text-slate-500" : "bg-white border-emerald-300")} value={customFinal} onChange={(e) => { setCustomFinal(e.target.value); saveRoutePrefsToDB({ customFinal: e.target.value }); }} disabled={isCustomFinalSet}/>
                                   {isCustomFinalSet ? (
-                                      <Button size="sm" onClick={() => { 
-                                          setIsCustomFinalSet(false); 
-                                          saveRoutePrefsToDB({ isCustomFinalSet: false }); 
-                                      }} className="h-9 bg-amber-500 hover:bg-amber-600 text-white text-xs px-3">Edit</Button>
+                                      <Button size="sm" onClick={() => { setIsCustomFinalSet(false); saveRoutePrefsToDB({ isCustomFinalSet: false }); }} className="h-8 bg-amber-500 text-white text-xs px-3">Edit</Button>
                                   ) : (
-                                      <Button size="sm" onClick={() => {
-                                          if(customFinal.trim()) { 
-                                              setIsCustomFinalSet(true); 
-                                              saveRoutePrefsToDB({ isCustomFinalSet: true, customFinal: customFinal.trim() }); 
-                                          }
-                                      }} className="h-9 bg-slate-800 text-xs px-3">Set</Button>
+                                      <Button size="sm" onClick={() => { if(customFinal.trim()) { setIsCustomFinalSet(true); saveRoutePrefsToDB({ isCustomFinalSet: true, customFinal: customFinal.trim() }); } }} className="h-8 bg-slate-800 text-white text-xs px-3">Set</Button>
                                   )}
                               </div>
                           ) : (
-                              <div className="flex-1 bg-slate-50 border border-slate-100 rounded-md px-3 flex items-center text-xs text-slate-500 h-9 truncate">
-                                  {finalDestType === 'company' ? (companyLoc?.address || "No company address set") : (driverLoc?.address || "No driver address set")}
-                              </div>
+                              <span className="text-xs text-slate-500 truncate flex-1" title={finalDestType === 'company' ? companyLoc?.address : driverLoc?.address}>{finalDestType === 'company' ? (companyLoc?.address || "No company address set") : (driverLoc?.address || "No driver address set")}</span>
                           )}
                       </div>
 
-                      {/* Action Buttons */}
-                      <div className="pt-4 border-t border-slate-100 flex gap-2">
+                      <div className="pt-3 border-t border-slate-100 flex gap-2 items-center">
                           {isRouteChanged ? (
                               <>
                                   <Button 
                                       onClick={handleSaveRoute} 
                                       disabled={isOptimizing} 
-                                      className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold h-10 shadow-md shadow-emerald-100"
+                                      className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold h-9 shadow-md text-xs"
                                   >
-                                      {isOptimizing ? <Loader2 className="w-4 h-4 animate-spin"/> : <><Save className="w-4 h-4 mr-2"/> Save New Order</>}
+                                      {isOptimizing ? <Loader2 className="w-4 h-4 animate-spin"/> : <><Save className="w-3.5 h-3.5 mr-2"/> Save New Order</>}
                                   </Button>
                                   <Button 
-                                      variant="outline"
+                                      variant="outline" 
                                       onClick={handleRevert} 
                                       disabled={isOptimizing} 
-                                      className="w-24 h-10 border-slate-300 text-slate-600"
+                                      className="w-20 h-9 border-slate-300 text-slate-600 text-xs"
                                   >
-                                      <RotateCcw className="w-4 h-4 mr-1"/> Reset
+                                      <RotateCcw className="w-3.5 h-3.5 mr-1"/> Reset
                                   </Button>
                               </>
                           ) : (
-                              <Button 
-                                  onClick={handleOptimizeRoute} 
-                                  disabled={isOptimizing} 
-                                  className="w-full bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50 font-bold h-10 shadow-sm"
-                              >
-                                  {isOptimizing ? <Loader2 className="w-4 h-4 animate-spin mr-2"/> : <Sparkles className="w-4 h-4 mr-2 text-indigo-500"/>}
-                                  Optimize & Sort Route
-                              </Button>
+                              isOptimized ? (
+                                  <div className="flex-1 flex justify-between items-center bg-emerald-50 border border-emerald-200 rounded-md px-3 h-9">
+                                      <div className="flex items-center text-emerald-700 font-bold text-xs">
+                                          <CheckCircle2 className="w-4 h-4 mr-1.5" /> OPTIMIZED
+                                      </div>
+                                      <Button 
+                                          variant="outline" 
+                                          size="sm"
+                                          onClick={handleOptimizeRoute} 
+                                          disabled={isOptimizing} 
+                                          className="h-6 px-2 text-[10px] font-bold border-emerald-300 text-emerald-700 hover:bg-emerald-100 bg-white"
+                                      >
+                                          {isOptimizing ? <Loader2 className="w-3 h-3 animate-spin"/> : <Sparkles className="w-3 h-3 mr-1"/>}
+                                          Re-Optimize
+                                      </Button>
+                                  </div>
+                              ) : (
+                                  <Button 
+                                      onClick={handleOptimizeRoute} 
+                                      disabled={isOptimizing} 
+                                      className="w-full bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50 font-bold h-9 shadow-sm text-xs"
+                                  >
+                                      {isOptimizing ? <Loader2 className="w-4 h-4 animate-spin mr-2"/> : <Sparkles className="w-3.5 h-3.5 mr-2 text-indigo-500"/>} 
+                                      Optimize & Sort Route
+                                  </Button>
+                              )
                           )}
                       </div>
                   </div>
               )}
 
-              {/* Invoice List (Draggable) */}
               <div className="space-y-3 pb-20">
-                {invoices.length === 0 && (
-                    <div className="text-center py-20 bg-white rounded-xl border border-dashed border-slate-300 text-slate-400">
-                        <Truck className="w-10 h-10 mx-auto mb-2 opacity-20" />
-                        <p>No invoices in this route.</p>
-                    </div>
-                )}
-                
-                <DndContext 
-                    sensors={sensors} 
-                    collisionDetection={closestCenter} 
-                    onDragEnd={handleDragEnd}
-                >
-                    <SortableContext 
-                        items={invoices.map(i => i.id)} 
-                        strategy={verticalListSortingStrategy}
-                    >
-                        {invoices.map((invoice, index) => (
-                            <SortableInvoiceCard 
-                                key={invoice.id} 
-                                invoice={invoice} 
-                                index={index} 
-                                onClick={() => handleInvoiceClick(invoice)} 
-                            />
-                        ))}
+                <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                    <SortableContext items={invoices.map(i => i.id)} strategy={verticalListSortingStrategy}>
+                        {invoices.map((invoice, index) => {
+                            const isNewInDB = invoice.delivery_order === 0 || invoice.delivery_order === null;
+                            let displayNum: number | null = null;
+                            
+                            if (isRouteChanged) {
+                                displayNum = index + 1;
+                            } else {
+                                if (isNewInDB) {
+                                    displayNum = null; 
+                                } else {
+                                    displayNum = currentStopNumber++;
+                                }
+                            }
+
+                            return (
+                                <SortableInvoiceCard 
+                                    key={invoice.id} 
+                                    invoice={invoice} 
+                                    displayNum={displayNum} 
+                                    isNewInDB={isNewInDB}
+                                    onClick={() => handleInvoiceClick(index)} 
+                                />
+                            );
+                        })}
                     </SortableContext>
                 </DndContext>
               </div>
             </div>
-          ) : (
-            <div className="flex flex-col items-center justify-center h-full text-slate-300">
-              <Truck className="w-16 h-16 mb-4 opacity-10" />
-              <p className="text-sm font-medium">Select a route to view details</p>
-            </div>
-          )}
+          ) : (<div className="flex flex-col items-center justify-center h-full text-slate-300"><Truck className="w-16 h-16 mb-4 opacity-10" /><p className="text-sm font-medium">Select a route to view details</p></div>)}
         </div>
       </div>
     </div>
 
-    {/* Invoice Details Dialog */}
     <Dialog open={isDetailOpen} onOpenChange={setIsDetailOpen}>
-        <DialogContent className="max-w-xl bg-white">
-            <DialogHeader>
-                <DialogTitle className="flex items-center gap-2 text-slate-900">
-                    <Box className="w-5 h-5 text-indigo-600"/>
-                    Delivery Items
-                </DialogTitle>
-                <DialogDescription>
-                    Order details for <span className="font-bold text-slate-900">{selectedInvoice?.invoice_to}</span>
-                    <span className="ml-1 text-slate-400">(#{selectedInvoice?.id})</span>
-                </DialogDescription>
+        <DialogContent 
+            className="!max-w-full !w-screen !h-[100dvh] !m-0 !p-0 !rounded-none !border-none bg-white flex flex-col shadow-none select-none [&>button]:hidden"
+            onPointerDown={handlePointerDown}
+            onPointerUp={handlePointerUp}
+        >
+            <DialogHeader className="p-6 border-b flex flex-row items-center justify-between shrink-0 space-y-0 bg-slate-50 relative">
+                <div className="text-center flex-1">
+                    <DialogTitle className="flex items-center justify-center gap-3 text-2xl font-black text-slate-900">
+                        <Box className="w-7 h-7 text-indigo-600"/>
+                        STOPS: {currentIndex + 1} / {invoices.length}
+                    </DialogTitle>
+                    <DialogDescription className="text-lg mt-1 font-medium text-slate-500">
+                        Delivery to: <span className="text-slate-900 font-bold">{activeInvoice?.invoice_to}</span>
+                        <span className="ml-2 text-slate-400 font-mono text-sm">(Inv #{activeInvoice?.id})</span>
+                    </DialogDescription>
+                </div>
+                
+                <Button variant="ghost" size="icon" onClick={() => setIsDetailOpen(false)} className="absolute right-6 top-6 h-12 w-12 hover:bg-red-50 hover:text-red-500 transition-colors rounded-full z-50">
+                    <X className="w-8 h-8" />
+                </Button>
             </DialogHeader>
 
-            <div className="border rounded-lg overflow-hidden max-h-[400px] overflow-y-auto mt-2">
-                {loadingItems ? (
-                    <div className="p-8 text-center text-slate-400 text-sm flex flex-col items-center gap-2">
-                        <Loader2 className="w-5 h-5 animate-spin"/> Loading...
+            <div className="flex-1 overflow-y-auto p-4 bg-slate-100/30 cursor-grab active:cursor-grabbing">
+                <div className="w-full mx-auto space-y-6 pb-20">
+                    <div className="text-center text-sm font-bold text-slate-400 animate-pulse">
+                        ⟵ Swipe Left or Right to navigate ⟶
                     </div>
-                ) : (
-                    <table className="w-full text-sm text-left table-fixed">
-                        <thead className="bg-slate-50 text-slate-500 font-bold text-xs uppercase border-b border-slate-100">
-                            <tr>
-                                <th className="px-4 py-3 w-[25%]">Item ID</th>
-                                <th className="px-4 py-3 w-[50%]">Item Name</th>
-                                <th className="px-4 py-3 w-[15%] text-center">Unit</th>
-                                <th className="px-4 py-3 w-[10%] text-right">Qty</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                            {invoiceItems.map((item) => (
-                                <tr key={item.id} className="hover:bg-slate-50/50">
-                                    <td className="px-4 py-3 font-mono text-xs text-slate-500 truncate" title={item.products?.vendor_product_id || '-'}>
-                                        {item.products?.vendor_product_id || '-'}
-                                    </td>
-                                    <td className="px-4 py-3 font-medium text-slate-700 truncate" title={item.description}>{item.description}</td>
-                                    <td className="px-4 py-3 text-center text-slate-500 text-xs">{item.unit || '-'}</td>
-                                    <td className="px-4 py-3 text-right font-bold text-slate-900">{item.quantity}</td>
-                                </tr>
-                            ))}
-                            {invoiceItems.length === 0 && (
-                                <tr><td colSpan={4} className="p-6 text-center text-slate-400 text-xs">No items found in this invoice.</td></tr>
-                            )}
-                        </tbody>
-                    </table>
-                )}
-            </div>
-            
-            {selectedInvoice?.memo && (
-                <div className="bg-amber-50 text-amber-800 text-xs p-3 rounded-md border border-amber-200 flex gap-2 items-start mt-2">
-                    <FileText className="w-4 h-4 shrink-0"/>
-                    <div>
-                        <span className="font-bold block mb-0.5">Delivery Note:</span>
-                        {selectedInvoice.memo}
-                    </div>
-                </div>
-            )}
+                    
+                    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                        {loadingItems ? (
+                            <div className="p-32 text-center text-slate-400 text-xl flex flex-col items-center gap-4">
+                                <Loader2 className="w-12 h-12 animate-spin text-indigo-500"/> 
+                                <p className="animate-pulse font-medium">Loading item list...</p>
+                            </div>
+                        ) : (
+                            <table className="w-full text-left">
+                                <thead className="bg-slate-900 text-white font-bold text-[13px] uppercase">
+                                    <tr>
+                                        <th className="px-4 py-3 w-[15%]">Vendor ID</th>
+                                        <th className="px-4 py-3 w-auto">Item Description</th>
+                                        <th className="px-4 py-3 w-[1%] whitespace-nowrap text-center">Unit</th>
+                                        <th className="px-4 py-3 w-[1%] whitespace-nowrap text-right">QTY</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                    {invoiceItems.map((item) => {
+                                        const isChecked = checkedItems.has(item.id);
 
-            <DialogFooter>
-                <Button variant="outline" onClick={() => setIsDetailOpen(false)} className="w-full">Close</Button>
-            </DialogFooter>
+                                        return (
+                                            <tr 
+                                                key={item.id} 
+                                                onClick={() => toggleItemCheck(item.id)} 
+                                                className={cn(
+                                                    "transition-colors cursor-pointer text-[13px]",
+                                                    isChecked ? "bg-red-50/40" : "hover:bg-indigo-50/30"
+                                                )}
+                                            >
+                                                <td className={cn("px-4 py-3 font-mono transition-all", isChecked ? "text-slate-400 line-through decoration-red-500 decoration-2" : "text-slate-500")}>
+                                                    {item.products?.vendor_product_id || '-'}
+                                                </td>
+                                                <td className={cn("px-4 py-3 font-bold transition-all", isChecked ? "text-slate-400 line-through decoration-red-500 decoration-2" : "text-slate-800")}>
+                                                    {item.description}
+                                                </td>
+                                                <td className={cn("px-4 py-3 text-center font-medium whitespace-nowrap transition-all", isChecked ? "text-slate-400 line-through decoration-red-500 decoration-2" : "text-slate-500")}>
+                                                    {item.unit || '-'}
+                                                </td>
+                                                <td className={cn("px-4 py-3 text-right font-black whitespace-nowrap transition-all", isChecked ? "text-red-400 line-through decoration-red-500 decoration-2" : "text-indigo-600")}>
+                                                    {item.quantity}
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                    {invoiceItems.length === 0 && (
+                                        <tr><td colSpan={4} className="p-10 text-center text-slate-400 text-[13px]">No items found in this invoice.</td></tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        )}
+                    </div>
+                    
+                    {activeInvoice?.memo && (
+                        <div className="bg-amber-100 text-amber-950 p-6 rounded-xl border-2 border-amber-300 flex gap-4 items-start shadow-sm">
+                            <div className="bg-amber-500 p-2 rounded-full text-white shadow-sm">
+                                <FileText className="w-6 h-6"/>
+                            </div>
+                            <div>
+                                <span className="font-black text-lg block mb-1 uppercase tracking-tight">Delivery Special Note</span>
+                                <p className="text-base font-medium">{activeInvoice.memo}</p>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
         </DialogContent>
     </Dialog>
 
-    {/* Map Dialog */}
-    <RouteMapDialog 
-        isOpen={isMapOpen} 
-        onClose={() => setIsMapOpen(false)} 
-        driverName={currentRouteInfo?.driverName || "Driver"}
-        driverId={currentRouteInfo?.driverId} 
-        invoices={invoices}
-        startLocation={resolveLocation(startDestType, customStart)}
-        finalLocation={resolveLocation(finalDestType, customFinal)} 
-        isGoogleLoaded={isGoogleLoaded}
-    />
+    <RouteMapDialog isOpen={isMapOpen} onClose={() => setIsMapOpen(false)} driverName={currentRouteInfo?.driverName || "Driver"} driverId={currentRouteInfo?.driverId} invoices={invoices} startLocation={resolveLocation(startDestType, customStart)} finalLocation={resolveLocation(finalDestType, customFinal)} isGoogleLoaded={isGoogleLoaded} isRouteChanged={isRouteChanged} />
     </>
   );
 }
 
-function SortableInvoiceCard({ invoice, index, onClick }: { invoice: Invoice, index: number, onClick: () => void }) {
+function SortableInvoiceCard({ invoice, displayNum, isNewInDB, onClick }: { invoice: Invoice, displayNum: number | null, isNewInDB: boolean, onClick: () => void }) {
     const {
         attributes,
         listeners,
@@ -914,7 +932,6 @@ function SortableInvoiceCard({ invoice, index, onClick }: { invoice: Invoice, in
     };
 
     const isCompleted = invoice.is_completed;
-    const isNew = invoice.delivery_order === 0 || invoice.delivery_order === null; 
 
     return (
         <Card 
@@ -936,15 +953,17 @@ function SortableInvoiceCard({ invoice, index, onClick }: { invoice: Invoice, in
                 </div>
 
                 <div className="flex items-start gap-4 flex-1 cursor-pointer" onClick={onClick}>
-                    <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold shrink-0 shadow-sm border", isCompleted ? "bg-slate-200 text-slate-500 border-slate-300" : "bg-white text-slate-700 border-slate-200")}>
-                        {isCompleted ? <CheckCircle2 className="w-5 h-5" /> : (index + 1)}
+                    <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold shrink-0 shadow-sm border", 
+                        isCompleted ? "bg-slate-200 text-slate-500 border-slate-300" : 
+                        displayNum === null ? "bg-amber-100 text-amber-600 border-amber-300" : "bg-white text-slate-700 border-slate-200")}>
+                        {isCompleted ? <CheckCircle2 className="w-5 h-5" /> : (displayNum !== null ? displayNum : "!")}
                     </div>
                     <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
                             <span className={cn("font-bold text-sm truncate flex items-center gap-2", isCompleted ? "text-slate-400 line-through" : "text-slate-800")}>
                                 {invoice.customers?.name || invoice.invoice_to || "Unknown"}
-                                {isNew && !isCompleted && (
-                                    <Badge className="bg-emerald-500 text-white text-[9px] h-4 px-1.5 hover:bg-emerald-600">NEW</Badge>
+                                {isNewInDB && !isCompleted && (
+                                    <Badge className="bg-amber-500 text-white text-[9px] h-4 px-1.5 hover:bg-amber-600">NEW</Badge>
                                 )}
                             </span>
                         </div>
@@ -969,15 +988,16 @@ function SortableInvoiceCard({ invoice, index, onClick }: { invoice: Invoice, in
 }
 
 function RouteMapDialog({ 
-    isOpen, onClose, driverName, driverId, invoices, startLocation, finalLocation, isGoogleLoaded 
+    isOpen, onClose, driverName, driverId, invoices, startLocation, finalLocation, isGoogleLoaded, isRouteChanged 
 }: { 
-    isOpen: boolean, onClose: () => void, driverName: string, driverId?: string, invoices: Invoice[], startLocation: any, finalLocation: any, isGoogleLoaded: boolean 
+    isOpen: boolean, onClose: () => void, driverName: string, driverId?: string, invoices: Invoice[], startLocation: any, finalLocation: any, isGoogleLoaded: boolean, isRouteChanged: boolean 
 }) {
     const supabase = createClient();
     const mapRef = useRef<HTMLDivElement>(null);
     const mapInstance = useRef<any>(null);
     const directionsRenderer = useRef<any>(null);
     const markersRef = useRef<any[]>([]);
+    const infoWindowRef = useRef<any>(null); 
     const driverMarkerRef = useRef<any>(null);
     const [driverLocation, setDriverLocation] = useState<{ lat: number, lng: number } | null>(null);
 
@@ -991,6 +1011,7 @@ function RouteMapDialog({
             directionsRenderer.current = null;
             markersRef.current = [];
             driverMarkerRef.current = null;
+            infoWindowRef.current = null;
         }
     }, [isOpen]);
 
@@ -1032,6 +1053,10 @@ function RouteMapDialog({
                 });
             }
 
+            if (!infoWindowRef.current) {
+                infoWindowRef.current = new window.google.maps.InfoWindow();
+            }
+
             markersRef.current.forEach(m => m.setMap(null));
             markersRef.current = [];
             
@@ -1043,15 +1068,20 @@ function RouteMapDialog({
             const finalDest = finalLocation || DEFAULT_LOCATION;
 
             const waypoints: any[] = [];
+            const validInvoices: Invoice[] = [];
             
             invoices.forEach((inv, idx) => {
                 const c = inv.customers;
                 const lat = c.delivery_lat || c.lat;
                 const lng = c.delivery_lng || c.lng;
+                const addressStr = [c.delivery_address || c.address, c.suburb].filter(Boolean).join(", ").trim();
 
                 if (lat && lng && lat !== 0 && lng !== 0) {
-                    const location = { lat, lng };
-                    waypoints.push({ location: location, stopover: true });
+                    validInvoices.push(inv);
+                    waypoints.push({ location: { lat, lng }, stopover: true });
+                } else if (addressStr.length > 0) {
+                    validInvoices.push(inv);
+                    waypoints.push({ location: addressStr, stopover: true });
                 }
             });
 
@@ -1064,6 +1094,7 @@ function RouteMapDialog({
                     // @ts-ignore
                     waypoints: waypoints,
                     travelMode: window.google.maps.TravelMode.DRIVING,
+                    avoidTolls: true, 
                     optimizeWaypoints: false 
                 }, (res: any, status: any) => {
                     if (status === 'OK') {
@@ -1088,16 +1119,48 @@ function RouteMapDialog({
                             });
                             markersRef.current.push(startMarker);
 
-                            invoices.forEach((inv, idx) => {
+                            validInvoices.forEach((inv, idx) => {
                                 if (route.legs[idx]) {
+                                    const isInvNew = inv.delivery_order === 0 || inv.delivery_order === null;
+                                    let displayLabel = "N";
+                                    
+                                    if (isRouteChanged) {
+                                        displayLabel = (idx + 1).toString();
+                                    } else {
+                                        if (!isInvNew) {
+                                            let count = 0;
+                                            for (let i = 0; i <= idx; i++) {
+                                                if (validInvoices[i].delivery_order > 0) count++;
+                                            }
+                                            displayLabel = count.toString();
+                                        }
+                                    }
+
                                     const marker = new window.google.maps.Marker({
                                         position: route.legs[idx].end_location,
                                         map: mapInstance.current,
-                                        label: { text: `${idx + 1}`, color: "white", fontWeight: "bold" },
+                                        label: { text: displayLabel, color: "white", fontWeight: "bold" },
                                         title: inv.customers?.name,
                                         opacity: inv.is_completed ? 0.5 : 1.0,
                                     });
                                     markersRef.current.push(marker);
+
+                                    marker.addListener("click", () => {
+                                        if (infoWindowRef.current) {
+                                            const content = `
+                                                <div style="padding: 2px 4px; font-family: sans-serif; max-width: 200px;">
+                                                    <div style="font-weight: bold; font-size: 14px; color: #1e293b; margin-bottom: 2px;">
+                                                        ${inv.customers?.name || "Unknown Customer"}
+                                                    </div>
+                                                    <div style="font-size: 11px; color: #64748b;">
+                                                        Stop ${displayLabel} ${inv.is_completed ? '<span style="color:#10b981;font-weight:bold;">(Completed)</span>' : ''}
+                                                    </div>
+                                                </div>
+                                            `;
+                                            infoWindowRef.current.setContent(content);
+                                            infoWindowRef.current.open(mapInstance.current, marker);
+                                        }
+                                    });
                                 }
                             });
 
@@ -1129,7 +1192,7 @@ function RouteMapDialog({
 
         return () => clearTimeout(timer); 
 
-    }, [isOpen, isGoogleLoaded, invoices, startLocation, finalLocation]); 
+    }, [isOpen, isGoogleLoaded, invoices, startLocation, finalLocation, isRouteChanged]); 
 
     useEffect(() => {
         if (!mapInstance.current || !window.google) return;
@@ -1158,7 +1221,7 @@ function RouteMapDialog({
 
     return (
         <Dialog open={isOpen} onOpenChange={onClose}>
-            <DialogContent className="max-w-[95vw] h-[95vh] flex flex-col p-0 overflow-hidden bg-white">
+            <DialogContent className="!max-w-[100vw] !w-screen !h-[100dvh] !m-0 !p-0 !rounded-none !border-none bg-white flex flex-col shadow-none select-none [&>button]:hidden">
                 <DialogHeader className="p-4 border-b bg-slate-50 shrink-0 flex flex-row items-center justify-between space-y-0">
                     <div className="flex flex-col">
                         <DialogTitle className="flex items-center gap-2">
@@ -1170,7 +1233,7 @@ function RouteMapDialog({
                             {invoices.length} stops in this route
                         </DialogDescription>
                     </div>
-                    <Button size="sm" onClick={onClose} className="h-8 text-xs bg-slate-900 text-white">Close Map</Button>
+                    <Button size="icon" variant="ghost" onClick={onClose} className="h-10 w-10 hover:bg-slate-200"><X className="w-5 h-5"/></Button>
                 </DialogHeader>
                 <div className="flex-1 relative w-full h-full bg-slate-100">
                     <div ref={mapRef} className="absolute inset-0 w-full h-full" />

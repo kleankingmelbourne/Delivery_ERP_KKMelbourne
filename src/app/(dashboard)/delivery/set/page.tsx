@@ -312,10 +312,10 @@ export default function SetDeliveryPage() {
     const itemsHtml = sortedList.map((item, idx) => `
         <tr class="${idx % 2 === 0 ? 'even' : 'odd'}">
             <td class="col-loc" style="mso-number-format:'@'">${item.location || '-'}</td>
-            <td class="col-unit" style="text-align:center;">${item.unit}</td>
-            <td class="col-qty" style="text-align:center; font-weight:bold;">${item.qty}</td>
+            <td class="col-unit">${item.unit}</td>
+            <td class="col-qty">${item.qty}</td>
             <td class="col-id" style="mso-number-format:'@'">${item.vendorProductId || '-'}</td>
-            <td class="col-name">${item.name}</td>
+            <td class="col-name" title="${item.name}">${item.name}</td>
         </tr>
     `).join('');
 
@@ -326,36 +326,64 @@ export default function SetDeliveryPage() {
           <title>Picking List - ${driverTitle}</title>
           <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
           <style>
-            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; font-size: 14px; background: #f4f4f4; }
-            .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
-            h1 { text-align: center; margin-bottom: 5px; font-size: 24px; color: #333; }
-            .meta { text-align: center; margin-bottom: 20px; color: #666; font-size: 14px; }
-            .action-bar { text-align: right; margin-bottom: 20px; display: flex; justify-content: flex-end; gap: 10px; }
-            .btn { padding: 10px 18px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 14px; display: inline-flex; align-items: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: background 0.2s; color: white; }
-            .btn-print { background: #333; }
-            .btn-print:hover { background: #111; }
-            .btn-excel { background: #10b981; }
-            .btn-excel:hover { background: #059669; }
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; font-size: 12px; background: #fff; color: #000; }
+            .container { max-width: 900px; margin: 0 auto; background: white; padding: 20px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
             
-            .summary-box { border: 2px solid #333; padding: 15px; margin-bottom: 20px; background: #f9f9f9; display: flex; justify-content: space-between; align-items: center; border-radius: 8px; }
-            .summary-item { font-weight: bold; font-size: 16px; }
+            .action-bar { text-align: right; margin-bottom: 15px; display: flex; justify-content: flex-end; gap: 8px; }
+            .btn { padding: 6px 12px; border: 1px solid #000; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 12px; display: inline-flex; align-items: center; transition: background 0.2s; color: #000; background: #fff; }
+            .btn:hover { background: #f0f0f0; }
             
-            table { width: 100%; border-collapse: collapse; margin-top: 10px; border: 1px solid #000; }
-            th, td { padding: 10px 12px; text-align: left; border: 1px solid #000; }
-            th { background: #eee; font-weight: bold; color: #333; }
+            .meta-line { 
+                display: flex; 
+                justify-content: space-between; 
+                align-items: center; 
+                font-size: 14px; 
+                font-weight: bold; 
+                color: #000; 
+                margin-bottom: 15px; 
+                border: 1px solid #000; 
+                padding: 10px 15px; 
+                background: #f9f9f9; 
+            }
+            
+            .driver-name { font-size: 16px; }
+            .meta-info { font-size: 14px; }
+
+            table { 
+                width: 100%; 
+                border-collapse: collapse; 
+                margin-top: 10px; 
+                border: 1px solid #000; 
+                color: #000; 
+                table-layout: fixed; 
+            }
+            
+            th, td { 
+                padding: 4px 6px; 
+                text-align: left; 
+                border: 1px solid #000; 
+                color: #000; 
+                font-size: 12px; 
+                line-height: 1.3;
+                white-space: nowrap; 
+                overflow: hidden;    
+                text-overflow: ellipsis; 
+            }
+            th { background: #eee; font-weight: bold; }
             
             tr.even { background-color: #fcfcfc; }
-            .col-loc { width: 15%; font-weight: bold; color: #d32f2f; }
-            .col-unit { width: 10%; text-align: center; color: #555; font-weight: bold; }
-            .col-qty { width: 10%; text-align: center; font-weight: bold; font-size: 1.2em; color: #000; }
-            .col-id { width: 15%; color: #666; font-family: monospace; font-size: 0.95em; }
-            .col-name { width: 50%; font-weight: 500; }
+            
+            .col-loc { width: 10%; font-weight: bold; text-align: center; }
+            .col-unit { width: 8%; text-align: center; font-weight: bold; }
+            .col-qty { width: 8%; text-align: center; font-weight: bold; font-size: 13px; } 
+            .col-id { width: 18%; font-family: monospace; font-size: 12px; font-weight: bold; }
+            .col-name { width: 56%; font-weight: bold; }
             
             @media print {
-                body { background: white; padding: 0; }
-                .container { box-shadow: none; padding: 0; max-width: 100%; }
+                body { background: white; padding: 0; color: #000; }
+                .container { box-shadow: none; padding: 0; max-width: 100%; border: none; }
                 .action-bar { display: none; }
-                .summary-box { background: none; border: 1px solid #000; }
+                .meta-line { border: 1px solid #000; background: none; }
                 th { background: none !important; }
             }
           </style>
@@ -367,12 +395,12 @@ export default function SetDeliveryPage() {
                 var titleRow = tableClone.insertRow(0);
                 var titleCell = titleRow.insertCell(0);
                 titleCell.colSpan = 5;
-                titleCell.innerText = "Picking List - ${driverTitle}";
+                titleCell.innerText = "${driverTitle} - Picking List";
                 
                 var dateRow = tableClone.insertRow(1);
                 var dateCell = dateRow.insertCell(0);
                 dateCell.colSpan = 5;
-                dateCell.innerText = "Date: ${selectedDate} | Generated: ${generatedTime} | Invoices: ${totalInvoices}";
+                dateCell.innerText = "Date: ${selectedDate} | Invoices: ${totalInvoices} | Time: ${generatedTime}";
 
                 var emptyRow = tableClone.insertRow(2);
                 emptyRow.insertCell(0).colSpan = 5;
@@ -394,7 +422,7 @@ export default function SetDeliveryPage() {
                         var cell_address = {c:C, r:R};
                         var cell_ref = XLSX.utils.encode_cell(cell_address);
                         
-                        if(!ws[cell_ref]) ws[cell_ref] = { t: "s", v: "" };
+                        if(!ws[cell_ref]) ws[cell_ref] = { t: "s", v: "", s: {} };
                         if(!ws[cell_ref].s) ws[cell_ref].s = {};
                         ws[cell_ref].s.border = borderStyle;
                         
@@ -429,16 +457,13 @@ export default function SetDeliveryPage() {
         <body>
           <div class="container">
               <div class="action-bar">
-                  <button class="btn btn-print" onclick="window.print()">🖨️ Print</button>
-                  <button class="btn btn-excel" onclick="exportToExcel()">📊 Open in Excel</button>
+                  <button class="btn" onclick="window.print()">🖨️ Print</button>
+                  <button class="btn" onclick="exportToExcel()">📊 Excel</button>
               </div>
 
-              <h1>📦 Picking List - ${driverTitle}</h1>
-              <div class="meta">Date: ${selectedDate}</div>
-              
-              <div class="summary-box">
-                 <div class="summary-item">📑 Invoices: ${totalInvoices}</div>
-                 <div class="summary-item">🕒 Time: ${generatedTime}</div>
+              <div class="meta-line">
+                 <div class="driver-name">🚚 ${driverTitle}</div>
+                 <div class="meta-info">Date: ${selectedDate} &nbsp;|&nbsp; Invoices: ${totalInvoices} &nbsp;|&nbsp; Time: ${generatedTime}</div>
               </div>
               
               <table id="pickingTable">
@@ -464,6 +489,35 @@ export default function SetDeliveryPage() {
     printWindow.document.close();
   };
 
+  const handleExportRunSheet = () => {
+    if (localInvoices.length === 0) return alert("No data.");
+    const unassignedInvoices = localInvoices.filter(i => !i.current_driver_id);
+    interface ExportColumn { header: string; customers: string[]; }
+    const columns: ExportColumn[] = [];
+    if (unassignedInvoices.length > 0) columns.push({ header: "Unassigned", customers: unassignedInvoices.map(i => i.customers.name) });
+    visibleColumns.forEach(col => {
+      const colTitle = `${col.driver.display_name} (${col.run === 1 ? 'AM' : 'PM'})`;
+      const driverInvoices = localInvoices.filter(i => i.current_driver_id === col.driver.id && i.current_run === col.run);
+      if (driverInvoices.length > 0) columns.push({ header: colTitle, customers: driverInvoices.map(i => i.customers.name) });
+    });
+    if (columns.length === 0) return alert("No assigned data.");
+    const maxRows = Math.max(...columns.map(c => c.customers.length));
+    let csvContent = `Date: ${selectedDate}\n\n`; 
+    const headers = columns.map(c => `"${c.header}","Customer"`).join(",,");
+    csvContent += headers + "\n";
+    for (let i = 0; i < maxRows; i++) {
+      const rowParts = columns.map(col => { const val = col.customers[i]; return val ? `"${col.header}","${val}"` : `"" , ""`; });
+      csvContent += rowParts.join(",,") + "\n";
+    }
+    const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.setAttribute("download", `Run_Sheet_${selectedDate}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   const handleAddDriver = (driverId: string) => {
     const driverToAdd = allStaff.find(s => s.id === driverId);
     if (!driverToAdd) return;
@@ -486,11 +540,18 @@ export default function SetDeliveryPage() {
     } else { alert(`${driverToAdd.display_name} is already assigned for Run 1 & 2.`); }
   };
 
+  // 🚀 [수정] 이동(할당/재할당/Unassign) 시 해당 인보이스의 delivery_order를 0으로 강제 초기화합니다.
   const handleLocalMove = (invoiceId: string, targetColumnId: string | null) => {
     setLocalInvoices(prev => prev.map(inv => {
       if (inv.id === invoiceId && inv.is_completed) return inv;
       if (inv.id === invoiceId) {
-          if (!targetColumnId) return { ...inv, current_driver_id: null, current_run: 1, is_new_arrival: true }; 
+          if (!targetColumnId) return { 
+              ...inv, 
+              current_driver_id: null, 
+              current_run: 1, 
+              is_new_arrival: true,
+              delivery_order: 0 // 언어사인 시 순서 초기화
+          }; 
           
           const lastUnderscoreIndex = targetColumnId.lastIndexOf('_');
           const driverId = targetColumnId.substring(0, lastUnderscoreIndex);
@@ -500,7 +561,8 @@ export default function SetDeliveryPage() {
               ...inv, 
               current_driver_id: driverId, 
               current_run: parseInt(runStr) || 1,
-              is_new_arrival: false 
+              is_new_arrival: false, // 할당되면 파란 NEW 뱃지는 사라짐
+              delivery_order: 0 // 🚀 [중요] 위치가 바뀌었으므로 배송 경로(Route) 화면에서 NEW로 보이도록 0으로 세팅
           };
       }
       return inv;
@@ -524,7 +586,13 @@ export default function SetDeliveryPage() {
             const driverInfo = allStaff.find(s => s.id === defaultDriverId);
             if (driverInfo) { newColumns.push({ driver: driverInfo, run: 1, columnId: targetColumnKey }); existingColumnKeys.add(targetColumnKey); driversAdded = true; }
         }
-        return { ...inv, current_driver_id: defaultDriverId, current_run: 1, is_new_arrival: false };
+        return { 
+            ...inv, 
+            current_driver_id: defaultDriverId, 
+            current_run: 1, 
+            is_new_arrival: false,
+            delivery_order: 0 // 자동 할당 시에도 순서는 초기화
+        };
       }
       return inv;
     });
@@ -560,11 +628,12 @@ export default function SetDeliveryPage() {
         const original = originalInvoicesMap.get(inv.id);
         const runToSave = inv.current_driver_id ? (inv.current_run || 1) : 0;
         
-        // ✅ [핵심 추가] 기사가 변경되었거나 새롭게 배정된 경우 delivery_order를 0으로 초기화
         let orderToSave = inv.delivery_order;
+        
+        // 원본과 비교해서 드라이버가 바뀌었거나, 처음 할당되는 경우 order를 무조건 0으로 설정
         if (
-            (original && inv.current_driver_id !== original.current_driver_id) || // 기사가 바뀌었을 때
-            (original && !original.current_driver_id && inv.current_driver_id)    // 미배정에서 배정으로 갔을 때
+            (original && inv.current_driver_id !== original.current_driver_id) || 
+            (original && !original.current_driver_id && inv.current_driver_id)    
         ) {
             orderToSave = 0;
         }
@@ -572,7 +641,7 @@ export default function SetDeliveryPage() {
         return supabase.from("invoices").update({ 
             driver_id: inv.current_driver_id, 
             delivery_run: runToSave,
-            delivery_order: orderToSave // 순서 0으로 초기화!
+            delivery_order: orderToSave 
         }).eq("id", inv.id);
       });
 
@@ -612,36 +681,9 @@ export default function SetDeliveryPage() {
     } catch (e: any) { alert("Error saving: " + e.message); } finally { setIsSaving(false); }
   };
 
-  const handleExportRunSheet = () => {
-    if (localInvoices.length === 0) return alert("No data.");
-    const unassignedInvoices = localInvoices.filter(i => !i.current_driver_id);
-    interface ExportColumn { header: string; customers: string[]; }
-    const columns: ExportColumn[] = [];
-    if (unassignedInvoices.length > 0) columns.push({ header: "Unassigned", customers: unassignedInvoices.map(i => i.customers.name) });
-    visibleColumns.forEach(col => {
-      const colTitle = `${col.driver.display_name} (${col.run === 1 ? 'AM' : 'PM'})`;
-      const driverInvoices = localInvoices.filter(i => i.current_driver_id === col.driver.id && i.current_run === col.run);
-      if (driverInvoices.length > 0) columns.push({ header: colTitle, customers: driverInvoices.map(i => i.customers.name) });
-    });
-    if (columns.length === 0) return alert("No assigned data.");
-    const maxRows = Math.max(...columns.map(c => c.customers.length));
-    let csvContent = `Date: ${selectedDate}\n\n`; 
-    const headers = columns.map(c => `"${c.header}","Customer"`).join(",,");
-    csvContent += headers + "\n";
-    for (let i = 0; i < maxRows; i++) {
-      const rowParts = columns.map(col => { const val = col.customers[i]; return val ? `"${col.header}","${val}"` : `"" , ""`; });
-      csvContent += rowParts.join(",,") + "\n";
-    }
-    const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.setAttribute("download", `Run_Sheet_${selectedDate}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
   const handleDragStart = (event: DragStartEvent) => { setActiveId(event.active.id as string); };
+  
+  // 🚀 [수정] 드래그 앤 드롭 시에도 도착 컬럼이 다르면 delivery_order: 0 적용
   const handleDragOver = (event: DragOverEvent) => {
     const { active, over } = event;
     if (!over) return;
@@ -649,24 +691,53 @@ export default function SetDeliveryPage() {
     const overId = over.id as string;
     const activeInvoice = localInvoices.find(i => i.id === activeId);
     if (!activeInvoice || activeInvoice.is_completed) return;
+    
     let targetDriverId: string | null = null;
     let targetRun = 1;
+    
     const overInvoice = localInvoices.find(i => i.id === overId);
-    if (overInvoice) { targetDriverId = overInvoice.current_driver_id; targetRun = overInvoice.current_run; } 
-    else if (overId === "unassigned") { targetDriverId = null; targetRun = 1; } 
-    else { const targetCol = visibleColumns.find(c => c.columnId === overId); if (targetCol) { targetDriverId = targetCol.driver.id; targetRun = targetCol.run; } }
+    if (overInvoice) { 
+        targetDriverId = overInvoice.current_driver_id; 
+        targetRun = overInvoice.current_run; 
+    } else if (overId === "unassigned") { 
+        targetDriverId = null; 
+        targetRun = 1; 
+    } else { 
+        const targetCol = visibleColumns.find(c => c.columnId === overId); 
+        if (targetCol) { 
+            targetDriverId = targetCol.driver.id; 
+            targetRun = targetCol.run; 
+        } 
+    }
+    
     if (activeInvoice.current_driver_id !== targetDriverId || activeInvoice.current_run !== targetRun) {
       setLocalInvoices(prev => prev.map(inv => { 
-          if (inv.id === activeId) return { ...inv, current_driver_id: targetDriverId, current_run: targetRun }; 
+          if (inv.id === activeId) return { 
+              ...inv, 
+              current_driver_id: targetDriverId, 
+              current_run: targetRun,
+              delivery_order: 0 // 드래그로 넘어갈 때도 0으로 초기화
+          }; 
           return inv; 
       }));
       setHasChanges(true);
     }
   };
+
   const handleDragEnd = () => { setActiveId(null); };
   const dropAnimation: DropAnimation = { sideEffects: defaultDropAnimationSideEffects({ styles: { active: { opacity: '0.5' } } }) };
   const groupedInvoices: Record<string, DisplayInvoice[]> = { unassigned: [], ...Object.fromEntries(visibleColumns.map(c => [c.columnId, []])) };
-  localInvoices.forEach(inv => { if (inv.current_driver_id) { const key = `${inv.current_driver_id}_${inv.current_run}`; if (groupedInvoices[key]) groupedInvoices[key].push(inv); else groupedInvoices["unassigned"].push(inv); } else { groupedInvoices["unassigned"].push(inv); } });
+  
+  localInvoices.forEach(inv => { 
+      if (inv.current_driver_id) { 
+          const key = `${inv.current_driver_id}_${inv.current_run}`; 
+          if (groupedInvoices[key]) groupedInvoices[key].push(inv); 
+          else groupedInvoices["unassigned"].push(inv); 
+      } else { 
+          groupedInvoices["unassigned"].push(inv); 
+      } 
+  });
+  
   const availableToAdd = allStaff.map(staff => { const count = visibleColumns.filter(c => c.driver.id === staff.id).length; return { ...staff, count }; }).filter(s => s.count < 2);
   const activeInvoice = activeId ? localInvoices.find(i => i.id === activeId) : null;
 
@@ -785,35 +856,41 @@ function DroppableColumn({
   const isChecked = selectedColumns.has(id);
 
   return (
-    <div ref={setNodeRef} className={cn("w-44 flex flex-col h-full rounded-lg border shrink-0 transition-colors", type === "unassigned" ? "bg-slate-100/80 border-slate-200/60" : "bg-white border-slate-200 shadow-sm")}>
-      <div className={cn("p-2 border-b rounded-t-lg h-10", type === "unassigned" ? "border-slate-200 bg-white/40" : "border-slate-100 bg-slate-50")}>
-        <div className="flex items-center justify-between h-full">
+    <div ref={setNodeRef} className={cn("w-56 flex flex-col h-full rounded-lg border shrink-0 transition-colors", type === "unassigned" ? "bg-slate-100/80 border-slate-200/60" : "bg-white border-slate-200 shadow-sm")}>
+      <div className={cn("px-2 py-1.5 border-b rounded-t-lg min-h-[44px]", type === "unassigned" ? "border-slate-200 bg-white/40" : "border-slate-100 bg-slate-50")}>
+        <div className="flex items-center justify-between h-full gap-1">
           <div className="flex items-center gap-1.5 overflow-hidden">
               {type === "unassigned" ? (
-                  <AlertCircle className="w-3.5 h-3.5 text-red-500 shrink-0" />
+                  <AlertCircle className="w-3.5 h-3.5 text-red-500 shrink-0 mt-0.5" />
               ) : (
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1 shrink-0 mt-0.5">
                       <input type="checkbox" checked={isChecked} onChange={() => onToggle(id)} className="w-3.5 h-3.5 cursor-pointer accent-emerald-600" />
                   </div>
               )}
               
               {type === "driver" && (
-                  <div className="relative">
-                      <Avatar className="h-5 w-5 border border-white shadow-sm shrink-0">
-                          <AvatarFallback className={cn("text-[9px] font-bold", run === 2 ? "bg-indigo-100 text-indigo-700" : "bg-emerald-100 text-emerald-700")}>{title.slice(0, 1).toUpperCase()}</AvatarFallback>
+                  <div className="relative shrink-0 mt-0.5">
+                      <Avatar className="h-6 w-6 border border-white shadow-sm shrink-0">
+                          <AvatarFallback className={cn("text-[10px] font-bold", run === 2 ? "bg-indigo-100 text-indigo-700" : "bg-emerald-100 text-emerald-700")}>{title.slice(0, 1).toUpperCase()}</AvatarFallback>
                       </Avatar>
-                      {run === 2 && (<div className="absolute -bottom-1 -right-1 bg-indigo-500 text-white text-[8px] w-3 h-3 flex items-center justify-center rounded-full border border-white">2</div>)}
+                      {run === 2 && (<div className="absolute -bottom-1 -right-1 bg-indigo-500 text-white text-[9px] w-3.5 h-3.5 flex items-center justify-center rounded-full border border-white">2</div>)}
                   </div>
               )}
 
-            <div className="flex flex-col truncate ml-0.5">
-                <span className="font-bold text-slate-800 text-xs truncate" title={title}>{title}</span>
-                {subTitle && <span className="text-[9px] text-slate-400 leading-none">{subTitle}</span>}
+            <div className="flex flex-col truncate ml-1 justify-center">
+                <span className="font-bold text-slate-800 text-xs truncate leading-tight" title={title}>{title}</span>
+                <div className="flex items-center gap-1.5 mt-0.5">
+                  {subTitle && <span className="text-[9px] text-slate-500 font-medium leading-none">{subTitle}</span>}
+                  {type === "driver" && (
+                      <span className="text-[9px] font-black text-emerald-600 leading-none">
+                          ${totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                  )}
+                </div>
             </div>
           </div>
-          <div className="flex items-center gap-1">
-              <span className="text-[9px] font-bold text-slate-400 bg-white border border-slate-100 px-1 rounded-full">{items.length}</span>
-              {type === "driver" && (<span className="text-[9px] font-black text-emerald-600 bg-white border border-slate-100 px-1 rounded">${totalAmount.toLocaleString()}</span>)}
+          <div className="flex items-start shrink-0 h-full pt-0.5">
+              <span className="text-[10px] font-bold text-slate-500 bg-white border border-slate-200 px-1.5 rounded-full shadow-sm">{items.length}</span>
           </div>
         </div>
       </div>
@@ -847,7 +924,6 @@ function SlimInvoiceCard({ invoice, columns, currentColumnId, onMove, isOverlay 
         {invoice.customers?.name || "Unknown"}
         {isNew && (<span className="ml-2 inline-flex items-center px-1 py-0.5 rounded text-[8px] font-bold bg-blue-500 text-white animate-pulse">NEW</span>)}
       </div>
-      {isCompleted && !isOverlay && (<Badge variant="secondary" className="h-4 px-1.5 text-[9px] bg-slate-200 text-slate-500 font-bold rounded-sm mr-1">Done <CheckCircle2 className="w-2.5 h-2.5 ml-0.5" /></Badge>)}
       {!isOverlay && !isCompleted && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

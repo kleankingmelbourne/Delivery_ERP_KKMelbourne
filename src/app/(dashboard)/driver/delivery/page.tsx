@@ -47,6 +47,7 @@ interface DeliveryItem {
   id: string;
   customer_id: string; 
   invoice_to: string;
+  memo?: string; // 🚀 DB 컬럼명에 맞춰 memo로 변경
   contact_name?: string; 
   delivery_address: string;
   phone?: string;
@@ -265,11 +266,18 @@ export default function DriverDashboardPage() {
           setCurrentUserName(authUserName);
           const today = getMelbourneDate();
           
-          const { data: invoiceData } = await supabase.from('invoices').select(`
-              id, invoice_to, status, is_completed, delivery_run, delivery_order, driver_id, invoice_date, customer_id,
+          // 🚀 [수정] DB 컬럼명 memo 로 명확히 수정
+          const { data: invoiceData, error: invoiceError } = await supabase.from('invoices').select(`
+              id, invoice_to, memo, status, is_completed, delivery_run, delivery_order, driver_id, invoice_date, customer_id,
               customers ( contact_name, mobile, delivery_address, delivery_state, delivery_suburb, delivery_postcode, delivery_lat, delivery_lng, lat, lng )
           `).eq('invoice_date', today).eq('driver_id', user.id).neq('delivery_run', 0).order('delivery_order', { ascending: true });
           
+          if (invoiceError) {
+              console.error("🚨 Supabase Query Error:", invoiceError);
+              alert(`데이터베이스 에러가 발생했습니다!\n${invoiceError.message}`);
+              return; 
+          }
+
           const { data: memoData } = await supabase.from('delivery_memos').select('content').eq('driver_id', user.id).eq('memo_date', today).maybeSingle();
           if (memoData) setDailyMemo(memoData.content || "");
           
@@ -280,6 +288,7 @@ export default function DriverDashboardPage() {
                       id: item.id, 
                       customer_id: item.customer_id, 
                       invoice_to: item.invoice_to, 
+                      memo: item.memo || "", // 🚀 memo 로 매핑
                       contact_name: c?.contact_name || "",
                       delivery_address: `${c?.delivery_address || ''}, ${c?.delivery_suburb || ''}`.replace(/^, /, ""),
                       phone: c?.mobile || "", 
@@ -662,7 +671,6 @@ export default function DriverDashboardPage() {
                           <TrafficLayer />
                           <DirectionsRenderer directions={directionsResponse} options={DIR_OPTIONS} />
                           
-                          {/* 🚀 시작점(S) 마커 수정: 빨간 물방울 */}
                           {directionsResponse.routes?.[0]?.legs?.[0]?.start_location && (
                               <Marker 
                                   position={directionsResponse.routes[0].legs[0].start_location} 
@@ -680,7 +688,6 @@ export default function DriverDashboardPage() {
                               />
                           )}
                           
-                          {/* 경유지 배송 마커들 */}
                           {directionsResponse.routes?.[0]?.legs && mapRoutableItems.map((inv, idx: number) => {
                               const leg = directionsResponse.routes[0].legs[idx];
                               if (!leg) return null;
@@ -723,7 +730,6 @@ export default function DriverDashboardPage() {
                               );
                           })}
                           
-                          {/* 🚀 도착점(F) 마커 수정: 빨간 물방울 */}
                           {directionsResponse.routes?.[0]?.legs && directionsResponse.routes[0].legs.length > 0 && (
                               <Marker 
                                   position={directionsResponse.routes[0].legs[directionsResponse.routes[0].legs.length - 1].end_location} 
@@ -853,8 +859,31 @@ function SortableItem({ id, item, index, isActive, isDone, isEditing, dailyMemo,
     if (isActive && !isEditing) return (
         <div ref={setNodeRef} style={style} className={cn("bg-white border-2 shadow-xl p-5 rounded-2xl transform scale-[1.02] relative animate-in zoom-in-95 duration-300", isNewItem ? "border-rose-500" : "border-blue-600")}>
             <div className={cn("absolute top-0 left-0 text-white text-[10px] font-bold px-3 py-1 rounded-br-xl uppercase", isNewItem ? "bg-rose-500" : "bg-blue-600")}>Current</div>
-            <div className="mt-4 flex items-center justify-between"><h3 className="text-2xl font-black"><span className={isNewItem ? "text-rose-500 mr-1" : ""}>{displayNumber}{isNewItem ? "" : ". "}</span>{item.invoice_to}</h3><div className="flex items-center gap-2"><Button size="icon" variant="ghost" onClick={onOpenItems} className="h-10 w-10 rounded-full text-slate-400 hover:bg-slate-100"><Package className="w-5 h-5" /></Button><Button size="icon" variant="ghost" onClick={onMemo} className={cn("h-10 w-10 rounded-full", hasMemo ? "bg-blue-50 text-blue-600" : "text-slate-400 hover:bg-slate-100")}><MessageSquareText className={cn("w-5 h-5", hasMemo && "fill-blue-200")} /></Button></div></div>
-            <p className="text-slate-600 text-sm mt-1 leading-tight"><span className="font-semibold text-slate-800">CONTACT: </span><span className="font-normal">{item.contact_name || ""}</span><span className="mx-1.5 text-slate-300">|</span><span>{item.delivery_address}</span></p>
+            <div className="mt-4 flex items-center justify-between">
+                <h3 className="text-2xl font-black"><span className={isNewItem ? "text-rose-500 mr-1" : ""}>{displayNumber}{isNewItem ? "" : ". "}</span>{item.invoice_to}</h3>
+                <div className="flex items-center gap-2">
+                    <Button size="icon" variant="ghost" onClick={onOpenItems} className="h-10 w-10 rounded-full text-slate-400 hover:bg-slate-100"><Package className="w-5 h-5" /></Button>
+                    <Button size="icon" variant="ghost" onClick={onMemo} className={cn("h-10 w-10 rounded-full", hasMemo ? "bg-blue-50 text-blue-600" : "text-slate-400 hover:bg-slate-100")}><MessageSquareText className={cn("w-5 h-5", hasMemo && "fill-blue-200")} /></Button>
+                </div>
+            </div>
+            
+            <p className="text-slate-600 text-sm mt-1 leading-tight">
+                <span className="font-semibold text-slate-800">CONTACT: </span>
+                <span className="font-normal">{item.contact_name || ""}</span>
+                <span className="mx-1.5 text-slate-300">|</span>
+                <span>{item.delivery_address}</span>
+            </p>
+
+            {/* 🚀 활성 상태 송장 메모 (Invoice Memo) */}
+            {item.memo && (
+                <div className="mt-3 p-3 bg-amber-50 rounded-xl border border-amber-200 shadow-inner">
+                    <p className="text-amber-800 text-sm font-bold flex items-start gap-1.5">
+                        <span className="shrink-0 text-base leading-none">🚨</span>
+                        <span>{item.memo}</span>
+                    </p>
+                </div>
+            )}
+            
             <div className="mt-5 grid grid-cols-6 gap-2"><Button onClick={onCall} variant="outline" className="col-span-1 h-14 border-slate-200 p-0"><Phone className="w-6 h-6 text-slate-600"/></Button><Button onClick={onUpdateLocation} disabled={isUpdatingLocation} variant="outline" className="col-span-1 h-14 border-emerald-200 bg-emerald-50 p-0"><MapPin className="w-6 h-6 text-emerald-600"/></Button><Button onClick={onNavigate} className="col-span-2 h-14 bg-blue-50 text-blue-700 font-bold hover:bg-blue-100 border-none shadow-none"><Navigation className="w-5 h-5 mr-1" /> Map</Button><Button onClick={onComplete} className="col-span-2 h-14 bg-slate-900 text-white font-bold hover:bg-slate-800 shadow-lg"><Camera className="w-5 h-5 mr-1" /> Done</Button></div>
         </div>
     );
@@ -863,9 +892,23 @@ function SortableItem({ id, item, index, isActive, isDone, isEditing, dailyMemo,
         <div ref={setNodeRef} style={style} className={cn("bg-white p-4 rounded-xl border flex items-center justify-between shadow-sm transition-all", isEditing ? "border-blue-200 ring-2 ring-blue-50" : (isNewItem ? "border-rose-200 shadow-rose-100/50" : "opacity-70 border-slate-100"))}>
             <div className="flex items-center gap-3 overflow-hidden">
                 <div className={cn("w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold shrink-0 transition-colors", isNewItem ? (isEditing ? "bg-rose-100 text-rose-600" : "bg-rose-500 text-white animate-pulse") : (isEditing ? "bg-blue-100 text-blue-600" : "bg-slate-100 text-slate-400"))}>{displayNumber}</div>
+                
                 <div className="overflow-hidden pr-2 flex-1">
                     <div className="font-bold text-slate-800 text-sm truncate">{item.invoice_to}</div>
-                    <div className="text-[10px] text-slate-400 truncate mt-0.5"><span className="font-semibold text-slate-500">CONTACT: </span><span className="font-normal text-slate-500">{item.contact_name || ""}</span><span className="mx-1.5 text-slate-300">|</span><span>{item.delivery_address}</span></div>
+                    
+                    <div className="text-[10px] text-slate-400 truncate mt-0.5">
+                        <span className="font-semibold text-slate-500">CONTACT: </span>
+                        <span className="font-normal text-slate-500">{item.contact_name || ""}</span>
+                        <span className="mx-1.5 text-slate-300">|</span>
+                        <span>{item.delivery_address}</span>
+                    </div>
+
+                    {/* 🚀 일반 상태 송장 메모 (Invoice Memo) */}
+                    {item.memo && (
+                        <div className="text-[10px] text-amber-600 truncate mt-1 font-bold">
+                            🚨 {item.memo}
+                        </div>
+                    )}
                 </div>
             </div>
             <div className="flex items-center gap-1">

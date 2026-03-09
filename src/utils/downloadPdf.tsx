@@ -11,6 +11,8 @@ import QuotationDocument, { QuotationData } from '@/components/pdf/QuotationDocu
 import PurchaseOrderDocument, { PurchaseOrderData } from '@/components/pdf/PurchaseOrderDocument';
 import PackingListDocument from '@/components/pdf/PackingListDocument'; 
 
+import { PDFDocument } from 'pdf-lib';
+
 Font.register({
   family: 'NotoSansKR',
   src: '/font/NotoSansKR-Medium.ttf', // public 폴더 경로와 일치해야 함
@@ -154,9 +156,25 @@ export const downloadBulkPdf = async (ids: string[]) => {
   const results = await Promise.all(ids.map(id => getInvoiceData(id)));
   const validDataSet = results.filter((item): item is any => item !== null);
   if (validDataSet.length === 0) return;
-  const blob = await pdf(<BulkInvoiceDocument dataSet={validDataSet} />).toBlob();
+
+  const mergedPdf = await PDFDocument.create();
+
+  for (const data of validDataSet) {
+    const Doc = data.isCreditMemo ? <CreditMemoDocument data={data} /> : <InvoiceDocument data={data} />;
+    
+    const blob = await pdf(Doc).toBlob();
+    const arrayBuffer = await blob.arrayBuffer();
+    
+    const invoicePdf = await PDFDocument.load(arrayBuffer);
+    const copiedPages = await mergedPdf.copyPages(invoicePdf, invoicePdf.getPageIndices());
+    copiedPages.forEach((page) => mergedPdf.addPage(page));
+  }
+
+  const mergedPdfBytes = await mergedPdf.save();
+  // 💡 [해결 포인트] mergedPdfBytes 뒤에 as any 를 붙여서 타입 에러를 무시합니다.
+  const mergedBlob = new Blob([mergedPdfBytes as any], { type: 'application/pdf' });
   const dateStr = new Date().toISOString().split('T')[0];
-  saveAs(blob, `Bulk_Invoices_${dateStr}.pdf`);
+  saveAs(mergedBlob, `Bulk_Invoices_${dateStr}.pdf`);
 };
 
 export const printBulkPdf = async (ids: string[]) => {
@@ -164,8 +182,24 @@ export const printBulkPdf = async (ids: string[]) => {
   const results = await Promise.all(ids.map(id => getInvoiceData(id)));
   const validDataSet = results.filter((item): item is any => item !== null);
   if (validDataSet.length === 0) return;
-  const blob = await pdf(<BulkInvoiceDocument dataSet={validDataSet} />).toBlob();
-  window.open(URL.createObjectURL(blob), '_blank');
+
+  const mergedPdf = await PDFDocument.create();
+
+  for (const data of validDataSet) {
+    const Doc = data.isCreditMemo ? <CreditMemoDocument data={data} /> : <InvoiceDocument data={data} />;
+    
+    const blob = await pdf(Doc).toBlob();
+    const arrayBuffer = await blob.arrayBuffer();
+    
+    const invoicePdf = await PDFDocument.load(arrayBuffer);
+    const copiedPages = await mergedPdf.copyPages(invoicePdf, invoicePdf.getPageIndices());
+    copiedPages.forEach((page) => mergedPdf.addPage(page));
+  }
+
+  const mergedPdfBytes = await mergedPdf.save();
+  // 💡 [해결 포인트] 여기도 마찬가지로 as any 를 추가합니다.
+  const mergedBlob = new Blob([mergedPdfBytes as any], { type: 'application/pdf' });
+  window.open(URL.createObjectURL(mergedBlob), '_blank');
 };
 
 // ==================================================================

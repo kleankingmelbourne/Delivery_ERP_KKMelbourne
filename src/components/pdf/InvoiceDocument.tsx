@@ -106,12 +106,15 @@ const styles = StyleSheet.create({
   // 🚀 [추가] 멀티 페이지를 위한 하단 푸터 스타일 설정
   pageFooterText: {
     position: 'absolute',
-    bottom: 12,
+    bottom: 20, // 위치 살짝 위로 조정
     left: 30,
     right: 30,
-    fontSize: 7.5,
-    color: '#000',
+    fontSize: 8, // 글자 크기 살짝 확대
+    color: '#666', // 약간 회색조로 변경하여 본문과 구분
     textAlign: 'center',
+    borderTopWidth: 0.5,
+    borderColor: '#eee',
+    paddingTop: 5,
   }
 });
 
@@ -258,8 +261,8 @@ export const InvoicePage = ({ data }: { data: InvoiceData }) => {
         fixed 
         render={({ pageNumber, totalPages }) => (
           totalPages > 1 
-            ? `Invoice No: ${data.invoiceNo}    |    Customer: ${data.customerName}    |    Page ${pageNumber} of ${totalPages}` 
-            : ''
+            ? `${data.invoiceNo}    |    ${data.customerName}    |    Page ${pageNumber} of ${totalPages}` 
+            : ""
         )} 
       />
     </Page>
@@ -268,7 +271,7 @@ export const InvoicePage = ({ data }: { data: InvoiceData }) => {
 
 const InvoiceDocument = ({ data }: { data: InvoiceData }) => {
   return (
-    <Document>
+    <Document title={`Invoice_${data.invoiceNo}`}>
       <InvoicePage data={data} />
     </Document>
   );

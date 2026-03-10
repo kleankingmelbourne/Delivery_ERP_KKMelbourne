@@ -92,7 +92,7 @@ interface DriverRouteInfo {
     run: number; 
     count: number;
     completedCount: number;
-    newCount: number; // 🚀 [추가] 신규 배송건 개수 추적
+    newCount: number; 
 }
 
 interface LocationData {
@@ -132,7 +132,6 @@ export default function DeliveryRoutePage() {
   const currentDriverId = selectedRouteKey ? selectedRouteKey.split('_')[0] : null;
   const driverLoc = currentDriverId ? driverLocations[currentDriverId] : null;
 
-  // 컴팩트 UI용 출발/도착지 상태
   const [startDestType, setStartDestType] = useState<'company' | 'home' | 'custom'>('company');
   const [finalDestType, setFinalDestType] = useState<'company' | 'home' | 'custom'>('home');
   
@@ -161,7 +160,6 @@ export default function DeliveryRoutePage() {
   
   const [checkedItems, setCheckedItems] = useState<Set<string>>(new Set());
 
-  // 마우스 드래그(스와이프) 상태
   const [touchStartX, setTouchStartX] = useState<number | null>(null);
   const [touchStartY, setTouchStartY] = useState<number | null>(null);
 
@@ -200,7 +198,6 @@ export default function DeliveryRoutePage() {
     try {
         const { data, error } = await supabase
             .from("invoices")
-            // 🚀 [추가] delivery_order를 쿼리에 포함하여 새 오더 판단
             .select(`driver_id, delivery_run, delivery_order, is_completed, profiles:driver_id ( display_name, address, lat, lng, route_prefs )`)
             .eq("invoice_date", selectedDate)
             .neq("status", "Paid")
@@ -237,7 +234,6 @@ export default function DeliveryRoutePage() {
                 groups[key].completedCount += 1;
             }
             
-            // 🚀 [추가] 순서가 아직 안정해진 새로운 배송건(delivery_order === 0) 카운트 증가
             if (item.delivery_order === 0 || item.delivery_order === null) {
                 groups[key].newCount += 1;
             }
@@ -463,7 +459,6 @@ export default function DeliveryRoutePage() {
           setIsRouteChanged(false); 
           setSaveStatus('saved'); 
           
-          // 🚀 [추가] 저장이 완료되면 좌측 사이드바의 NEW 뱃지도 없애기 위해 리스트 새로고침
           fetchRoutes(); 
       } catch (error: any) { alert("Save failed: " + error.message); } 
       finally { setIsSaving(false); }
@@ -641,7 +636,6 @@ export default function DeliveryRoutePage() {
                           </Badge>
                           <span className="text-[10px] text-slate-400 font-medium">{route.completedCount} / {route.count} stops</span>
                           
-                          {/* 🚀 [추가] 신규 배송건이 있을 경우 사이드바에 NEW 뱃지 표시 */}
                           {route.newCount > 0 && (
                               <Badge className="bg-amber-500 hover:bg-amber-600 text-white text-[8px] px-1 h-3.5 rounded-sm">
                                   {route.newCount} NEW
@@ -857,29 +851,54 @@ export default function DeliveryRoutePage() {
                                         <th className="px-4 py-3 w-[1%] whitespace-nowrap text-right">QTY</th>
                                     </tr>
                                 </thead>
-                                <tbody className="divide-y divide-slate-100">
-                                    {invoiceItems.map((item) => {
+                                <tbody className="divide-y divide-white">
+                                    {invoiceItems.map((item, idx: number) => {
                                         const isChecked = checkedItems.has(item.id);
+                                        const unitLower = (item.unit || '').toLowerCase();
+                                        
+                                        // 🚀 [추가] 단위에 따른 불리언 값 계산
+                                        const isCtn = unitLower.includes('ctn') || unitLower.includes('carton');
+                                        const isPack = unitLower.includes('pack') || unitLower.includes('pkt');
 
                                         return (
                                             <tr 
                                                 key={item.id} 
                                                 onClick={() => toggleItemCheck(item.id)} 
+                                                // 🚀 [수정] 조건부로 행 전체 배경색 변경
                                                 className={cn(
-                                                    "transition-colors cursor-pointer text-[13px]",
-                                                    isChecked ? "bg-red-50/40" : "hover:bg-indigo-50/30"
+                                                    "transition-all cursor-pointer text-[13px] border-b border-white",
+                                                    isChecked ? "bg-slate-50 opacity-60 grayscale" : 
+                                                    isCtn ? "bg-blue-50 hover:bg-blue-100" : 
+                                                    isPack ? "bg-amber-50 hover:bg-amber-100" : 
+                                                    "bg-white hover:bg-slate-50"
                                                 )}
                                             >
-                                                <td className={cn("px-4 py-3 font-mono transition-all", isChecked ? "text-slate-400 line-through decoration-red-500 decoration-2" : "text-slate-500")}>
+                                                <td className={cn(
+                                                    "px-4 py-3 font-mono transition-all", 
+                                                    isChecked ? "text-slate-400 line-through decoration-red-500 decoration-2" : 
+                                                    isCtn ? "text-blue-700" : isPack ? "text-amber-700" : "text-slate-500"
+                                                )}>
                                                     {item.products?.vendor_product_id || '-'}
                                                 </td>
-                                                <td className={cn("px-4 py-3 font-bold transition-all", isChecked ? "text-slate-400 line-through decoration-red-500 decoration-2" : "text-slate-800")}>
+                                                <td className={cn(
+                                                    "px-4 py-3 font-bold transition-all", 
+                                                    isChecked ? "text-slate-400 line-through decoration-red-500 decoration-2" : 
+                                                    isCtn ? "text-blue-900" : isPack ? "text-amber-900" : "text-slate-800"
+                                                )}>
                                                     {item.description}
                                                 </td>
-                                                <td className={cn("px-4 py-3 text-center font-medium whitespace-nowrap transition-all", isChecked ? "text-slate-400 line-through decoration-red-500 decoration-2" : "text-slate-500")}>
+                                                <td className={cn(
+                                                    "px-4 py-3 text-center font-bold whitespace-nowrap transition-all", 
+                                                    isChecked ? "text-slate-400 line-through decoration-red-500 decoration-2" : 
+                                                    isCtn ? "text-blue-700" : isPack ? "text-amber-700" : "text-slate-600"
+                                                )}>
                                                     {item.unit || '-'}
                                                 </td>
-                                                <td className={cn("px-4 py-3 text-right font-black whitespace-nowrap transition-all", isChecked ? "text-red-400 line-through decoration-red-500 decoration-2" : "text-indigo-600")}>
+                                                <td className={cn(
+                                                    "px-4 py-3 text-right font-black whitespace-nowrap transition-all text-base", 
+                                                    isChecked ? "text-red-400 line-through decoration-red-500 decoration-2" : 
+                                                    isCtn ? "text-blue-700" : isPack ? "text-amber-700" : "text-indigo-600"
+                                                )}>
                                                     {item.quantity}
                                                 </td>
                                             </tr>

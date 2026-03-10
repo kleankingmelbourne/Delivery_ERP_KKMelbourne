@@ -7,7 +7,7 @@ import {
   Phone, Check, Navigation, Package, Camera, X, Loader2, 
   ArrowUpDown, Play, Unlock, Save, Home, 
   Sparkles, Building2, MousePointerClick, Flag, Circle,
-  MessageSquareText, MapPin, ListOrdered, Map as MapIcon, RefreshCw, ImageIcon
+  MessageSquareText, MapPin, ListOrdered, Map as MapIcon, RefreshCw, ImageIcon, Pencil
 } from "lucide-react";
 import {
   DndContext, 
@@ -47,8 +47,11 @@ interface DeliveryItem {
   id: string;
   customer_id: string; 
   invoice_to: string;
-  memo?: string; // 🚀 DB 컬럼명에 맞춰 memo로 변경
+  memo?: string; 
   contact_name?: string; 
+  customer_pw?: string; 
+  total_amount?: number; 
+  proof_url?: string; // 🚀 사진 다시보기를 위해 추가
   delivery_address: string;
   phone?: string;
   status: string;
@@ -171,6 +174,9 @@ export default function DriverDashboardPage() {
   const [targetId, setTargetId] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
 
+  // 🚀 완료된 사진 다시보기용 상태
+  const [viewProofUrl, setViewProofUrl] = useState<string | null>(null);
+
   const [dailyMemo, setDailyMemo] = useState(""); 
   const [isMemoModalOpen, setIsMemoModalOpen] = useState(false);
   const [memoText, setMemoText] = useState(""); 
@@ -178,9 +184,13 @@ export default function DriverDashboardPage() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const [isItemsModalOpen, setIsItemsModalOpen] = useState(false);
-  const [selectedInvoiceForItems, setSelectedInvoiceForItems] = useState<{id: string, name: string} | null>(null);
+  const [selectedInvoiceForItems, setSelectedInvoiceForItems] = useState<{id: string, name: string, memo: string, totalAmount: number, customerId: string, customerPw: string} | null>(null);
   const [invoiceItems, setInvoiceItems] = useState<any[]>([]);
   const [isItemsLoading, setIsItemsLoading] = useState(false);
+  const [checkedItems, setCheckedItems] = useState<Record<string, boolean>>({});
+  const [isEditingPw, setIsEditingPw] = useState(false); 
+  const [newPw, setNewPw] = useState(""); 
+  const [isSavingPw, setIsSavingPw] = useState(false);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
 
@@ -266,10 +276,10 @@ export default function DriverDashboardPage() {
           setCurrentUserName(authUserName);
           const today = getMelbourneDate();
           
-          // 🚀 [수정] DB 컬럼명 memo 로 명확히 수정
+          // 🚀 [수정] proof_url 추가 조회
           const { data: invoiceData, error: invoiceError } = await supabase.from('invoices').select(`
-              id, invoice_to, memo, status, is_completed, delivery_run, delivery_order, driver_id, invoice_date, customer_id,
-              customers ( contact_name, mobile, delivery_address, delivery_state, delivery_suburb, delivery_postcode, delivery_lat, delivery_lng, lat, lng )
+              id, invoice_to, memo, total_amount, proof_url, status, is_completed, delivery_run, delivery_order, driver_id, invoice_date, customer_id,
+              customers ( contact_name, customer_pw, mobile, delivery_address, delivery_state, delivery_suburb, delivery_postcode, delivery_lat, delivery_lng, lat, lng )
           `).eq('invoice_date', today).eq('driver_id', user.id).neq('delivery_run', 0).order('delivery_order', { ascending: true });
           
           if (invoiceError) {
@@ -288,8 +298,11 @@ export default function DriverDashboardPage() {
                       id: item.id, 
                       customer_id: item.customer_id, 
                       invoice_to: item.invoice_to, 
-                      memo: item.memo || "", // 🚀 memo 로 매핑
+                      memo: item.memo || "", 
                       contact_name: c?.contact_name || "",
+                      customer_pw: c?.customer_pw || "", 
+                      total_amount: item.total_amount || 0, 
+                      proof_url: item.proof_url || null, // 🚀 사진 URL 추가
                       delivery_address: `${c?.delivery_address || ''}, ${c?.delivery_suburb || ''}`.replace(/^, /, ""),
                       phone: c?.mobile || "", 
                       status: item.status, 
@@ -319,9 +332,15 @@ export default function DriverDashboardPage() {
       }
   }, [user, authUserName, supabase]);
 
+  const isFetchedRef = useRef(false);
+
   useEffect(() => {
       if (!user) return;
-      fetchDeliveryData(false);
+
+      if (!isFetchedRef.current) {
+          fetchDeliveryData(false);
+          isFetchedRef.current = true;
+      }
 
       let timeoutId: NodeJS.Timeout;
 
@@ -340,6 +359,7 @@ export default function DriverDashboardPage() {
       return () => { 
           clearTimeout(timeoutId);
           supabase.removeChannel(channel); 
+          isFetchedRef.current = false;
       };
   }, [user, fetchDeliveryData, supabase]);
 
@@ -365,8 +385,18 @@ export default function DriverDashboardPage() {
       setIsMemoModalOpen(true);
   };
 
-  const handleOpenItems = async (invoiceId: string, invoiceTo: string) => {
-      setSelectedInvoiceForItems({ id: invoiceId, name: invoiceTo });
+  const handleOpenItems = async (item: DeliveryItem) => {
+      setSelectedInvoiceForItems({ 
+          id: item.id, 
+          name: item.invoice_to, 
+          memo: item.memo || "",
+          totalAmount: item.total_amount || 0,
+          customerId: item.customer_id,
+          customerPw: item.customer_pw || ""
+      });
+      setNewPw(item.customer_pw || "");
+      setIsEditingPw(false);
+      setCheckedItems({}); 
       setInvoiceItems([]);
       setIsItemsModalOpen(true);
       setIsItemsLoading(true);
@@ -375,7 +405,7 @@ export default function DriverDashboardPage() {
           const { data, error } = await supabase
               .from('invoice_items')
               .select('*')
-              .eq('invoice_id', invoiceId);
+              .eq('invoice_id', item.id);
               
           if (data && !error) {
               setInvoiceItems(data);
@@ -385,6 +415,52 @@ export default function DriverDashboardPage() {
       } finally {
           setIsItemsLoading(false);
       }
+  };
+
+  const handleSavePw = async () => {
+      if (!selectedInvoiceForItems) return;
+      setIsSavingPw(true);
+      try {
+          const { error } = await supabase
+              .from('customers')
+              .update({ customer_pw: newPw })
+              .eq('id', selectedInvoiceForItems.customerId);
+
+          if (error) throw error;
+          
+          setSelectedInvoiceForItems(prev => prev ? {...prev, customerPw: newPw} : null);
+          setIsEditingPw(false);
+          setDeliveries(prev => prev.map(d => d.customer_id === selectedInvoiceForItems.customerId ? { ...d, customer_pw: newPw } : d));
+      } catch (e) {
+          alert("비밀번호 저장 실패");
+      } finally {
+          setIsSavingPw(false);
+      }
+  };
+
+  const getTotals = () => {
+      let ctnCount = 0;
+      let packCount = 0;
+      
+      invoiceItems.forEach(item => {
+          const name = (item.item_name || item.product_name || item.description || "").toLowerCase();
+          const qty = Number(item.quantity || item.qty || 1);
+          
+          if (name.includes('ctn') || name.includes('carton')) {
+              ctnCount += qty;
+          } else if (name.includes('pack') || name.includes('pkt')) {
+              packCount += qty;
+          }
+      });
+      
+      return { ctnCount, packCount, totalItems: invoiceItems.length };
+  };
+
+  const toggleItemCheck = (itemId: string) => {
+      setCheckedItems(prev => ({
+          ...prev,
+          [itemId]: !prev[itemId]
+      }));
   };
 
   const getPointLocation = useCallback((type: string, customText: string) => {
@@ -530,7 +606,8 @@ export default function DriverDashboardPage() {
 
         if (dbError) throw dbError;
 
-        console.log(`Success: ${customerName}`);
+        // 화면 상의 proof_url 업데이트
+        setDeliveries(prev => prev.map(d => d.id === currentTargetId ? { ...d, proof_url: publicUrl } : d));
 
     } catch (error: any) {
         console.error("Background task failed:", error);
@@ -573,6 +650,7 @@ export default function DriverDashboardPage() {
           <input type="file" accept="image/*" capture="environment" ref={cameraInputRef} className="hidden" onChange={handleFileChange} />
           <input type="file" accept="image/*" ref={galleryInputRef} className="hidden" onChange={handleFileChange} />
           
+          {/* 업로드 전 미리보기 모달 */}
           {previewUrl && (
             <div className="fixed inset-0 z-[100] bg-black/95 flex flex-col animate-in fade-in duration-200 h-[100dvh]">
                 <div className="shrink-0 flex justify-between items-center p-4 text-white">
@@ -591,6 +669,21 @@ export default function DriverDashboardPage() {
                     >
                         <Check className="w-6 h-6" /> Complete & Return
                     </button>
+                </div>
+            </div>
+          )}
+
+          {/* 🚀 완료된 사진 다시보기 모달 */}
+          {viewProofUrl && (
+            <div className="fixed inset-0 z-[110] bg-black/95 flex flex-col animate-in fade-in duration-200 h-[100dvh]">
+                <div className="shrink-0 flex justify-between items-center p-4 text-white">
+                    <h3 className="font-bold text-lg">Saved Photo</h3>
+                    <button onClick={() => setViewProofUrl(null)} className="p-2 bg-white/10 rounded-full hover:bg-white/20 transition">
+                        <X className="w-6 h-6" />
+                    </button>
+                </div>
+                <div className="flex-1 min-h-0 overflow-hidden flex items-center justify-center p-4 relative">
+                    <img src={viewProofUrl} alt="Saved Proof" className="w-full h-full object-contain drop-shadow-2xl" />
                 </div>
             </div>
           )}
@@ -652,8 +745,9 @@ export default function DriverDashboardPage() {
                                             }} 
                                             onCall={() => item.phone && (window.location.href = `tel:${item.phone}`)} 
                                             onMemo={() => handleOpenItemMemo(item.invoice_to)} 
-                                            onOpenItems={() => handleOpenItems(item.id, item.invoice_to)}
+                                            onOpenItems={() => handleOpenItems(item)}
                                             onUpdateLocation={() => handleUpdateLocation(item.id, item.customer_id)} 
+                                            onViewProof={(url: string) => setViewProofUrl(url)} // 🚀 뷰어 핸들러 전달
                                           />;
                                       })}
                                   </SortableContext>
@@ -796,6 +890,7 @@ export default function DriverDashboardPage() {
 
       <Dialog open={isItemsModalOpen} onOpenChange={setIsItemsModalOpen}>
           <DialogContent className="!max-w-[100vw] !w-screen !h-[100dvh] !max-h-[100dvh] !m-0 !p-0 !rounded-none !border-none bg-slate-50 flex flex-col sm:!max-w-[100vw] sm:!rounded-none sm:!p-0 [&>button]:hidden z-[100]">
+              
               <DialogHeader className="p-4 bg-white border-b border-slate-200 shrink-0 flex flex-row items-start justify-between">
                   <div className="flex flex-col items-start text-left">
                       <DialogTitle className="text-xl font-black text-slate-800 m-0 leading-tight">Delivery Items</DialogTitle>
@@ -804,35 +899,126 @@ export default function DriverDashboardPage() {
                   <DialogDescription className="hidden">View items</DialogDescription>
                   <button onClick={() => setIsItemsModalOpen(false)} className="p-2 bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200 transition-colors"><X className="w-5 h-5" /></button>
               </DialogHeader>
-              <div className="flex-1 p-4 overflow-y-auto relative pb-safe">
-                  {isItemsLoading ? (<div className="absolute inset-0 flex items-center justify-center"><Loader2 className="w-10 h-10 animate-spin text-blue-600" /></div>) : invoiceItems.length > 0 ? (
-                      <div className="space-y-3">
-                          {invoiceItems.map((item, idx: number) => {
-                              const itemName = item.item_name || item.product_name || item.description || `Item #${idx + 1}`;
-                              const itemQty = item.quantity || item.qty || 1;
-                              return (
-                                  <div key={item.id || idx} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between gap-4">
-                                      <div className="flex items-center gap-3"><div className="bg-blue-50 p-2 rounded-lg text-blue-600 shrink-0"><Package className="w-5 h-5" /></div><span className="font-bold text-slate-700 text-[15px]">{itemName}</span></div>
-                                      <div className="shrink-0 bg-slate-100 px-3 py-1.5 rounded-lg"><span className="font-black text-slate-800">x {itemQty}</span></div>
-                                  </div>
-                              );
-                          })}
+
+              <div className="flex-1 overflow-y-auto pb-safe">
+                  
+                  <div className="bg-white p-4 shadow-sm mb-4">
+                      {selectedInvoiceForItems?.memo && (
+                          <div className="mb-3 p-3 bg-amber-50 rounded-xl border border-amber-200">
+                              <p className="text-amber-800 text-sm font-bold flex items-start gap-1.5">
+                                  <span className="shrink-0 text-base leading-none">🚨</span>
+                                  <span>{selectedInvoiceForItems.memo}</span>
+                              </p>
+                          </div>
+                      )}
+                      
+                      <div className="grid grid-cols-2 gap-3 mb-3">
+                          <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
+                              <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Total Amount</p>
+                              <p className="text-lg font-black text-slate-800">
+                                  ${(selectedInvoiceForItems?.totalAmount || 0).toLocaleString()}
+                              </p>
+                          </div>
+                          <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
+                              <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Total Items</p>
+                              {/* 🚀 Types, CTN, Pkt 정보 모두 표시 */}
+                              <div className="text-[13px] font-bold text-slate-700 flex items-center gap-1.5 flex-wrap leading-tight mt-0.5">
+                                  <span className="text-blue-600 bg-blue-50 px-1.5 rounded">{getTotals().totalItems} Types</span>
+                                  <span className="text-slate-300">|</span>
+                                  <span>{getTotals().ctnCount} CTN</span>
+                                  <span className="text-slate-300">|</span>
+                                  <span>{getTotals().packCount} Pkt</span>
+                              </div>
+                          </div>
                       </div>
-                  ) : (<div className="flex flex-col items-center justify-center h-full text-slate-400 gap-3"><Package className="w-16 h-16 opacity-20" /><p className="font-medium">No items found.</p></div>)}
-              </div>
-          </DialogContent>
-      </Dialog>
-      
-      <Dialog open={isDestModalOpen} onOpenChange={setIsDestModalOpen}>
-          <DialogContent className="w-[90%] rounded-2xl max-w-md">
-              <DialogHeader><DialogTitle>Set Point</DialogTitle><DialogDescription className="hidden">Map Point</DialogDescription></DialogHeader>
-              <div className="space-y-3 py-4">
-                  <button onClick={() => handleSetPoint('company')} className="w-full flex items-center gap-3 p-4 bg-slate-50 border rounded-xl"><Building2 className="w-5 h-5 text-blue-600" /><div className="text-left font-bold text-sm">Company Depot</div></button>
-                  <button onClick={() => handleSetPoint('home')} className="w-full flex items-center gap-3 p-4 bg-slate-50 border rounded-xl"><Home className="w-5 h-5 text-emerald-600" /><div className="text-left font-bold text-sm">Home Address</div></button>
-                  <div className="p-4 bg-white border rounded-xl space-y-2">
-                      <div className="flex items-center gap-2 font-bold text-sm"><MousePointerClick className="w-4 h-4" /> Custom</div>
-                      <Input value={modalTarget === 'start' ? customStart : customFinal} onChange={e => modalTarget === 'start' ? setCustomStart(e.target.value) : setCustomFinal(e.target.value)} placeholder="Address" className="h-9 text-xs" />
-                      <Button size="sm" className="w-full bg-slate-900 h-8 text-xs font-bold" onClick={() => handleSetPoint('custom')}>Apply</Button>
+
+                      <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 flex items-center justify-between">
+                          <div className="flex flex-col w-full pr-3">
+                              <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Customer PW</p>
+                              {isEditingPw ? (
+                                  <div className="flex items-center gap-2">
+                                      <Input 
+                                          value={newPw} 
+                                          onChange={(e) => setNewPw(e.target.value)} 
+                                          maxLength={10} 
+                                          className="h-8 text-sm font-bold w-full"
+                                          placeholder="Enter PW (Max 10)"
+                                      />
+                                      <Button size="sm" onClick={handleSavePw} disabled={isSavingPw} className="h-8 bg-blue-600 px-3">
+                                          {isSavingPw ? <Loader2 className="w-3 h-3 animate-spin" /> : "Save"}
+                                      </Button>
+                                  </div>
+                              ) : (
+                                  <p className="text-sm font-bold text-slate-800">
+                                      {selectedInvoiceForItems?.customerPw || "No Password"}
+                                  </p>
+                              )}
+                          </div>
+                          {!isEditingPw && (
+                              <button onClick={() => setIsEditingPw(true)} className="p-2 text-slate-400 hover:text-blue-600 bg-white rounded-full shadow-sm">
+                                  <Pencil className="w-4 h-4" />
+                              </button>
+                          )}
+                      </div>
+                  </div>
+
+                  <div className="px-4 pb-4">
+                      {isItemsLoading ? (
+                          <div className="flex justify-center py-10"><Loader2 className="w-10 h-10 animate-spin text-blue-600" /></div>
+                      ) : invoiceItems.length > 0 ? (
+                          <div className="space-y-2">
+                              {invoiceItems.map((item, idx: number) => {
+                                  const itemName = item.item_name || item.product_name || item.description || `Item`;
+                                  const itemQty = item.quantity || item.qty || 1;
+                                  const isChecked = checkedItems[item.id || idx]; 
+                                  
+                                  return (
+                                      <div 
+                                          key={item.id || idx} 
+                                          onClick={() => toggleItemCheck(item.id || idx)} 
+                                          className={cn(
+                                              "bg-white p-4 rounded-xl border flex items-center justify-between gap-3 shadow-sm transition-all cursor-pointer active:scale-[0.98]",
+                                              isChecked ? "border-rose-200 bg-rose-50/30" : "border-slate-200"
+                                          )}
+                                      >
+                                          <div className="flex items-start gap-3 overflow-hidden">
+                                              <div className={cn(
+                                                  "w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0",
+                                                  isChecked ? "bg-rose-100 text-rose-500" : "bg-slate-100 text-slate-500"
+                                              )}>
+                                                  {idx + 1}
+                                              </div>
+                                              
+                                              <span className={cn(
+                                                  "font-bold text-[15px] leading-tight flex-1",
+                                                  isChecked ? "text-slate-400 line-through decoration-rose-400 decoration-2" : "text-slate-700"
+                                              )}>
+                                                  {itemName}
+                                              </span>
+                                          </div>
+                                          
+                                          <div className="flex items-center gap-3 shrink-0">
+                                              <div className={cn(
+                                                  "px-3 py-1.5 rounded-lg border",
+                                                  isChecked ? "bg-white border-rose-200" : "bg-slate-50 border-slate-100"
+                                              )}>
+                                                  <span className={cn(
+                                                      "font-black",
+                                                      isChecked ? "text-slate-400 line-through" : "text-slate-800"
+                                                  )}>x {itemQty}</span>
+                                              </div>
+                                              {isChecked && <Check className="w-5 h-5 text-rose-500" />}
+                                          </div>
+                                      </div>
+                                  );
+                              })}
+                          </div>
+                      ) : (
+                          <div className="flex flex-col items-center justify-center py-20 text-slate-400 gap-3">
+                              <Package className="w-16 h-16 opacity-20" />
+                              <p className="font-medium">No items found.</p>
+                          </div>
+                      )}
                   </div>
               </div>
           </DialogContent>
@@ -841,41 +1027,59 @@ export default function DriverDashboardPage() {
   );
 }
 
-function SortableItem({ id, item, index, isActive, isDone, isEditing, dailyMemo, isUpdatingLocation, displayNumber, isNewItem, onComplete, onNavigate, onCall, onMemo, onOpenItems, onUpdateLocation }: any) {
+function SortableItem({ id, item, index, isActive, isDone, isEditing, dailyMemo, isUpdatingLocation, displayNumber, isNewItem, onComplete, onNavigate, onCall, onMemo, onOpenItems, onUpdateLocation, onViewProof }: any) {
     const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id });
     const style = { transform: CSS.Transform.toString(transform), transition };
     const hasMemo = dailyMemo && dailyMemo.includes(`[${item.invoice_to}]`);
 
-    if (isDone) return ( 
-        <div ref={setNodeRef} style={style} className="bg-slate-50 border p-4 rounded-xl opacity-60 flex items-center justify-between">
-            <div className="flex items-center gap-3 grayscale"><div className="bg-slate-200 p-1.5 rounded-full"><Check className="w-4 h-4 text-slate-500" /></div><span className="text-slate-500 font-medium line-through text-sm">{isNewItem ? "! " : ""}{item.invoice_to}</span></div>
-            <div className="flex items-center gap-1">
-                <Button size="icon" variant="ghost" onClick={onOpenItems} className="h-8 w-8 text-slate-400 p-0 hover:bg-slate-200"><Package className="w-4 h-4" /></Button>
-                <Button size="icon" variant="ghost" onClick={onMemo} className="h-8 w-8 text-slate-400 p-0 hover:bg-slate-200"><MessageSquareText className={cn("w-4 h-4", hasMemo && "text-blue-500 fill-blue-100")} /></Button>
-            </div>
-        </div> 
-    );
+    const validAdminMemo = item.memo && typeof item.memo === 'string' && item.memo.trim() !== "" && item.memo.toLowerCase() !== "null";
 
-    if (isActive && !isEditing) return (
-        <div ref={setNodeRef} style={style} className={cn("bg-white border-2 shadow-xl p-5 rounded-2xl transform scale-[1.02] relative animate-in zoom-in-95 duration-300", isNewItem ? "border-rose-500" : "border-blue-600")}>
-            <div className={cn("absolute top-0 left-0 text-white text-[10px] font-bold px-3 py-1 rounded-br-xl uppercase", isNewItem ? "bg-rose-500" : "bg-blue-600")}>Current</div>
-            <div className="mt-4 flex items-center justify-between">
-                <h3 className="text-2xl font-black"><span className={isNewItem ? "text-rose-500 mr-1" : ""}>{displayNumber}{isNewItem ? "" : ". "}</span>{item.invoice_to}</h3>
-                <div className="flex items-center gap-2">
-                    <Button size="icon" variant="ghost" onClick={onOpenItems} className="h-10 w-10 rounded-full text-slate-400 hover:bg-slate-100"><Package className="w-5 h-5" /></Button>
-                    <Button size="icon" variant="ghost" onClick={onMemo} className={cn("h-10 w-10 rounded-full", hasMemo ? "bg-blue-50 text-blue-600" : "text-slate-400 hover:bg-slate-100")}><MessageSquareText className={cn("w-5 h-5", hasMemo && "fill-blue-200")} /></Button>
+    // 🚀 1. 완료된 배송 (isDone)
+    if (isDone) return ( 
+        <div ref={setNodeRef} style={style} className="bg-slate-50 border p-4 rounded-xl opacity-70 flex flex-col shadow-sm transition-all">
+            <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3 overflow-hidden">
+                    {/* 🚀 완료 상태 체크박스: 사진이 있으면 초록색 클릭 버튼, 없으면 일반 회색 버튼 */}
+                    <button 
+                        onClick={() => {
+                            if (item.proof_url) onViewProof(item.proof_url);
+                            else alert('No photo saved for this delivery.');
+                        }}
+                        className={cn(
+                            "p-1.5 rounded-full shrink-0 transition-colors cursor-pointer active:scale-95",
+                            item.proof_url ? "bg-emerald-100 hover:bg-emerald-200" : "bg-slate-200"
+                        )}
+                        title={item.proof_url ? "View saved photo" : "No photo saved"}
+                    >
+                        <Check className={cn("w-4 h-4", item.proof_url ? "text-emerald-600" : "text-slate-500")} />
+                    </button>
+                    
+                    <div className="flex flex-col overflow-hidden grayscale">
+                        <span className="text-slate-500 font-medium line-through text-sm truncate">{isNewItem ? "! " : ""}{item.invoice_to}</span>
+                    </div>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                    <Button size="icon" variant="ghost" onClick={onOpenItems} className="h-8 w-8 text-slate-400 p-0 hover:bg-slate-200"><Package className="w-4 h-4" /></Button>
+                    <Button size="icon" variant="ghost" onClick={onMemo} className="h-8 w-8 text-slate-400 p-0 hover:bg-slate-200"><MessageSquareText className={cn("w-4 h-4", hasMemo && "text-blue-500 fill-blue-100")} /></Button>
                 </div>
             </div>
             
-            <p className="text-slate-600 text-sm mt-1 leading-tight">
-                <span className="font-semibold text-slate-800">CONTACT: </span>
-                <span className="font-normal">{item.contact_name || ""}</span>
-                <span className="mx-1.5 text-slate-300">|</span>
-                <span>{item.delivery_address}</span>
-            </p>
+            {validAdminMemo && (
+                <div className="mt-2 ml-[38px] text-[10px] text-amber-700 bg-amber-50 border border-amber-100 rounded p-1.5 font-bold line-clamp-1 grayscale-[30%]">
+                    🚨 {item.memo}
+                </div>
+            )}
+        </div>
+    );
 
-            {/* 🚀 활성 상태 송장 메모 (Invoice Memo) */}
-            {item.memo && (
+    // 🚀 2. 현재 활성 배송 (isActive)
+    if (isActive && !isEditing) return (
+        <div ref={setNodeRef} style={style} className={cn("bg-white border-2 shadow-xl p-5 rounded-2xl transform scale-[1.02] relative animate-in zoom-in-95 duration-300", isNewItem ? "border-rose-500" : "border-blue-600")}>
+            <div className={cn("absolute top-0 left-0 text-white text-[10px] font-bold px-3 py-1 rounded-br-xl uppercase", isNewItem ? "bg-rose-500" : "bg-blue-600")}>Current</div>
+            <div className="mt-4 flex items-center justify-between"><h3 className="text-2xl font-black"><span className={isNewItem ? "text-rose-500 mr-1" : ""}>{displayNumber}{isNewItem ? "" : ". "}</span>{item.invoice_to}</h3><div className="flex items-center gap-2"><Button size="icon" variant="ghost" onClick={onOpenItems} className="h-10 w-10 rounded-full text-slate-400 hover:bg-slate-100"><Package className="w-5 h-5" /></Button><Button size="icon" variant="ghost" onClick={onMemo} className={cn("h-10 w-10 rounded-full", hasMemo ? "bg-blue-50 text-blue-600" : "text-slate-400 hover:bg-slate-100")}><MessageSquareText className={cn("w-5 h-5", hasMemo && "fill-blue-200")} /></Button></div></div>
+            <p className="text-slate-600 text-sm mt-1 leading-tight"><span className="font-semibold text-slate-800">CONTACT: </span><span className="font-normal">{item.contact_name || ""}</span><span className="mx-1.5 text-slate-300">|</span><span>{item.delivery_address}</span></p>
+
+            {validAdminMemo && (
                 <div className="mt-3 p-3 bg-amber-50 rounded-xl border border-amber-200 shadow-inner">
                     <p className="text-amber-800 text-sm font-bold flex items-start gap-1.5">
                         <span className="shrink-0 text-base leading-none">🚨</span>
@@ -888,6 +1092,7 @@ function SortableItem({ id, item, index, isActive, isDone, isEditing, dailyMemo,
         </div>
     );
 
+    // 🚀 3. 일반 대기 배송
     return (
         <div ref={setNodeRef} style={style} className={cn("bg-white p-4 rounded-xl border flex items-center justify-between shadow-sm transition-all", isEditing ? "border-blue-200 ring-2 ring-blue-50" : (isNewItem ? "border-rose-200 shadow-rose-100/50" : "opacity-70 border-slate-100"))}>
             <div className="flex items-center gap-3 overflow-hidden">
@@ -903,8 +1108,7 @@ function SortableItem({ id, item, index, isActive, isDone, isEditing, dailyMemo,
                         <span>{item.delivery_address}</span>
                     </div>
 
-                    {/* 🚀 일반 상태 송장 메모 (Invoice Memo) */}
-                    {item.memo && (
+                    {validAdminMemo && (
                         <div className="text-[10px] text-amber-600 truncate mt-1 font-bold">
                             🚨 {item.memo}
                         </div>

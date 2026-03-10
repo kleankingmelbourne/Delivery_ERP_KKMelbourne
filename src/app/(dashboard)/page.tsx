@@ -12,7 +12,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell
 } from 'recharts';
 
-// --- Chart Wrapper (유지) ---
+// --- Chart Wrapper ---
 const ChartWrapper = ({ height = 300, children }: { height?: number, children: (size: { width: number, height: number }) => React.ReactNode }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -39,19 +39,9 @@ const ChartWrapper = ({ height = 300, children }: { height?: number, children: (
   );
 };
 
-// --- Helper: Date ---
+// --- Helper: Date (안전한 YYYY-MM-DD 포맷 반환) ---
 const getMelbourneDate = () => {
-  const now = new Date();
-  const options: Intl.DateTimeFormatOptions = { 
-    timeZone: "Australia/Melbourne", 
-    year: 'numeric', month: '2-digit', day: '2-digit' 
-  };
-  // 포맷을 YYYY-MM-DD로 맞추기 위한 로직
-  const parts = new Intl.DateTimeFormat('en-CA', options).formatToParts(now);
-  const year = parts.find(p => p.type === 'year')?.value;
-  const month = parts.find(p => p.type === 'month')?.value;
-  const day = parts.find(p => p.type === 'day')?.value;
-  return `${year}-${month}-${day}`;
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'Australia/Melbourne' });
 };
 
 export default function DashboardPage() {
@@ -80,38 +70,49 @@ export default function DashboardPage() {
     try {
       const today = getMelbourneDate();
       
-      // 🚀 핵심 변경: Promise.all로 4개의 요청을 병렬(동시) 실행
-      // 1. 오늘 매출 & 배송
-      // 2. 미납금 전체
-      // 3. 월별 차트 데이터 (RPC 호출 - DB에서 계산됨)
-      // 4. 주별 차트 데이터 (RPC 호출 - DB에서 계산됨)
-      
       const [todayRes, unpaidRes, monthlyRes, weeklyRes] = await Promise.all([
         supabase
           .from('invoices')
-          .select('total_amount, is_completed')
+          .select('total_amount, is_completed, status, delivery_run') // 🚀 delivery_run 추가
           .eq('invoice_date', today),
         
         supabase
           .from('invoices')
-          .select('total_amount, paid_amount, due_date')
+          .select('total_amount, paid_amount, due_date, status') 
           .neq('status', 'Paid'),
 
-        supabase.rpc('get_monthly_revenue'), // SQL 함수 호출
-
-        supabase.rpc('get_weekly_revenue')   // SQL 함수 호출
+        supabase.rpc('get_monthly_revenue'),
+        supabase.rpc('get_weekly_revenue')
       ]);
 
-      // --- 1. KPI 계산 (여전히 클라이언트에서 빠름) ---
+      // --- 1. KPI 계산 로직 ---
       let todayRev = 0;
       let delTotal = 0;
       let delCompleted = 0;
 
       if (todayRes.data) {
         todayRes.data.forEach(inv => {
-            todayRev += inv.total_amount;
+            // 소문자로 변환하여 대소문자 문제 완벽 차단
+            const statusStr = (inv.status || "").toLowerCase();
+
+            // 🚀 1. 취소(cancel) 및 무효(void) 송장은 배송/매출에서 아예 제외
+            if (statusStr.includes('cancel') || statusStr.includes('void')) return;
+
+            // 매출 합산 (Number로 감싸서 오류 방지)
+            todayRev += (Number(inv.total_amount) || 0);
+            
+            // 배송 총 건수 1 추가
             delTotal++;
-            if (inv.is_completed) delCompleted++;
+            
+            // 🚀 2. 방문 수령(Pick Up) 식별
+            // 상태에 'pick'이 들어가거나, 기사님 앱에서 숨겨지는 'delivery_run === 0'인 경우 픽업으로 간주
+            const isPickUp = statusStr.includes('pick') || inv.delivery_run === 0;
+
+            // 🚀 3. 완료 처리 로직
+            // 기사님이 앱에서 완료했거나, 픽업건이면 무조건 완료 카운트에 +1
+            if (inv.is_completed || isPickUp) {
+                delCompleted++;
+            }
         });
       }
 
@@ -120,9 +121,14 @@ export default function DashboardPage() {
       let unpaidCnt = 0;
 
       if (unpaidRes.data) {
-          unpaidCnt = unpaidRes.data.length;
           unpaidRes.data.forEach(inv => {
-              const remaining = inv.total_amount - (inv.paid_amount || 0);
+              const statusStr = (inv.status || "").toLowerCase();
+              
+              // 🚀 미수금 계산에서도 취소/무효 송장 완전히 제외
+              if (statusStr.includes('cancel') || statusStr.includes('void')) return;
+
+              unpaidCnt++;
+              const remaining = (Number(inv.total_amount) || 0) - (Number(inv.paid_amount) || 0);
               totalOut += remaining;
               
               if (inv.due_date && inv.due_date < today) {
@@ -131,26 +137,22 @@ export default function DashboardPage() {
           });
       }
 
-      // --- 2. Chart 데이터 가공 (이제 루프 없이 매핑만 하면 됨) ---
-      
-      // 월별 차트 포맷팅
+      // --- 2. Chart 데이터 가공 ---
       const formattedMonthly = (monthlyRes.data || []).map((item: any) => {
           const [y, m] = item.period.split('-');
-          // 로컬 타임존 이슈 방지를 위해 날짜 객체 생성 방식 조정
           const dateStr = new Date(parseInt(y), parseInt(m) - 1, 1).toLocaleString('default', { month: 'short', year: '2-digit' });
           return {
               name: dateStr,
-              total: item.total
+              total: Number(item.total) || 0
           };
       });
 
-      // 주별 차트 포맷팅 (데이터가 적으므로 바로 사용)
       const formattedWeekly = (weeklyRes.data || []).map((item: any) => ({
-        name: item.period, // 필요시 포맷팅 변경 가능 (예: MM-DD)
-        total: item.total
+        name: item.period, 
+        total: Number(item.total) || 0
       }));
 
-      // State 업데이트
+      // State 업데이트 적용
       setMonthlyChartData(formattedMonthly);
       setWeeklyChartData(formattedWeekly);
 
@@ -313,7 +315,7 @@ export default function DashboardPage() {
                     fontSize={11} 
                     tickLine={false} 
                     axisLine={false}
-                    width={80} // 날짜가 잘리지 않도록 너비 조정
+                    width={80}
                   />
                   <Tooltip 
                     cursor={{fill: '#f1f5f9'}}

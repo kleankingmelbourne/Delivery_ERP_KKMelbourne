@@ -176,6 +176,7 @@ interface UnpaidInvoice {
   paid_amount: number;
   balance: number; 
   original_balance?: number;
+  proof_url?: string; // 🚀 사진 URL 추적용
 }
 
 const PAYMENT_METHODS = ["Bank Transfer", "Cash", "Cheque", "Credit Card"];
@@ -188,7 +189,6 @@ function PaymentFormInner({ paymentId }: { paymentId?: string }) {
   
   const isEditMode = !!paymentId;
 
-  // ✅ 초기 로딩 플래그를 true로 두어 깜빡임(Flicker)을 방지합니다.
   const [loading, setLoading] = useState(true); 
   const [customers, setCustomers] = useState<Customer[]>([]);
   
@@ -207,12 +207,10 @@ function PaymentFormInner({ paymentId }: { paymentId?: string }) {
   const [autoAllocate, setAutoAllocate] = useState(false); 
   const [exactInvoiceAmount, setExactInvoiceAmount] = useState(false);
 
-  // --- 1. [스피드업] Load Customers & Edit Data 병렬 처리 ---
   useEffect(() => {
     const initData = async () => {
       setLoading(true);
       
-      // 🚀 Promise.all을 통해 고객 리스트와 특정 결제 정보를 "동시"에 요청
       const [custRes, payRes] = await Promise.all([
         supabase.from("customers").select("id, name").order("name"),
         paymentId ? supabase.from("payments").select("*").eq("id", paymentId).single() : Promise.resolve({ data: null })
@@ -226,22 +224,19 @@ function PaymentFormInner({ paymentId }: { paymentId?: string }) {
           setAmount(paymentInfo.amount);
           setMethod(paymentInfo.category);
           setReason(paymentInfo.reason || "");
-          
-          // 고객 ID를 세팅하면 아래 2번 useEffect가 발동되어 인보이스를 가져옵니다.
           setSelectedCustomerId(paymentInfo.customer_id);
       } else {
           const cidFromUrl = searchParams.get("customerId");
           if (cidFromUrl) {
               setSelectedCustomerId(cidFromUrl);
           } else {
-              setLoading(false); // 고객이 없으면 로딩 끝
+              setLoading(false); 
           }
       }
     };
     initData();
   }, [searchParams, paymentId]);
 
-  // --- 2. [스피드업] Customer Selected -> Fetch Invoices & Sync Allocations ---
   useEffect(() => {
     if (!selectedCustomerId) {
       setAvailableCredit(0);
@@ -254,16 +249,15 @@ function PaymentFormInner({ paymentId }: { paymentId?: string }) {
     const fetchCustomerData = async () => {
       setLoading(true);
 
-      // 🚀 Promise.all을 통해 1)크레딧, 2)기존할당내역, 3)인보이스 목록을 "동시"에 요청
       const [creditsRes, allocRes, invoicesRes] = await Promise.all([
         supabase.from('payments').select('id, unallocated_amount').eq('customer_id', selectedCustomerId).gt('unallocated_amount', 0),
         (isEditMode && paymentId) 
             ? supabase.from("payment_allocations").select("invoice_id, amount").eq("payment_id", paymentId) 
             : Promise.resolve({ data: null }),
-        supabase.from('invoices').select('id, invoice_date, due_date, total_amount, paid_amount').eq('customer_id', selectedCustomerId).order('invoice_date', { ascending: true })
+        // 🚀 proof_url을 불러와서 나중에 삭제할 때 쓸 수 있게 준비합니다.
+        supabase.from('invoices').select('id, invoice_date, due_date, total_amount, paid_amount, proof_url').eq('customer_id', selectedCustomerId).order('invoice_date', { ascending: true })
       ]);
 
-      // 1. 크레딧 세팅
       const credits = creditsRes.data || [];
       const otherCredits = credits.filter(c => c.id !== paymentId);
       const totalCredit = otherCredits.reduce((sum, p) => sum + p.unallocated_amount, 0) || 0;
@@ -271,7 +265,6 @@ function PaymentFormInner({ paymentId }: { paymentId?: string }) {
       setAvailableCredit(roundAmount(totalCredit));
       if (totalCredit > 0 && !isEditMode) setUseCredit(true);
 
-      // 2. 기존 할당 내역 세팅 (Edit 모드)
       let currentAllocations: Record<string, number> = {};
       if (allocRes.data) {
           allocRes.data.forEach(a => {
@@ -280,12 +273,10 @@ function PaymentFormInner({ paymentId }: { paymentId?: string }) {
           setAllocations(currentAllocations);
       }
 
-      // 3. 인보이스 잔액 계산 세팅
       if (invoicesRes.data) {
         const formatted = invoicesRes.data
           .map((inv: any) => {
             const preAllocated = currentAllocations[inv.id] || 0;
-            // Edit 모드일 때는 현재 결제가 납부했던 금액(preAllocated)을 일시적으로 다시 잔액에 더해줍니다.
             const realBalance = isEditMode 
                 ? roundAmount(inv.total_amount - inv.paid_amount + preAllocated) 
                 : roundAmount(inv.total_amount - inv.paid_amount);
@@ -295,19 +286,17 @@ function PaymentFormInner({ paymentId }: { paymentId?: string }) {
               balance: realBalance
             };
           })
-          // 미납이거나, 현재 결제에 이미 할당되었던 인보이스만 화면에 출력
           .filter((inv: any) => inv.balance > 0.009 || currentAllocations[inv.id] > 0);
 
         setUnpaidInvoices(formatted);
       }
       
-      setLoading(false); // 모든 병렬 데이터 처리가 끝난 뒤에 비로소 화면을 보여줌
+      setLoading(false); 
     };
 
     fetchCustomerData();
   }, [selectedCustomerId, paymentId, isEditMode]);
 
-  // --- 3. Auto Allocation Logic ---
   useEffect(() => {
     if (!autoAllocate || isEditMode) return; 
     if (exactInvoiceAmount) setExactInvoiceAmount(false);
@@ -332,7 +321,6 @@ function PaymentFormInner({ paymentId }: { paymentId?: string }) {
     setAllocations(newAllocations);
   }, [amount, useCredit, availableCredit, autoAllocate, unpaidInvoices, isEditMode]);
 
-  // --- 4. Exact Invoice Amount Logic ---
   useEffect(() => {
     if (!exactInvoiceAmount || unpaidInvoices.length === 0 || isEditMode) return;
     if (autoAllocate) setAutoAllocate(false);
@@ -346,7 +334,6 @@ function PaymentFormInner({ paymentId }: { paymentId?: string }) {
     });
     setAllocations(exactAllocations);
   }, [exactInvoiceAmount, unpaidInvoices, isEditMode]);
-
 
   const numericAmount = Number(amount) || 0;
   const creditUsed = (useCredit && availableCredit > 0) ? availableCredit : 0;
@@ -397,17 +384,6 @@ function PaymentFormInner({ paymentId }: { paymentId?: string }) {
 
     const amountToAllocate = Math.min(currentRemaining, targetInvoice.balance);
     setAllocations(prev => ({ ...prev, [invoiceId]: roundAmount(amountToAllocate) }));
-  };
-
-  const resetForm = () => {
-    setSelectedCustomerId("");
-    setAmount("");
-    setReason("");
-    setUseCredit(false);
-    setAllocations({});
-    setAutoAllocate(false);
-    setExactInvoiceAmount(false);
-    router.replace("/payment/new");
   };
 
   const handleSave = async (shouldRedirect: boolean = true) => {
@@ -520,16 +496,41 @@ function PaymentFormInner({ paymentId }: { paymentId?: string }) {
           }
         }
 
-        const { data: currentInv } = await supabase.from('invoices').select('id, total_amount, paid_amount').eq('id', invoiceId).single();
+        // --- 🚀 [추가] 인보이스 업데이트 & 사진 삭제 로직 ---
+        const { data: currentInv } = await supabase.from('invoices').select('id, total_amount, paid_amount, proof_url').eq('id', invoiceId).single();
         if (currentInv) {
           const newPaid = roundAmount(currentInv.paid_amount + allocatedAmt);
           const isFullyPaid = Math.abs(currentInv.total_amount - newPaid) < 0.01;
           const newStatus = isFullyPaid ? 'Paid' : 'Partial';
           
-          await supabase.from('invoices').update({
+          const updatePayload: any = {
             paid_amount: newPaid,
             status: newStatus
-          }).eq('id', invoiceId);
+          };
+
+          // 완납 상태가 되고 기존에 사진(proof_url)이 있다면 삭제 처리
+          if (isFullyPaid && currentInv.proof_url) {
+              try {
+                  // URL에서 파일명만 추출 (예: https://.../delivery-proofs/filename.jpg -> filename.jpg)
+                  const urlParts = currentInv.proof_url.split('/');
+                  const fileName = urlParts[urlParts.length - 1];
+                  
+                  if (fileName) {
+                      const { error: removeError } = await supabase.storage.from('delivery-proofs').remove([fileName]);
+                      if (removeError) {
+                          console.warn(`⚠️ Failed to delete proof photo for invoice ${invoiceId}:`, removeError.message);
+                      } else {
+                          // 삭제 성공 시 DB에서도 url을 지워줌
+                          updatePayload.proof_url = null;
+                      }
+                  }
+              } catch (delError) {
+                  console.error(`⚠️ Error parsing/deleting proof url for ${invoiceId}:`, delError);
+              }
+          }
+
+          // 최종 인보이스 업데이트
+          await supabase.from('invoices').update(updatePayload).eq('id', invoiceId);
         }
       }
 
@@ -575,7 +576,6 @@ function PaymentFormInner({ paymentId }: { paymentId?: string }) {
         {/* Left Column: Input Form */}
         <div className="xl:col-span-1 space-y-6">
           <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-6 h-fit sticky top-6 relative">
-            {/* 로딩 오버레이 (자연스러운 전환을 위함) */}
             {loading && (
                 <div className="absolute inset-0 bg-white/70 backdrop-blur-sm z-10 flex items-center justify-center rounded-xl">
                     <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
@@ -781,7 +781,6 @@ function PaymentFormInner({ paymentId }: { paymentId?: string }) {
                   {unpaidInvoices.map((inv) => {
                     const allocatedAmount = allocations[inv.id] || 0;
                     const isChecked = allocatedAmount > 0;
-                    // Edit 모드일 때는 보여지는 잔액에서 할당된 금액을 빼서 화면상 0(Paid)으로 보이게 함
                     const remainingBalance = Math.max(0, roundAmount(inv.balance - allocatedAmount));
 
                     return (
@@ -826,7 +825,6 @@ function PaymentFormInner({ paymentId }: { paymentId?: string }) {
   );
 }
 
-// ✅ Suspense 래핑을 통해 SearchParams 안전하게 처리
 export default function PaymentForm({ paymentId }: { paymentId?: string }) {
   return (
     <Suspense fallback={<div className="p-10 flex items-center justify-center min-h-[50vh]"><Loader2 className="w-8 h-8 animate-spin text-blue-600" /></div>}>

@@ -40,7 +40,6 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
   const [isSearching, setIsSearching] = useState(false);
   const [addressHighlightedIndex, setAddressHighlightedIndex] = useState(0); 
 
-  // 🚀 [추가] 외부 클릭 감지를 위한 Ref
   const billingRef = useRef<HTMLDivElement>(null);
   const deliveryRef = useRef<HTMLDivElement>(null);
 
@@ -53,6 +52,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
     in_charge_delivery: "", 
     login_permit: true, disable_order: false,
     credit_limit: "", due_date: "C.O.D",
+    customer_pw: "", // 🚀 [추가] customer_pw 초기값
     address: "", suburb: "", state: "", postcode: "", lat: null as number | null, lng: null as number | null,
     delivery_address: "", delivery_suburb: "", delivery_state: "", delivery_postcode: "", delivery_lat: null as number | null, delivery_lng: null as number | null,
     note: ""
@@ -60,7 +60,6 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
 
   const [formData, setFormData] = useState(initialData);
 
-  // 🚀 [추가] 외부 클릭 시 자동 완성 목록 닫기 로직
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (activeSearchField === 'billing' && billingRef.current && !billingRef.current.contains(event.target as Node)) {
@@ -107,6 +106,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
           mobile: cleanData.mobile || "",
           tel: cleanData.tel || "",
           abn: cleanData.abn || "",
+          customer_pw: cleanData.customer_pw || "", // 🚀 [추가] DB에서 pw 가져오기
           address: cleanData.address || "",
           suburb: cleanData.suburb || "",
           state: cleanData.state || "",
@@ -395,7 +395,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 <div className="space-y-2"><Label className="text-xs text-slate-500">Customer ID</Label><div className="h-10 px-3 flex items-center bg-slate-100 border border-slate-200 rounded-md text-sm text-slate-400 font-mono select-none">{customerData ? customerData.id.slice(0, 8) + "..." : "Auto-generated"}</div></div>
                 <div className="space-y-2">
-                    <Label className="text-xs font-bold text-slate-700">Password {!customerData && <span className="text-red-500">*</span>}</Label>
+                    <Label className="text-xs font-bold text-slate-700">App Login Password {!customerData && <span className="text-red-500">*</span>}</Label>
                     <div className="relative">
                         <Input 
                             type={showPassword ? "text" : "password"} 
@@ -423,6 +423,18 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
                 <div className="space-y-2"><Label>Customer Group</Label><div className="relative"><select value={formData.group_id} onChange={(e) => handleChange("group_id", e.target.value)} className="flex h-10 w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-slate-900 appearance-none"><option value="">No Group</option>{groupOptions.map((g) => (<option key={g.id} value={g.id}>{g.name}</option>))}</select><ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" /></div></div>
                 <div className="space-y-2"><Label>ABN</Label><Input value={formData.abn} onChange={(e) => handleChange("abn", e.target.value)} placeholder="XX XXX XXX XXX" /></div>
                 
+                {/* 🚀 [추가] Customer Password (상점 진입 비밀번호) */}
+                <div className="space-y-2">
+                    <Label className="text-black-700">Delivery Access PW (Max 10)</Label>
+                    <Input 
+                        value={formData.customer_pw} 
+                        onChange={(e) => handleChange("customer_pw", e.target.value)} 
+                        maxLength={10} 
+                        placeholder="e.g. 1234 or *9999" 
+                        className="bg-blue-50 border-blue-200 focus-visible:ring-blue-500"
+                    />
+                </div>
+
                 <div className="space-y-2"><Label>Contact Name</Label><Input value={formData.contact_name} onChange={(e) => handleChange("contact_name", e.target.value)} placeholder="Manager or Contact Person" /></div>
                 <div className="space-y-2"><Label>Mobile</Label><Input value={formData.mobile} onChange={(e) => handleChange("mobile", e.target.value)} placeholder="0400 000 000" /></div>
                 <div className="space-y-2"><Label>Tel</Label><Input value={formData.tel} onChange={(e) => handleChange("tel", e.target.value)} placeholder="03 0000 0000" /></div>

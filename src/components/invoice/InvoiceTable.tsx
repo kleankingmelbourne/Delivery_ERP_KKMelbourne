@@ -59,7 +59,8 @@ interface Invoice {
   proof_url?: string; 
   
   driver?: { display_name: string } | null; 
-  customers?: { email: string } | null;
+  // 🚀 [추가] email_cc 타입 정의
+  customers?: { email: string; email_cc?: string } | null;
 
   [key: string]: any;
 }
@@ -107,6 +108,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     type: 'invoice';
     customerName: string;
     customerEmail: string;
+    customerEmailCc?: string; // 🚀 [추가] CC 이메일 상태
     docNumber: string;
   } | null>(null);
 
@@ -179,6 +181,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     if (isCountQuery) {
         query = query.select("id", { count: 'exact', head: true }); 
     } else {
+        // 🚀 [수정] customers 에서 email 뿐만 아니라 email_cc 도 가져옵니다.
         query = query.select(`
         id,
         invoice_to,
@@ -192,7 +195,8 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
         proof_url,
         customer_id,
         driver_id,
-        driver:driver_id ( display_name )
+        driver:driver_id ( display_name ),
+        customers ( email, email_cc )
       `);
     }
 
@@ -281,26 +285,33 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
   const handleEmail = (invoice: Invoice) => {
     setOpenMenuId(null); 
 
+    // 🚀 [추가] customerEmailCc 속성 전달
     setEmailTarget({
       id: invoice.id,
       type: 'invoice',
       customerName: invoice.invoice_to || "Customer",
       customerEmail: invoice.customers?.email || "", 
+      customerEmailCc: invoice.customers?.email_cc || "",
       docNumber: invoice.id,
     });
 
+    // 만약 JOIN이 실패했거나 정보가 비어있을 때를 대비한 백업 데이터 Fetch
     if (!invoice.customers?.email && invoice.customer_id) {
       (async () => {
         const { data } = await supabase
             .from('customers')
-            .select('email')
+            .select('email, email_cc') // 🚀 백업 쿼리에도 email_cc 포함
             .eq('id', invoice.customer_id)
             .single();
         
-        if (data && data.email) {
+        if (data) {
             setEmailTarget((prev) => {
               if (!prev || prev.id !== invoice.id) return prev;
-              return { ...prev, customerEmail: data.email };
+              return { 
+                  ...prev, 
+                  customerEmail: data.email || prev.customerEmail,
+                  customerEmailCc: data.email_cc || prev.customerEmailCc
+              };
             });
         }
       })();
@@ -978,7 +989,6 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
                                       <th className="px-3 py-2">Product Name</th>
                                       <th className="px-3 py-2 text-center">Unit</th>
                                       <th className="px-3 py-2 text-center">Qty</th>
-                                      {/* 🚀 Cost (Unit) 컬럼 위치 이동 */}
                                       <th className="px-3 py-2 text-right text-orange-600">Cost (Unit)</th>
                                       <th className="px-3 py-2 text-right">Base Price</th>
                                       <th className="px-3 py-2 text-right">Net Price (Unit)</th>
@@ -1009,7 +1019,6 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
                                           <td className="px-3 py-2 font-medium text-slate-700">{cleanName}</td>
                                           <td className="px-3 py-2 text-center text-slate-400">{unit}</td>
                                           <td className="px-3 py-2 text-center font-bold text-slate-700">{qty}</td>
-                                          {/* 🚀 계산된 Cost 표기 위치 변경 */}
                                           <td className="px-3 py-2 text-right font-medium text-orange-600">{formatCurrency(unitCost)}</td>
                                           <td className="px-3 py-2 text-right text-slate-500">{formatCurrency(basePrice)}</td>
                                           <td className="px-3 py-2 text-right font-medium text-slate-700">{formatCurrency(netPrice)}</td>

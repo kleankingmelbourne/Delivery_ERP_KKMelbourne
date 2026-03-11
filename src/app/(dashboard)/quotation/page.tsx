@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useState, useMemo, useRef, useCallback } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -42,6 +42,7 @@ interface Quotation {
   customers: {
     name: string;
     email?: string;
+    email_cc?: string; // 🚀 [추가] email_cc 타입 정의
   } | null;
 }
 
@@ -52,6 +53,18 @@ interface QuotationItem {
   unit: string;
   unit_price: number;
   amount: number;
+  products?: {
+    vendor_product_id: string | null;
+  } | null;
+}
+
+// 🚀 비율 기반 리사이징을 위한 ColumnConfig 업데이트 (width를 % 숫자로 관리)
+interface ColumnConfig {
+  id: string;
+  label: string;
+  width: number;    // % 단위 비율
+  minWidth: number; // 최소 % 비율
+  align?: 'left' | 'center' | 'right';
 }
 
 export default function QuotationListPage() {
@@ -67,7 +80,6 @@ export default function QuotationListPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
-  // 💡 디폴트로 10개만 보여주도록 설정
   const [rowsPerPage, setRowsPerPage] = useState(10); 
   const [currentPage, setCurrentPage] = useState(1);
 
@@ -84,8 +96,105 @@ export default function QuotationListPage() {
     type: 'quotation';
     customerName: string;
     customerEmail: string;
+    customerEmailCc?: string; // 🚀 [추가] CC 이메일 상태
     docNumber: string;
   } | null>(null);
+
+  // 🚀 컬럼 정보 초기화 (합계 100%)
+  const [columns, setColumns] = useState<ColumnConfig[]>([
+    { id: 'checkbox', label: '', width: 4, minWidth: 3, align: 'center' },
+    { id: 'issue_date', label: 'Issue Date', width: 10, minWidth: 7 },
+    { id: 'quotation_number', label: 'Number', width: 12, minWidth: 8 },
+    { id: 'customer', label: 'Customer', width: 22, minWidth: 12 },
+    { id: 'amount', label: 'Amount', width: 10, minWidth: 6, align: 'right' },
+    { id: 'created_who', label: 'Created By', width: 10, minWidth: 6 },
+    { id: 'updated_who', label: 'Updated By', width: 10, minWidth: 6 },
+    { id: 'status', label: 'Status', width: 8, minWidth: 5, align: 'center' },
+    { id: 'detail', label: 'Detail', width: 8, minWidth: 5, align: 'center' },
+    { id: 'action', label: 'Action', width: 6, minWidth: 4, align: 'center' },
+  ]);
+
+  const resizingColRef = useRef<{ 
+    id: string; 
+    nextId: string; 
+    startX: number; 
+    startWidth: number; 
+    startNextWidth: number; 
+    tableWidth: number 
+  } | null>(null);
+  const tableRef = useRef<HTMLTableElement>(null);
+
+  // 🚀 비율(%) 기반 리사이징 핸들러
+  const handleResizeStart = (e: React.MouseEvent, colId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    const colIndex = columns.findIndex(c => c.id === colId);
+    // 마지막 컬럼은 옆으로 늘릴 컬럼이 없으므로 리사이즈 핸들 제외
+    if (colIndex === -1 || colIndex === columns.length - 1) return;
+
+    resizingColRef.current = {
+      id: colId,
+      nextId: columns[colIndex + 1].id,
+      startX: e.clientX,
+      startWidth: columns[colIndex].width,
+      startNextWidth: columns[colIndex + 1].width,
+      tableWidth: tableRef.current?.offsetWidth || 1200
+    };
+    
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+  };
+
+  const handleResizeMove = useCallback((e: MouseEvent) => {
+    if (!resizingColRef.current) return;
+
+    const { id, nextId, startX, startWidth, startNextWidth, tableWidth } = resizingColRef.current;
+    
+    // 마우스 이동 거리를 테이블 전체 너비 대비 퍼센트로 변환
+    const diffX = e.clientX - startX;
+    const diffPercent = (diffX / tableWidth) * 100;
+    
+    setColumns(prevCols => {
+      const col1 = prevCols.find(c => c.id === id);
+      const col2 = prevCols.find(c => c.id === nextId);
+      if(!col1 || !col2) return prevCols;
+
+      let newWidth1 = startWidth + diffPercent;
+      let newWidth2 = startNextWidth - diffPercent;
+
+      // 최소 너비 방어 로직
+      if (newWidth1 < col1.minWidth) {
+          newWidth1 = col1.minWidth;
+          newWidth2 = startWidth + startNextWidth - newWidth1;
+      }
+      if (newWidth2 < col2.minWidth) {
+          newWidth2 = col2.minWidth;
+          newWidth1 = startWidth + startNextWidth - newWidth2;
+      }
+
+      return prevCols.map(col => {
+          if (col.id === id) return { ...col, width: newWidth1 };
+          if (col.id === nextId) return { ...col, width: newWidth2 };
+          return col;
+      });
+    });
+  }, []);
+
+  const handleResizeEnd = useCallback(() => {
+    resizingColRef.current = null;
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener('mousemove', handleResizeMove);
+    window.addEventListener('mouseup', handleResizeEnd);
+    return () => {
+      window.removeEventListener('mousemove', handleResizeMove);
+      window.removeEventListener('mouseup', handleResizeEnd);
+    };
+  }, [handleResizeMove, handleResizeEnd]);
 
   // --- Init Data ---
   useEffect(() => {
@@ -96,8 +205,8 @@ export default function QuotationListPage() {
         .from("quotations")
         .select(`
           *,
-          customers ( name, email )
-        `)
+          customers ( name, email, email_cc )
+        `) // 🚀 [수정] email_cc 포함해서 가져오기
         .order("created_at", { ascending: false });
 
       if (error) console.error("Error fetching quotations:", error);
@@ -140,6 +249,7 @@ export default function QuotationListPage() {
       type: 'quotation',
       customerName: q.customers?.name || q.quotation_to || "Customer",
       customerEmail: q.customers?.email || "",
+      customerEmailCc: q.customers?.email_cc || "", // 🚀 [추가] CC 이메일 전달
       docNumber: q.quotation_number || q.id.slice(0, 8),
     });
   };
@@ -244,7 +354,7 @@ export default function QuotationListPage() {
     if (!cachedItems[id]) {
       const { data, error } = await supabase
         .from("quotation_items")
-        .select("*")
+        .select("*, products(vendor_product_id)")
         .eq("quotation_id", id);
       
       if (!error && data) {
@@ -315,47 +425,62 @@ export default function QuotationListPage() {
 
       {/* Table */}
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
-          {/* 💡 table-fixed를 적용하여 설정한 % 비율이 강제 유지되도록 합니다. */}
-          <table className="w-full text-sm text-left border-collapse table-fixed ">
+        <div className="overflow-x-auto custom-scrollbar">
+          <table 
+            ref={tableRef}
+            className="w-full min-w-[1000px] text-sm text-left border-collapse table-fixed"
+          >
             <thead className="bg-slate-50 border-b border-slate-200 text-slate-700 font-bold text-xs uppercase">
               <tr>
-                {/* 💡 각 컬럼에 % 비율 할당 */}
-                <th className="px-4 py-3 w-[4%]">
-                  <Checkbox 
-                    checked={paginatedData.length > 0 && paginatedData.every(q => selectedIds.includes(q.id))}
-                    onCheckedChange={(c) => handleSelectAll(!!c)}
-                  />
-                </th>
-                <th className="px-4 py-3 w-[10%]">Issue Date</th>
-                <th className="px-4 py-3 w-[12%]">Number</th>
-                <th className="px-4 py-3 w-[22%]">Customer</th>
-                <th className="px-4 py-3 w-[10%] text-right">Amount</th>
-                <th className="px-4 py-3 w-[10%]">Created By</th>
-                <th className="px-4 py-3 w-[10%]">Updated By</th>
-                <th className="px-4 py-3 w-[8%] text-center">Status</th>
-                <th className="px-4 py-3 w-[8%] text-center">Detail</th>
-                <th className="px-4 py-3 w-[6%] text-center">Action</th>
+                {columns.map((col, index) => (
+                  <th 
+                    key={col.id}
+                    className="relative px-4 py-3 select-none"
+                    style={{ 
+                      width: `${col.width}%`,
+                      textAlign: col.align || 'left' 
+                    }}
+                  >
+                    {col.id === 'checkbox' ? (
+                      <div className="flex justify-center">
+                        <Checkbox 
+                          checked={paginatedData.length > 0 && paginatedData.every(q => selectedIds.includes(q.id))}
+                          onCheckedChange={(c) => handleSelectAll(!!c)}
+                        />
+                      </div>
+                    ) : (
+                      col.label
+                    )}
+                    
+                    {index < columns.length - 1 && (
+                      <div 
+                        onMouseDown={(e) => handleResizeStart(e, col.id)}
+                        className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-blue-400/50 group z-10"
+                      >
+                        <div className="absolute right-0 top-1/4 h-1/2 w-px bg-slate-300 group-hover:bg-blue-500" />
+                      </div>
+                    )}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading ? (
-                <tr><td colSpan={10} className="p-8 text-center text-slate-500">Loading quotations...</td></tr>
+                <tr><td colSpan={columns.length} className="p-8 text-center text-slate-500">Loading quotations...</td></tr>
               ) : paginatedData.length === 0 ? (
-                <tr><td colSpan={10} className="p-8 text-center text-slate-500">No quotations found.</td></tr>
+                <tr><td colSpan={columns.length} className="p-8 text-center text-slate-500">No quotations found.</td></tr>
               ) : (
                 paginatedData.map((quotation) => (
                   <React.Fragment key={quotation.id}>
                     {/* Main Row */}
                     <tr className={`hover:bg-slate-50/80 transition-colors border-b border-slate-50 ${selectedIds.includes(quotation.id) ? 'bg-blue-50/30' : ''} ${expandedRowId === quotation.id ? 'bg-slate-50 border-b-0' : ''}`}>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3 text-center">
                         <Checkbox 
                           checked={selectedIds.includes(quotation.id)}
                           onCheckedChange={(c) => handleSelectRow(quotation.id, !!c)}
                         />
                       </td>
                       
-                      {/* 💡 truncate 추가: 글자가 넘치면 ... 으로 표시되고 마우스를 올리면 전체가 보입니다. */}
                       <td className="px-4 py-3 text-slate-600 font-medium truncate" title={quotation.issue_date}>
                         {quotation.issue_date}
                       </td>
@@ -364,7 +489,6 @@ export default function QuotationListPage() {
                         {quotation.quotation_number}
                       </td>
                       
-                      {/* Customer Name with Badge */}
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2 overflow-hidden">
                             <span className="font-medium truncate block max-w-full" title={quotation.customers?.name || quotation.quotation_to || "Unknown"}>
@@ -396,7 +520,6 @@ export default function QuotationListPage() {
                         </span>
                       </td>
                       
-                      {/* Toggle Button */}
                       <td className="px-4 py-3 text-center">
                         <Button 
                           variant="ghost" 
@@ -454,7 +577,7 @@ export default function QuotationListPage() {
                     {/* Expanded Detail Row */}
                     {expandedRowId === quotation.id && (
                       <tr className="bg-slate-50/50 animate-in fade-in slide-in-from-top-2 duration-200">
-                        <td colSpan={10} className="p-0 border-b border-slate-200">
+                        <td colSpan={columns.length} className="p-0 border-b border-slate-200">
                           <div className="p-6 pl-14">
                             
                             <div className="flex justify-between items-start mb-4">
@@ -476,6 +599,7 @@ export default function QuotationListPage() {
                               <table className="w-full text-sm">
                                 <thead className="bg-slate-100 text-slate-600 text-xs uppercase font-semibold">
                                   <tr>
+                                    <th className="px-4 py-2 text-left w-32">Vendor ID</th>
                                     <th className="px-4 py-2 text-left">Description</th>
                                     <th className="px-4 py-2 text-center w-20">Unit</th>
                                     <th className="px-4 py-2 text-center w-20">Qty</th>
@@ -485,12 +609,15 @@ export default function QuotationListPage() {
                                 </thead>
                                 <tbody className="divide-y divide-slate-100">
                                   {!cachedItems[quotation.id] ? (
-                                    <tr><td colSpan={5} className="p-6 text-center"><Loader2 className="w-5 h-5 animate-spin mx-auto text-slate-400"/></td></tr>
+                                    <tr><td colSpan={6} className="p-6 text-center"><Loader2 className="w-5 h-5 animate-spin mx-auto text-slate-400"/></td></tr>
                                   ) : cachedItems[quotation.id].length === 0 ? (
-                                    <tr><td colSpan={5} className="p-4 text-center text-slate-400">No items found.</td></tr>
+                                    <tr><td colSpan={6} className="p-4 text-center text-slate-400">No items found.</td></tr>
                                   ) : (
                                     cachedItems[quotation.id].map((item, idx) => (
                                       <tr key={idx}>
+                                        <td className="px-4 py-2 font-mono text-[13px] text-slate-500">
+                                            {item.products?.vendor_product_id || '-'}
+                                        </td>
                                         <td className="px-4 py-2 font-medium text-slate-800">{item.description}</td>
                                         <td className="px-4 py-2 text-center text-xs text-slate-500">{item.unit}</td>
                                         <td className="px-4 py-2 text-center text-slate-600">{item.quantity}</td>

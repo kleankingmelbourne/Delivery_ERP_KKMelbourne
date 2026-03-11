@@ -21,7 +21,7 @@ import { format } from "date-fns";
 import { downloadStatementPdf, printStatementPdf } from "@/utils/downloadPdf"; 
 import EmailSendDialog from "@/components/email/EmailSendDialog";
 
-// ✅ [추가] 검색어 입력을 부드럽게 지연시켜 DB 과부하를 막는 커스텀 훅
+// ✅ 검색어 입력을 부드럽게 지연시켜 DB 과부하를 막는 커스텀 훅
 function useDebounce<T>(value: T, delay: number): T {
   const [debouncedValue, setDebouncedValue] = useState(value);
   useEffect(() => {
@@ -36,6 +36,7 @@ interface Customer {
   name: string;
   company: string;
   email: string;
+  email_cc?: string; // 🚀 [추가]
 }
 
 interface StatementLog {
@@ -48,6 +49,7 @@ interface StatementLog {
     name: string;
     company: string;
     email?: string;
+    email_cc?: string; // 🚀 [추가]
   };
 }
 
@@ -58,9 +60,9 @@ export default function StatementPage() {
   const [logs, setLogs] = useState<StatementLog[]>([]);
   const [loadingLogs, setLoadingLogs] = useState(true);
 
-  // ✅ [추가] 리스트 뷰 전용 상태 (페이지네이션 및 검색)
+  // 리스트 뷰 전용 상태
   const [listSearchTerm, setListSearchTerm] = useState("");
-  const debouncedListSearch = useDebounce(listSearchTerm, 300); // 0.3초 대기 후 검색
+  const debouncedListSearch = useDebounce(listSearchTerm, 300); 
   const [rowsPerPage, setRowsPerPage] = useState(10);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalLogs, setTotalLogs] = useState(0);
@@ -82,11 +84,13 @@ export default function StatementPage() {
   const listRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
+  // 🚀 [추가] customerEmailCc 필드 추가
   const [emailTarget, setEmailTarget] = useState<{
     id: string; 
     type: 'quotation' | 'invoice' | 'statement';
     customerName: string;
     customerEmail: string;
+    customerEmailCc?: string; 
     docNumber: string;
     statementData?: { customerId: string; startDate: string; endDate: string; }
   } | null>(null);
@@ -105,26 +109,25 @@ export default function StatementPage() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // ✅ [추가] 검색어 또는 보여줄 개수가 변경되면 무조건 1페이지로 리셋
+  // 검색어 또는 보여줄 개수가 변경되면 무조건 1페이지로 리셋
   useEffect(() => {
     setCurrentPage(1);
   }, [debouncedListSearch, rowsPerPage]);
 
-  // ✅ [추가] 페이지, 검색어, 뷰모드가 바뀔 때마다 서버사이드에서 데이터 가져오기
+  // 페이지, 검색어, 뷰모드가 바뀔 때마다 서버사이드에서 데이터 가져오기
   useEffect(() => {
     if (viewMode === 'list') {
       fetchLogs();
     }
   }, [viewMode, currentPage, rowsPerPage, debouncedListSearch]);
 
-  // ✅ [수정] 서버사이드 페이지네이션 & 필터링 쿼리
   const fetchLogs = async () => {
     setLoadingLogs(true);
     
-    // !inner 옵션을 사용해야 join된 테이블(customers)을 조건으로 필터링 할 수 있습니다.
+    // 🚀 [수정] email_cc도 함께 가져오기
     let query = supabase
       .from("statement_logs")
-      .select(`*, customers!inner (name, company, email)`, { count: 'exact' });
+      .select(`*, customers!inner (name, company, email, email_cc)`, { count: 'exact' });
 
     if (debouncedListSearch) {
       query = query.ilike('customers.name', `%${debouncedListSearch}%`);
@@ -132,7 +135,6 @@ export default function StatementPage() {
 
     query = query.order("generated_at", { ascending: false });
 
-    // 10000은 ALL을 의미합니다.
     if (rowsPerPage !== 10000) {
       const from = (currentPage - 1) * rowsPerPage;
       const to = from + rowsPerPage - 1;
@@ -149,7 +151,8 @@ export default function StatementPage() {
   };
 
   const fetchCustomers = async () => {
-    const { data } = await supabase.from("customers").select("id, name, company, email").order("name");
+    // 🚀 [수정] email_cc도 함께 가져오기
+    const { data } = await supabase.from("customers").select("id, name, company, email, email_cc").order("name");
     if (data) {
       setCustomers(data);
       setFilteredCustomers(data);
@@ -238,14 +241,14 @@ export default function StatementPage() {
   const handleViewLog = (log: StatementLog) => {
     if (checkUnsaved()) return;
 
-    // 객체/배열 방어코드
     const safeCustomer = Array.isArray(log.customers) ? log.customers[0] : log.customers;
 
     setSelectedCustomer({
         id: log.customer_id,
         name: safeCustomer?.name || "Unknown",
         company: safeCustomer?.company || "",
-        email: safeCustomer?.email || ""
+        email: safeCustomer?.email || "",
+        email_cc: safeCustomer?.email_cc || "" // 🚀 [추가]
     });
     setDefaultDates({ start: log.start_date, end: log.end_date });
     setAutoGenTrigger(true);
@@ -310,10 +313,14 @@ export default function StatementPage() {
     const safeCustomer = Array.isArray(log.customers) ? log.customers[0] : log.customers;
     const customerName = safeCustomer?.name || "Customer";
     let customerEmail = safeCustomer?.email || "";
+    let customerEmailCc = safeCustomer?.email_cc || ""; // 🚀 [추가]
 
-    if (!customerEmail && log.customer_id) {
-        const { data } = await supabase.from('customers').select('email').eq('id', log.customer_id).maybeSingle();
-        if (data && data.email) customerEmail = data.email;
+    if ((!customerEmail || !customerEmailCc) && log.customer_id) {
+        const { data } = await supabase.from('customers').select('email, email_cc').eq('id', log.customer_id).maybeSingle();
+        if (data) {
+          if (data.email) customerEmail = data.email;
+          if (data.email_cc) customerEmailCc = data.email_cc;
+        }
     }
 
     const statementInfo = JSON.stringify({
@@ -328,11 +335,11 @@ export default function StatementPage() {
         type: 'statement',
         customerName: customerName,
         customerEmail: customerEmail,
+        customerEmailCc: customerEmailCc, // 🚀 [추가]
         docNumber: `${log.start_date} ~ ${log.end_date}`,
     });
   };
 
-  // 계산
   const totalPages = Math.ceil(totalLogs / (rowsPerPage === 10000 ? (totalLogs || 1) : rowsPerPage));
 
   return (
@@ -379,7 +386,6 @@ export default function StatementPage() {
         {viewMode === 'list' && (
           <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
             
-            {/* ✅ [추가] 리스트 뷰용 필터 (개수 선택 및 검색어) */}
             <div className="flex flex-col sm:flex-row justify-between items-center bg-white p-4 rounded-xl border border-slate-200 shadow-sm mb-4 gap-4">
               <div className="flex items-center gap-2">
                 <span className="text-xs font-bold text-slate-500 uppercase">Show:</span>
@@ -497,7 +503,6 @@ export default function StatementPage() {
                 </div>
               )}
               
-              {/* ✅ [추가] 서버사이드 페이지네이션 푸터 */}
               {totalPages > 1 && (
                 <div className="flex items-center justify-between px-6 py-4 bg-slate-50 border-t border-slate-200">
                     <span className="text-xs font-medium text-slate-500">
@@ -624,6 +629,7 @@ export default function StatementPage() {
                         type: 'statement',
                         customerName: selectedCustomer.name,
                         customerEmail: selectedCustomer.email || "",
+                        customerEmailCc: selectedCustomer.email_cc || "", // 🚀 [추가] 생성 모드에서도 이메일CC 연동
                         docNumber: `${defaultDates?.start} ~ ${defaultDates?.end}`,
                     });
                   }}

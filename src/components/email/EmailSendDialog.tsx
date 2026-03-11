@@ -20,11 +20,11 @@ interface EmailSendDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   data: {
-    id: string;           
-    // [UPDATE] purchase-order 타입 추가
+    id: string;          
     type: 'quotation' | 'invoice' | 'statement' | 'purchase-order'; 
     customerName: string;
     customerEmail: string;
+    customerEmailCc?: string; // 🚀 [추가] CC 이메일 프롭
     docNumber: string;    
   } | null;
 }
@@ -35,7 +35,7 @@ export default function EmailSendDialog({ open, onOpenChange, data }: EmailSendD
   
   // 폼 상태
   const [to, setTo] = useState("");
-  const [cc, setCc] = useState(""); // [NEW] CC 상태 추가
+  const [cc, setCc] = useState(""); 
   const [subject, setSubject] = useState("");
   const [message, setMessage] = useState("");
   
@@ -47,7 +47,7 @@ export default function EmailSendDialog({ open, onOpenChange, data }: EmailSendD
   useEffect(() => {
     if (open && data) {
       setTo(data.customerEmail || "");
-      setCc(""); // CC 초기화
+      setCc(data.customerEmailCc || ""); // 🚀 [추가] 데이터에 CC가 있으면 자동 세팅
       
       // 제목 및 메시지 자동 설정
       let typeLabel = "";
@@ -81,7 +81,6 @@ export default function EmailSendDialog({ open, onOpenChange, data }: EmailSendD
             info.customerName
         );
       } else if (targetData.type === 'purchase-order') {
-        // [NEW] PO PDF 생성 연결
         result = await fetchAndGeneratePurchaseOrderBlob(targetData.id);
       }
       
@@ -117,7 +116,7 @@ export default function EmailSendDialog({ open, onOpenChange, data }: EmailSendD
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 to,
-                cc, // [NEW] CC 데이터 전송
+                cc, // 🚀 [추가] CC 데이터를 API로 전송
                 subject,
                 html: message.replace(/\n/g, '<br/>'),
                 attachments: [
@@ -171,7 +170,6 @@ export default function EmailSendDialog({ open, onOpenChange, data }: EmailSendD
             <Input id="to" value={to} onChange={(e) => setTo(e.target.value)} className="col-span-3" />
           </div>
 
-          {/* [NEW] CC Input Field */}
           <div className="grid grid-cols-4 items-center gap-4">
             <Label htmlFor="cc" className="text-right">CC</Label>
             <Input 

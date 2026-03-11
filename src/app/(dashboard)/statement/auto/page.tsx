@@ -36,14 +36,14 @@ export default function AutoStatementPage() {
   // --- 1. 현재 탭의 배정된 고객 목록 불러오기 ---
   const fetchAssignedCustomers = useCallback(async () => {
     setLoadingList(true);
-    // [수정됨] 불필요한 필드 제거 및 정렬 기준 created_at으로 변경
+    // 🚀 [추가] customers 조인 시 email_cc 도 함께 가져오도록 쿼리 추가
     const { data, error } = await supabase
       .from("auto_statement_settings")
       .select(`
         id,
         customer_id,
         schedule_type,
-        customers (id, name, email, company)
+        customers (id, name, email, email_cc, company)
       `)
       .eq("schedule_type", activeTab)
       .order("created_at", { ascending: false }); // 최근 추가된 순
@@ -72,9 +72,10 @@ export default function AutoStatementPage() {
     }
 
     setIsSearching(true);
+    // 🚀 [추가] 검색할 때도 email_cc 데이터를 미리 가져와서 세팅
     const { data } = await supabase
       .from("customers")
-      .select("id, name, company, email")
+      .select("id, name, company, email, email_cc")
       .ilike("name", `%${term}%`)
       .limit(5);
 
@@ -89,11 +90,7 @@ export default function AutoStatementPage() {
 
   // --- 3. 스케줄 추가 (Add & Save) ---
   const handleAddCustomer = async (customer: any) => {
-    // 이미 다른 스케줄에 있을 수도 있으므로 upsert 사용
-    // customer_id는 unique 제약조건이 있어야 함
-    
     try {
-      // [수정됨] 불필요한 필드(is_active, updated_at) 제거
       const { error } = await supabase
         .from("auto_statement_settings")
         .upsert({
@@ -199,7 +196,7 @@ export default function AutoStatementPage() {
 
               {searchResults.map(customer => (
                 <div key={customer.id} className="flex items-center justify-between p-3 bg-white border border-slate-100 rounded-lg hover:border-blue-200 hover:shadow-sm transition-all group">
-                  <div className="overflow-hidden">
+                  <div className="overflow-hidden pr-2">
                     <p className="text-sm font-bold text-slate-800 truncate">{customer.name}</p>
                     <p className="text-xs text-slate-400 truncate">{customer.company || "No Company"}</p>
                   </div>
@@ -251,17 +248,26 @@ export default function AutoStatementPage() {
                       <div className="h-8 w-8 rounded-full bg-blue-50 flex items-center justify-center text-blue-600 font-bold text-xs shrink-0">
                         {customer.name.slice(0,2).toUpperCase()}
                       </div>
-                      <div className="min-w-0">
+                      <div className="min-w-0 pr-2">
                         <p className="text-sm font-bold text-slate-900 truncate">{customer.name}</p>
                         <div className="flex items-center gap-2 text-xs text-slate-500">
                           <span className="truncate">{customer.email || "No Email"}</span>
-                          {customer.company && <span className="text-slate-300">|</span>}
-                          {customer.company && <span className="truncate">{customer.company}</span>}
+                          {/* 🚀 [추가] CC 이메일이 있을 경우 UI상에 팁(Tooltip) 형식으로 간략하게 표시 */}
+                          {customer.email_cc && (
+                            <span 
+                              className="bg-slate-100 text-slate-400 px-1 rounded cursor-help hidden sm:inline-block" 
+                              title={`CC: ${customer.email_cc}`}
+                            >
+                              +CC
+                            </span>
+                          )}
+                          {customer.company && <span className="text-slate-300 hidden sm:inline-block">|</span>}
+                          {customer.company && <span className="truncate hidden sm:inline-block">{customer.company}</span>}
                         </div>
                       </div>
                     </div>
                     
-                    <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-4 shrink-0">
                       <div className="hidden sm:flex items-center gap-1.5 text-[10px] font-medium text-emerald-600 bg-emerald-50 px-2 py-1 rounded">
                         <CheckCircle2 className="w-3 h-3" /> Active
                       </div>

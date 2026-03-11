@@ -83,7 +83,6 @@ function SearchableSelect({ options, value, onChange, placeholder = "Select..." 
 }
 
 // --- Types ---
-// 🚀 [수정] 순수매출(Net)과 총매출(Gross, GST포함)을 구분합니다.
 interface ReportSummary {
   totalNetSales: number;
   totalGrossSales: number;
@@ -210,7 +209,7 @@ export default function SalesReportPage() {
       const { data, error } = await query;
       if (error) throw error;
 
-      let totalSales = 0, totalCost = 0, totalQty = 0;
+      let totalSales = 0, totalCost = 0, totalQty = 0, finalTotalProfit = 0;
       const groupMap = new Map<string, GroupedData>();
 
       if (data) {
@@ -227,11 +226,14 @@ export default function SalesReportPage() {
           }
 
           const itemCost = unitCost * itemQty;
-          const itemProfit = itemAmount - itemCost;
+          
+          // 🚀 [수정] Net Sales(itemAmount)가 0 이하면 수익(Profit)을 강제로 0으로 세팅합니다.
+          const itemProfit = itemAmount <= 0 ? 0 : itemAmount - itemCost;
 
           totalSales += itemAmount;
           totalCost += itemCost;
           totalQty += itemQty;
+          finalTotalProfit += itemProfit;
 
           const isByItem = groupBy === "item";
           
@@ -288,12 +290,11 @@ export default function SalesReportPage() {
         return group;
       });
 
-      // 🚀 [수정] Net Sales와 Gross Sales(10% 부가세 포함)를 구분해서 Summary에 저장
       setSummary({
         totalNetSales: totalSales,
-        totalGrossSales: totalSales * 1.1, // 인보이스 Total Amount와 동일해짐
+        totalGrossSales: totalSales * 1.1, 
         totalCost: totalCost,
-        totalProfit: totalSales - totalCost,
+        totalProfit: finalTotalProfit, // 보정된 전체 Profit 합계 사용
         totalQty: totalQty,
         itemCount: data?.length || 0
       });
@@ -324,8 +325,8 @@ export default function SalesReportPage() {
           "Unit": detail.unit,
           "Last Date": detail.lastDate,
           "Quantity": detail.qty,
-          "Net Sales ($)": detail.amount,             // 🚀 엑셀 컬럼명 수정
-          "Gross Sales ($)": detail.amount * 1.1,     // 🚀 Gross 엑셀에도 추가
+          "Net Sales ($)": detail.amount,             
+          "Gross Sales ($)": detail.amount * 1.1,     
           "Cost ($)": detail.cost,
           "Profit ($)": detail.profit,
           "Margin (%)": detail.amount > 0 ? ((detail.profit / detail.amount) * 100).toFixed(2) : "0.00"
@@ -497,7 +498,6 @@ export default function SalesReportPage() {
           {/* Summary Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             
-            {/* 🚀 [수정] Net Sales 아래에 Gross Sales 표시 박스 추가 */}
             <Card className="border-l-4 border-l-blue-500 shadow-sm relative overflow-hidden">
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm font-medium text-slate-500 uppercase flex justify-between">Net Sales (ex GST) <DollarSign className="w-4 h-4 text-blue-500" /></CardTitle>
@@ -533,7 +533,6 @@ export default function SalesReportPage() {
                     <th className="px-4 py-3 w-[40px]"></th>
                     <SortableHeader label={groupBy === 'item' ? "Product Name" : "Customer Name"} sortKey="name" currentSort={mainSortConfig} onSort={handleMainSort} />
                     <SortableHeader label="Total Qty" sortKey="totalQty" align="right" currentSort={mainSortConfig} onSort={handleMainSort} />
-                    {/* 🚀 테이블 헤더 명칭 명확하게 변경 */}
                     <SortableHeader label="Net Sales" sortKey="totalSales" align="right" currentSort={mainSortConfig} onSort={handleMainSort} />
                     <SortableHeader label="Cost" sortKey="totalCost" align="right" currentSort={mainSortConfig} onSort={handleMainSort} />
                     <SortableHeader label="Profit" sortKey="totalProfit" align="right" currentSort={mainSortConfig} onSort={handleMainSort} />

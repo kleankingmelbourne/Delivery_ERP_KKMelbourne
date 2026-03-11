@@ -46,13 +46,13 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
   const searchCache = useRef<Record<string, any[]>>({});
 
   const initialData = {
-    name: "", company: "", email: "", password: "", contact_name: "", mobile: "", tel: "", abn: "",
+    name: "", company: "", email: "", email_cc: "", password: "", contact_name: "", mobile: "", tel: "", abn: "", // 🚀 [추가] email_cc 초기값
     group_id: "", 
     in_charge_sale: "",     
     in_charge_delivery: "", 
     login_permit: true, disable_order: false,
     credit_limit: "", due_date: "C.O.D",
-    customer_pw: "", // 🚀 [추가] customer_pw 초기값
+    customer_pw: "", 
     address: "", suburb: "", state: "", postcode: "", lat: null as number | null, lng: null as number | null,
     delivery_address: "", delivery_suburb: "", delivery_state: "", delivery_postcode: "", delivery_lat: null as number | null, delivery_lng: null as number | null,
     note: ""
@@ -102,11 +102,12 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
           name: cleanData.name || "",
           company: cleanData.company || "",
           email: cleanData.email || "",
+          email_cc: cleanData.email_cc || "", // 🚀 [추가] DB에서 CC 이메일 가져오기
           contact_name: cleanData.contact_name || "", 
           mobile: cleanData.mobile || "",
           tel: cleanData.tel || "",
           abn: cleanData.abn || "",
-          customer_pw: cleanData.customer_pw || "", // 🚀 [추가] DB에서 pw 가져오기
+          customer_pw: cleanData.customer_pw || "", 
           address: cleanData.address || "",
           suburb: cleanData.suburb || "",
           state: cleanData.state || "",
@@ -419,13 +420,25 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="space-y-2"><Label>Customer Name <span className="text-red-500">*</span></Label><Input value={formData.name} onChange={(e) => handleChange("name", e.target.value)} placeholder="Full Name" /></div>
                 <div className="space-y-2"><Label>Company Name</Label><Input value={formData.company} onChange={(e) => handleChange("company", e.target.value)} placeholder="Company Pty Ltd" /></div>
+                
                 <div className="space-y-2"><Label>Email</Label><Input type="email" value={formData.email} onChange={(e) => handleChange("email", e.target.value)} placeholder="name@example.com" /></div>
+                
+                {/* 🚀 [추가] Email CC */}
+                <div className="space-y-2">
+                  <Label>Email CC</Label>
+                  <Input 
+                    type="text" 
+                    value={formData.email_cc} 
+                    onChange={(e) => handleChange("email_cc", e.target.value)} 
+                    placeholder="cc1@example.com, cc2@example.com" 
+                  />
+                </div>
+
                 <div className="space-y-2"><Label>Customer Group</Label><div className="relative"><select value={formData.group_id} onChange={(e) => handleChange("group_id", e.target.value)} className="flex h-10 w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-slate-900 appearance-none"><option value="">No Group</option>{groupOptions.map((g) => (<option key={g.id} value={g.id}>{g.name}</option>))}</select><ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" /></div></div>
                 <div className="space-y-2"><Label>ABN</Label><Input value={formData.abn} onChange={(e) => handleChange("abn", e.target.value)} placeholder="XX XXX XXX XXX" /></div>
                 
-                {/* 🚀 [추가] Customer Password (상점 진입 비밀번호) */}
                 <div className="space-y-2">
-                    <Label className="text-black-700">Delivery Access PW (Max 10)</Label>
+                    <Label className="text-blue-700 font-bold">Delivery Access PW (Max 10)</Label>
                     <Input 
                         value={formData.customer_pw} 
                         onChange={(e) => handleChange("customer_pw", e.target.value)} 

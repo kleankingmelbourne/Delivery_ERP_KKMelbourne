@@ -4,12 +4,12 @@ import { useEffect, useState } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { 
   Users, Plus, Trash2, Edit, User, Percent,
-  ChevronDown, Layers, UserPlus, LogOut, UserMinus, RefreshCw // [NEW] 아이콘 추가
+  ChevronDown, Layers, UserPlus, LogOut, UserMinus, RefreshCw
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import GroupDialog from "@/components/customer/GroupDialog";
 import AddMemberDialog from "@/components/customer/AddMemberDialog";
-import GroupPriceSyncDialog from "@/components/customer/GroupPriceSyncDialog"; // [NEW] 컴포넌트 추가
+import GroupPriceSyncDialog from "@/components/customer/GroupPriceSyncDialog";
 
 interface CustomerGroup {
   id: number;
@@ -48,10 +48,7 @@ export default function CustomerGroupPage() {
   
   const [isGroupDialogOpen, setIsGroupDialogOpen] = useState(false);
   const [isAddMemberOpen, setIsAddMemberOpen] = useState(false);
-  
-  // [NEW] 가격 동기화 다이얼로그 상태
   const [isSyncDialogOpen, setIsSyncDialogOpen] = useState(false);
-
   const [editingGroup, setEditingGroup] = useState<CustomerGroup | undefined>(undefined);
 
   useEffect(() => {
@@ -104,29 +101,22 @@ export default function CustomerGroupPage() {
   const handleRemoveMember = async (customerId: string) => {
     if (!confirm("Remove this customer from the group?")) return;
 
-    // 1. [백업] 에러 발생 시 되돌리기 위해 현재 상태 저장
     const prevCustomers = [...customers];
     const prevGroups = [...groups];
 
-    // 2. [즉시 반영] 서버 기다리지 않고 화면부터 갱신 (Optimistic Update)
-    
-    // 2-1. 고객 리스트에서 해당 고객의 group_id를 null로 변경 -> 리스트에서 즉시 사라짐
     setCustomers(current => current.map(c => 
       c.id === customerId ? { ...c, group_id: null } : c
     ));
 
-    // 2-2. 상단 그룹 카드나 리스트의 '멤버 수(Count)'도 즉시 -1 처리
     setGroups(current => current.map(g => 
       g.id === Number(selectedGroupId) ? { ...g, count: (g.count || 1) - 1 } : g
     ));
 
-    // 3. [백그라운드] 서버 요청 전송
     const { error } = await supabase
       .from("customers")
       .update({ group_id: null })
       .eq("id", customerId);
 
-    // 4. [롤백] 만약 서버 에러가 나면 원상복구
     if (error) {
       console.error(error);
       alert("Failed to remove member. Please try again.");
@@ -148,7 +138,8 @@ export default function CustomerGroupPage() {
   };
 
   return (
-    <div className="p-6 max-w-[1200px] mx-auto space-y-8 pb-24 h-screen flex flex-col">
+    // 🚀 화면 높이 고정(h-screen, flex-col)을 제거하여 콘텐츠 길이에 맞춰 페이지가 자연스럽게 늘어나도록 변경
+    <div className="p-6 max-w-[1200px] mx-auto space-y-8 pb-24">
       
       {/* 1. Header */}
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
@@ -179,7 +170,7 @@ export default function CustomerGroupPage() {
         </div>
       </div>
 
-      {/* 2. Control Panel */}
+      {/* 2. Control Panel & Content */}
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
         
         {/* Top Bar */}
@@ -208,7 +199,7 @@ export default function CustomerGroupPage() {
           </div>
         </div>
 
-        {/* Selected Group Info */}
+        {/* Selected Group Info & List */}
         {selectedGroup ? (
           <div className="p-6">
             <div className="flex flex-col md:flex-row justify-between items-start gap-4 mb-6">
@@ -232,9 +223,7 @@ export default function CustomerGroupPage() {
                 </div>
               </div>
 
-              {/* Group Actions Buttons */}
               <div className="flex items-center gap-2">
-                {/* [NEW] Sync Prices Button */}
                 <Button 
                     variant="outline" 
                     size="sm" 
@@ -243,7 +232,6 @@ export default function CustomerGroupPage() {
                 >
                   <RefreshCw className="w-4 h-4 mr-2" /> Sync Prices
                 </Button>
-
                 <Button variant="outline" size="sm" onClick={handleEditGroup}>
                   <Edit className="w-4 h-4 mr-2" /> Edit Group
                 </Button>
@@ -253,7 +241,7 @@ export default function CustomerGroupPage() {
               </div>
             </div>
 
-            {/* 3. Member List Table */}
+            {/* Member List Table (🚀 내부 스크롤 제거, 자연스럽게 늘어나게) */}
             <div className="mt-8">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="font-bold text-slate-700 flex items-center gap-2">
@@ -264,7 +252,8 @@ export default function CustomerGroupPage() {
                 </Button>
               </div>
 
-              <div className="border border-slate-200 rounded-lg overflow-hidden">
+              {/* 🚀 overflow-y-auto 등 스크롤 강제 속성 제거 */}
+              <div className="border border-slate-200 rounded-lg overflow-x-auto">
                 <table className="w-full text-sm text-left">
                   <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200">
                     <tr>
@@ -335,7 +324,6 @@ export default function CustomerGroupPage() {
               groupName={selectedGroup.name}
           />
           
-          {/* [NEW] Price Sync Dialog 연결 */}
           <GroupPriceSyncDialog
               isOpen={isSyncDialogOpen}
               onClose={() => setIsSyncDialogOpen(false)}

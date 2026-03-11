@@ -29,7 +29,6 @@ const generateQuotationNumber = () => {
   return `QT-${yyyy}${mm}${dd}-${random}`;
 };
 
-// --- [컴포넌트] CreatableSelect ---
 // --- [컴포넌트] CreatableSelect (키보드 조작 및 자동 스크롤 추가) ---
 interface Option { id: string; label: string; subLabel?: string; }
 interface CreatableSelectProps {
@@ -51,27 +50,29 @@ function CreatableSelect({ options, value, onChange, placeholder = "Select...", 
   const [highlightedIndex, setHighlightedIndex] = useState(0); 
   
   const containerRef = useRef<HTMLDivElement>(null);
-  const listRef = useRef<HTMLDivElement>(null); // 리스트 컨테이너
-  const itemRefs = useRef<(HTMLDivElement | null)[]>([]); // 아이템 포인터 배열
+  const listRef = useRef<HTMLDivElement>(null); 
+  const itemRefs = useRef<(HTMLDivElement | null)[]>([]); 
 
   const displayLabel = value.id ? options.find(o => o.id === value.id)?.label || value.name : value.name;
 
   const filteredOptions = useMemo(() => {
     if (!searchTerm) return options.slice(0, 50);
-    return options.filter(option => option.label.toLowerCase().includes(searchTerm.toLowerCase())).slice(0, 50);
+    const lowerTerm = searchTerm.toLowerCase();
+    return options.filter(option => 
+        option.label.toLowerCase().includes(lowerTerm) || 
+        (option.subLabel && option.subLabel.toLowerCase().includes(lowerTerm))
+    ).slice(0, 50);
   }, [options, searchTerm]);
 
-  // 검색어가 바뀌거나 메뉴가 열릴 때 하이라이트 위치를 맨 위로 리셋
   useEffect(() => {
     setHighlightedIndex(0);
   }, [searchTerm, isOpen]);
 
-  // 방향키 이동 시 화면 자동 스크롤
   useEffect(() => {
     if (isOpen && itemRefs.current[highlightedIndex]) {
       itemRefs.current[highlightedIndex]?.scrollIntoView({ 
         block: "nearest",
-        behavior: "auto" // 부드러운 스크롤 끄고 즉시 이동
+        behavior: "auto" 
       });
     }
   }, [highlightedIndex, isOpen]);
@@ -94,7 +95,6 @@ function CreatableSelect({ options, value, onChange, placeholder = "Select...", 
     }
   };
 
-  // 💡 [핵심] 키보드 입력 핸들러
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (!isOpen) return;
 
@@ -109,7 +109,6 @@ function CreatableSelect({ options, value, onChange, placeholder = "Select...", 
     else if (e.key === 'Enter') {
       e.preventDefault();
       if (filteredOptions.length > 0) {
-        // 현재 파란색으로 선택된 항목을 엔터 쳤을 때 적용
         const opt = filteredOptions[highlightedIndex];
         if (opt) onChange({ id: opt.id, name: opt.label });
       } else if (allowCreate && searchTerm) {
@@ -131,7 +130,6 @@ function CreatableSelect({ options, value, onChange, placeholder = "Select...", 
         <ChevronDown className="w-4 h-4 text-slate-400 opacity-50 shrink-0" />
       </div>
       {isOpen && !disabled && (
-        // 💡 1. w-full을 w-[500px]로 고정하여 넓히고, max-h-60(240px)을 max-h-[400px]로 길게 늘림!
         <div className="absolute z-50 w-[500px] max-w-[90vw] mt-1 bg-white border border-slate-200 rounded-lg shadow-2xl max-h-[400px] flex flex-col animate-in fade-in zoom-in-95 duration-100">
           <div className="p-2 bg-white border-b border-slate-100 shrink-0">
             <div className="relative">
@@ -140,7 +138,7 @@ function CreatableSelect({ options, value, onChange, placeholder = "Select...", 
                 autoFocus 
                 type="text" 
                 className="w-full pl-8 pr-2 py-2 text-sm border border-slate-200 rounded-md focus:outline-none focus:border-slate-400 placeholder:text-xs" 
-                placeholder={allowCreate ? "Search or type new name..." : "Search..."}
+                placeholder={allowCreate ? "Search by Name or Vendor ID..." : "Search..."}
                 value={searchTerm} 
                 onChange={(e) => setSearchTerm(e.target.value)}
                 onKeyDown={handleKeyDown} 
@@ -167,7 +165,6 @@ function CreatableSelect({ options, value, onChange, placeholder = "Select...", 
                 onClick={() => { onChange({ id: option.id, name: option.label }); setIsOpen(false); }} 
                 className={`flex items-center justify-between px-3 py-2 text-sm rounded-md cursor-pointer transition-colors ${index === highlightedIndex ? "bg-slate-100" : "bg-transparent"} ${option.id === value.id ? "font-bold text-slate-900" : "text-slate-700"}`}
               >
-                {/* 💡 flex-col을 주어 세로로 배치하고, 두 텍스트 모두 길어지면 ... 으로 잘리게(truncate) 설정했습니다 */}
                 <div className="flex flex-col flex-1 overflow-hidden pr-4">
                     <span className="truncate font-medium" title={option.label}>
                         {option.label}
@@ -178,7 +175,6 @@ function CreatableSelect({ options, value, onChange, placeholder = "Select...", 
                         </span>
                     )}
                 </div>
-                {/* 체크박스가 우측 끝에 고정되도록 유지 */}
                 {option.id === value.id && <Check className="w-4 h-4 text-indigo-600 shrink-0" />}
               </div>
             ))}
@@ -194,6 +190,7 @@ interface Customer { id: string; name: string; note: string; }
 interface ProductMaster { 
   id: string; 
   product_name: string; 
+  vendor_product_id: string | null; 
   sell_price_ctn: number; 
   sell_price_pack: number; 
   unit_name?: string; 
@@ -207,7 +204,6 @@ interface QuotationItem {
   unitPrice: number;    
 }
 
-// ✅ Props 정의: quotationId가 있으면 Edit 모드, 없으면 New 모드
 interface QuotationFormProps {
   quotationId?: string;
 }
@@ -216,9 +212,7 @@ export default function QuotationForm({ quotationId }: QuotationFormProps) {
   const supabase = createClient();
   const router = useRouter();
   
-  const isEditMode = !!quotationId; // true면 Edit, false면 New
-
-  // ✅ 전역 상태에서 접속자 이름 즉시 호출
+  const isEditMode = !!quotationId; 
   const { currentUserName } = useAuth();
 
   const [loading, setLoading] = useState(false);
@@ -239,26 +233,19 @@ export default function QuotationForm({ quotationId }: QuotationFormProps) {
     { productId: "", unit: "CTN", quantity: 1, basePrice: 0, discountRate: 0, unitPrice: 0 }
   ]);
 
-  // 1. 기초 데이터 및 Quotation 데이터 로딩 (🚀 초고속 병렬 최적화)
   useEffect(() => {
     const initData = async () => {
       setDataLoading(true);
       
       if (isEditMode) {
-        // --- [EDIT MODE] ---
-        // 💡 최적화 1: 4번의 순차 통신을 Promise.all을 이용해 1번의 병렬 통신으로 압축!
-        // 💡 최적화 2: quotations와 quotation_items를 따로 부르지 않고 JOIN으로 한 번에 가져옴!
-        // 💡 최적화 3: products에서 * 대신 진짜 화면에 필요한 컬럼만 명시하여 용량 최소화!
         const [custRes, prodRes, quoteRes] = await Promise.all([
           supabase.from("customers").select("id, name, note"),
-          supabase.from("products").select("id, product_name, sell_price_ctn, sell_price_pack, product_units(unit_name)"),
+          supabase.from("products").select("id, product_name, vendor_product_id, sell_price_ctn, sell_price_pack, product_units(unit_name)"),
           supabase.from("quotations").select("*, quotation_items(*)").eq("id", quotationId).single()
         ]);
 
-        // 1. Customer 세팅
         if (custRes.data) setCustomers(custRes.data);
         
-        // 2. Product 세팅
         if (prodRes.data) {
           const mappedProducts = prodRes.data.map((p: any) => ({
               ...p,
@@ -267,7 +254,6 @@ export default function QuotationForm({ quotationId }: QuotationFormProps) {
           setAllProducts(mappedProducts);
         }
 
-        // 3. Quotation 세팅
         const quote = quoteRes.data;
         if (quoteRes.error || !quote) {
           alert("Quotation not found.");
@@ -287,7 +273,6 @@ export default function QuotationForm({ quotationId }: QuotationFormProps) {
         setValidUntil(quote.valid_until || "");
         setMemo(quote.memo || "");
 
-        // 💡 JOIN으로 한 번에 가져온 items 배열 사용
         const qItems = quote.quotation_items; 
         if (qItems && qItems.length > 0) {
           const mappedItems = qItems.map((item: any) => ({
@@ -302,11 +287,9 @@ export default function QuotationForm({ quotationId }: QuotationFormProps) {
         }
 
       } else {
-        // --- [NEW MODE] ---
-        // New 모드일 때는 Quotation 데이터가 필요 없으므로 고객과 상품만 병렬로 가져옵니다.
         const [custRes, prodRes] = await Promise.all([
           supabase.from("customers").select("id, name, note"),
-          supabase.from("products").select("id, product_name, sell_price_ctn, sell_price_pack, product_units(unit_name)")
+          supabase.from("products").select("id, product_name, vendor_product_id, sell_price_ctn, sell_price_pack, product_units(unit_name)")
         ]);
 
         if (custRes.data) setCustomers(custRes.data);
@@ -329,10 +312,14 @@ export default function QuotationForm({ quotationId }: QuotationFormProps) {
     initData();
   }, [quotationId, isEditMode, supabase, router]);
 
-  // --- Helpers & Handlers ---
-  const productOptions = useMemo(() => allProducts.map(p => ({
-    id: p.id, label: p.product_name, subLabel: `$${p.sell_price_ctn} (CTN) / $${p.sell_price_pack} (PK)`
-  })), [allProducts]);
+  const productOptions = useMemo(() => allProducts.map(p => {
+    const vendorIdStr = p.vendor_product_id ? `[${p.vendor_product_id}] ` : "";
+    return {
+        id: p.id, 
+        label: p.product_name, 
+        subLabel: `${vendorIdStr}$${p.sell_price_ctn} (CTN) / $${p.sell_price_pack} (PK)`
+    };
+  }), [allProducts]);
 
   const customerOptions = useMemo(() => customers.map(c => ({ id: c.id, label: c.name })), [customers]);
 
@@ -399,8 +386,6 @@ export default function QuotationForm({ quotationId }: QuotationFormProps) {
   const gstTotal = subTotal * 0.1;
   const grandTotal = roundAmount(subTotal + gstTotal);
 
-  // --- 통합 저장 로직 ---
-  // --- 통합 저장 로직 (병렬 처리 최적화) ---
   const handleSave = async (redirectOrNew: boolean) => {
     if (!selectedCustomer.name) return alert("Please select or enter a customer name.");
     setLoading(true);
@@ -409,8 +394,6 @@ export default function QuotationForm({ quotationId }: QuotationFormProps) {
       let targetQuoteId = quotationId;
 
       if (isEditMode) {
-        // 🚀 [EDIT MODE: 병렬 최적화] 
-        // 헤더 내용 업데이트와 기존 아이템 삭제는 서로 의존성이 없으므로 동시에 실행합니다! (속도 2배 향상)
         const [updateRes, deleteRes] = await Promise.all([
           supabase.from("quotations").update({
             customer_id: selectedCustomer.id || null, 
@@ -432,8 +415,6 @@ export default function QuotationForm({ quotationId }: QuotationFormProps) {
         if (deleteRes.error) throw deleteRes.error;
 
       } else {
-        // 🛑 [NEW MODE: 순차 실행 필수] 
-        // 부모(헤더)가 생성되어 고유 ID가 발급되어야만 자식(아이템)을 넣을 수 있습니다.
         const newQuotationNumber = generateQuotationNumber();
         const { data: quote, error: err1 } = await supabase.from("quotations").insert({
           customer_id: selectedCustomer.id || null, 
@@ -454,7 +435,6 @@ export default function QuotationForm({ quotationId }: QuotationFormProps) {
         targetQuoteId = quote.id;
       }
 
-      // [공통] 새로운 Items 추가
       const validItems = items.filter(item => item.productId);
       
       if (validItems.length > 0) {
@@ -474,21 +454,18 @@ export default function QuotationForm({ quotationId }: QuotationFormProps) {
           };
         });
 
-        // 💡 [Bulk Insert 최적화] 여러 개의 아이템을 하나의 배열로 묶어서 단 한 번의 통신으로 밀어 넣습니다!
         const { error: insError } = await supabase.from("quotation_items").insert(itemsData);
         if (insError) throw insError;
       }
 
       alert(isEditMode ? "Quotation updated successfully!" : "Quotation saved successfully!");
 
-      // 저장 후 이동 처리
       if (isEditMode) {
         router.push("/quotation");
       } else {
         if (redirectOrNew) {
           router.push("/quotation");
         } else {
-          // Save & New 클릭 시 폼 초기화 (화면 이동 없음)
           setSelectedCustomer({ id: null, name: "" });
           setQuotationDate(today);
           const d = new Date();
@@ -565,70 +542,82 @@ export default function QuotationForm({ quotationId }: QuotationFormProps) {
               <table className="w-full text-sm text-left">
                 <thead className="bg-slate-50 border-b border-slate-200 text-slate-700 font-bold text-xs uppercase">
                   <tr>
-                    <th className="px-4 py-3 w-[35%]">Product</th> 
+                    {/* 🚀 Vendor ID 컬럼 추가 및 전체 비율 조정 */}
+                    <th className="px-4 py-3 w-[15%]">Vendor ID</th> 
+                    <th className="px-4 py-3 w-[25%]">Product</th> 
                     <th className="px-4 py-3 w-[8%]">Unit</th>     
-                    <th className="px-4 py-3 w-[10%] text-right bg-slate-100/50">Base</th>
-                    <th className="px-4 py-3 w-[10%] text-right text-blue-700">Net</th>   
+                    <th className="px-4 py-3 w-[9%] text-right bg-slate-100/50">Base</th>
+                    <th className="px-4 py-3 w-[9%] text-right text-blue-700">Net</th>   
                     <th className="px-4 py-3 w-[8%] text-right">Disc %</th> 
                     <th className="px-4 py-3 w-[8%] text-center">Qty</th>   
-                    <th className="px-4 py-3 w-[12%] text-right">Total</th>
+                    <th className="px-4 py-3 w-[14%] text-right">Total</th>
                     <th className="w-[4%]"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {items.map((item, idx) => (
-                    <tr key={idx} className="hover:bg-slate-50/50">
-                      <td className="p-2">
-                        <CreatableSelect
-                          options={productOptions}
-                          value={{ id: item.productId, name: "" }} 
-                          onChange={(val) => handleProductChange(idx, val)}
-                          placeholder="Search product..."
-                          className="w-full min-w-[250px]"
-                          allowCreate={false} 
-                          onDropdownOpen={() => handleProductDropdownOpen(idx)}
-                        />
-                      </td>
-                      <td className="p-2">
-                        <select 
-                          className="w-full p-2 bg-slate-50 border border-slate-200 rounded text-center font-medium outline-none text-xs"
-                          value={item.unit}
-                          onChange={(e) => handleUnitChange(idx, e.target.value)}
-                        >
-                          <option value="CTN">CTN</option>
-                          <option value="PACK">PK</option>
-                          {item.unit && item.unit !== "CTN" && item.unit !== "PACK" && (
-                              <option value={item.unit}>{item.unit}</option>
-                          )}
-                        </select>
-                      </td>
-                      <td className="p-2 text-right text-slate-400 text-xs line-through decoration-slate-300">
-                        ${item.basePrice.toFixed(2)}
-                      </td>
-                      <td className="p-2 text-right font-bold text-blue-700 text-sm">
-                        ${item.unitPrice.toFixed(2)}
-                      </td>
-                      <td className="p-2">
-                        <Input 
-                          type="number" min="0" max="100"
-                          className="text-right h-9 text-xs border-blue-100 focus:border-blue-500 font-bold pr-2 bg-blue-50/50 text-blue-700"
-                          value={item.discountRate}
-                          onChange={(e) => handleDiscountChange(idx, Number(e.target.value))}
-                        />
-                      </td>
-                      <td className="p-2">
-                        <Input type="number" min="1" className="text-center h-9" value={item.quantity} onChange={(e) => updateItem(idx, "quantity", Number(e.target.value))} />
-                      </td>
-                      <td className="px-4 py-3 text-right font-bold text-slate-900">
-                        ${(item.quantity * item.unitPrice).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                      </td>
-                      <td className="p-2 text-center">
-                        <button onClick={() => removeItem(idx)} className="text-slate-400 hover:text-red-500">
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {items.map((item, idx) => {
+                    // 🚀 선택된 상품의 벤더 아이디를 찾아서 매핑합니다.
+                    const product = allProducts.find(p => p.id === item.productId);
+                    const vendorId = product?.vendor_product_id || "-";
+
+                    return (
+                      <tr key={idx} className="hover:bg-slate-50/50">
+                        {/* 🚀 Vendor ID 표시 셀 */}
+                        <td className="px-4 py-2 font-mono text-[13px] text-slate-500">
+                          {vendorId}
+                        </td>
+                        <td className="p-2">
+                          <CreatableSelect
+                            options={productOptions}
+                            value={{ id: item.productId, name: "" }} 
+                            onChange={(val) => handleProductChange(idx, val)}
+                            placeholder="Search product..."
+                            className="w-full min-w-[200px]"
+                            allowCreate={false} 
+                            onDropdownOpen={() => handleProductDropdownOpen(idx)}
+                          />
+                        </td>
+                        <td className="p-2">
+                          <select 
+                            className="w-full p-2 bg-slate-50 border border-slate-200 rounded text-center font-medium outline-none text-xs"
+                            value={item.unit}
+                            onChange={(e) => handleUnitChange(idx, e.target.value)}
+                          >
+                            <option value="CTN">CTN</option>
+                            <option value="PACK">PK</option>
+                            {item.unit && item.unit !== "CTN" && item.unit !== "PACK" && (
+                                <option value={item.unit}>{item.unit}</option>
+                            )}
+                          </select>
+                        </td>
+                        <td className="p-2 text-right text-slate-400 text-xs line-through decoration-slate-300">
+                          ${item.basePrice.toFixed(2)}
+                        </td>
+                        <td className="p-2 text-right font-bold text-blue-700 text-sm">
+                          ${item.unitPrice.toFixed(2)}
+                        </td>
+                        <td className="p-2">
+                          <Input 
+                            type="number" min="0" max="100"
+                            className="text-right h-9 text-xs border-blue-100 focus:border-blue-500 font-bold pr-2 bg-blue-50/50 text-blue-700"
+                            value={item.discountRate}
+                            onChange={(e) => handleDiscountChange(idx, Number(e.target.value))}
+                          />
+                        </td>
+                        <td className="p-2">
+                          <Input type="number" min="1" className="text-center h-9" value={item.quantity} onChange={(e) => updateItem(idx, "quantity", Number(e.target.value))} />
+                        </td>
+                        <td className="px-4 py-3 text-right font-bold text-slate-900">
+                          ${(item.quantity * item.unitPrice).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        </td>
+                        <td className="p-2 text-center">
+                          <button onClick={() => removeItem(idx)} className="text-slate-400 hover:text-red-500">
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
               <div className="bg-slate-50 p-2 border-t border-slate-200">
@@ -662,7 +651,6 @@ export default function QuotationForm({ quotationId }: QuotationFormProps) {
                 {loading ? (isEditMode ? "Updating..." : "Saving...") : <><Save className="w-4 h-4 mr-2" /> {isEditMode ? "Update Quotation" : "Save Quotation"}</>}
               </Button>
               
-              {/* New 모드일 때만 Save & New 버튼 표시 */}
               {!isEditMode && (
                 <Button onClick={() => handleSave(false)} disabled={loading} variant="outline" className="w-full border-slate-300 text-slate-700 h-10 text-sm font-bold hover:bg-slate-50">
                   {loading ? "Saving..." : <><RefreshCw className="w-4 h-4 mr-2" /> Save & New</>}

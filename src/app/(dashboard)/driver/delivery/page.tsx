@@ -1,13 +1,13 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { GoogleMap, DirectionsRenderer, Marker, TrafficLayer, InfoWindow, useJsApiLoader } from '@react-google-maps/api'; 
 import { 
   Phone, Check, Navigation, Package, Camera, X, Loader2, 
   ArrowUpDown, Play, Unlock, Save, Home, 
   Sparkles, Building2, MousePointerClick, Flag, Circle,
-  MessageSquareText, MapPin, ListOrdered, Map as MapIcon, RefreshCw, ImageIcon, Pencil
+  MessageSquareText, MapPin, ListOrdered, MapIcon, RefreshCw, ImageIcon, Pencil, ArrowDown
 } from "lucide-react";
 import {
   DndContext, 
@@ -51,7 +51,7 @@ interface DeliveryItem {
   contact_name?: string; 
   customer_pw?: string; 
   total_amount?: number; 
-  proof_url?: string; // 🚀 사진 다시보기를 위해 추가
+  proof_url?: string;
   delivery_address: string;
   phone?: string;
   status: string;
@@ -105,6 +105,104 @@ const DEFAULT_CENTER = { lat: -37.8136, lng: 144.9631 };
 const MAP_CONTAINER_STYLE = { width: '100%', height: '100%' };
 const MAP_OPTIONS = { zoomControl: false, streetViewControl: false, mapTypeControl: false, fullscreenControl: false };
 const DIR_OPTIONS = { suppressMarkers: true, preserveViewport: false };
+
+// 🚀 [추가] 아이폰 당겨서 새로고침(Pull-to-Refresh) 래퍼 컴포넌트
+function PullToRefreshWrapper({ onRefresh, children }: { onRefresh: () => Promise<void>, children: React.ReactNode }) {
+  const [startY, setStartY] = useState(0);
+  const [pulling, setPulling] = useState(false);
+  const [pullDistance, setPullDistance] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const PULL_THRESHOLD = 80;
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (containerRef.current && containerRef.current.scrollTop <= 0) {
+      setStartY(e.touches[0].clientY);
+      setPulling(true);
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!pulling || refreshing) return;
+    if (containerRef.current && containerRef.current.scrollTop <= 0) {
+      const currentY = e.touches[0].clientY;
+      const distance = currentY - startY;
+      if (distance > 0) {
+        setPullDistance(Math.min(distance * 0.4, PULL_THRESHOLD + 20));
+      }
+    }
+  };
+
+  const handleTouchEnd = async () => {
+    if (!pulling) return;
+    setPulling(false);
+    if (pullDistance >= PULL_THRESHOLD && !refreshing) {
+      setRefreshing(true);
+      setPullDistance(50);
+      try {
+        await onRefresh();
+      } finally {
+        setRefreshing(false);
+        setPullDistance(0);
+      }
+    } else {
+      setPullDistance(0);
+    }
+  };
+
+  // iOS Safari의 기본 오버스크롤 동작 방지 (부드러운 당김 효과를 위해)
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleTouchMoveNative = (e: TouchEvent) => {
+      if (!pulling || refreshing) return;
+      if (container.scrollTop <= 0) {
+        const currentY = e.touches[0].clientY;
+        const distance = currentY - startY;
+        if (distance > 0 && e.cancelable) {
+          e.preventDefault(); 
+        }
+      }
+    };
+
+    container.addEventListener('touchmove', handleTouchMoveNative, { passive: false });
+    return () => container.removeEventListener('touchmove', handleTouchMoveNative);
+  }, [pulling, refreshing, startY]);
+
+  return (
+    <div
+      ref={containerRef}
+      className="flex-1 overflow-y-auto custom-scrollbar pb-6 relative"
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+    >
+      <div
+        className="absolute w-full flex justify-center items-center transition-all duration-200 z-50 pointer-events-none"
+        style={{
+          top: "-50px",
+          transform: `translateY(${pullDistance}px)`,
+          opacity: Math.min(pullDistance / PULL_THRESHOLD, 1)
+        }}
+      >
+        <div className="bg-white rounded-full shadow-md p-2 flex items-center justify-center">
+          {refreshing ? (
+            <Loader2 className="w-5 h-5 text-emerald-500 animate-spin" />
+          ) : (
+            <ArrowDown
+              className={cn("w-5 h-5 text-slate-400 transition-transform", pullDistance >= PULL_THRESHOLD ? "rotate-180 text-emerald-500" : "")}
+            />
+          )}
+        </div>
+      </div>
+      <div className="transition-transform duration-200 min-h-full" style={{ transform: `translateY(${pullDistance}px)` }}>
+        {children}
+      </div>
+    </div>
+  );
+}
 
 export default function DriverDashboardPage() {
   const supabase = createClient();
@@ -174,7 +272,6 @@ export default function DriverDashboardPage() {
   const [targetId, setTargetId] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
 
-  // 🚀 완료된 사진 다시보기용 상태
   const [viewProofUrl, setViewProofUrl] = useState<string | null>(null);
 
   const [dailyMemo, setDailyMemo] = useState(""); 
@@ -276,7 +373,6 @@ export default function DriverDashboardPage() {
           setCurrentUserName(authUserName);
           const today = getMelbourneDate();
           
-          // 🚀 [수정] proof_url 추가 조회
           const { data: invoiceData, error: invoiceError } = await supabase.from('invoices').select(`
               id, invoice_to, memo, total_amount, proof_url, status, is_completed, delivery_run, delivery_order, driver_id, invoice_date, customer_id,
               customers ( contact_name, customer_pw, mobile, delivery_address, delivery_state, delivery_suburb, delivery_postcode, delivery_lat, delivery_lng, lat, lng )
@@ -302,7 +398,7 @@ export default function DriverDashboardPage() {
                       contact_name: c?.contact_name || "",
                       customer_pw: c?.customer_pw || "", 
                       total_amount: item.total_amount || 0, 
-                      proof_url: item.proof_url || null, // 🚀 사진 URL 추가
+                      proof_url: item.proof_url || null,
                       delivery_address: `${c?.delivery_address || ''}, ${c?.delivery_suburb || ''}`.replace(/^, /, ""),
                       phone: c?.mobile || "", 
                       status: item.status, 
@@ -606,7 +702,6 @@ export default function DriverDashboardPage() {
 
         if (dbError) throw dbError;
 
-        // 화면 상의 proof_url 업데이트
         setDeliveries(prev => prev.map(d => d.id === currentTargetId ? { ...d, proof_url: publicUrl } : d));
 
     } catch (error: any) {
@@ -650,7 +745,6 @@ export default function DriverDashboardPage() {
           <input type="file" accept="image/*" capture="environment" ref={cameraInputRef} className="hidden" onChange={handleFileChange} />
           <input type="file" accept="image/*" ref={galleryInputRef} className="hidden" onChange={handleFileChange} />
           
-          {/* 업로드 전 미리보기 모달 */}
           {previewUrl && (
             <div className="fixed inset-0 z-[100] bg-black/95 flex flex-col animate-in fade-in duration-200 h-[100dvh]">
                 <div className="shrink-0 flex justify-between items-center p-4 text-white">
@@ -673,7 +767,6 @@ export default function DriverDashboardPage() {
             </div>
           )}
 
-          {/* 🚀 완료된 사진 다시보기 모달 */}
           {viewProofUrl && (
             <div className="fixed inset-0 z-[110] bg-black/95 flex flex-col animate-in fade-in duration-200 h-[100dvh]">
                 <div className="shrink-0 flex justify-between items-center p-4 text-white">
@@ -704,7 +797,9 @@ export default function DriverDashboardPage() {
 
           <div className="flex-1 relative overflow-hidden bg-slate-50">
               <div className={cn("absolute inset-0 flex flex-col overflow-hidden bg-slate-50 transition-opacity duration-200", activeTab === 'list' ? "z-10 opacity-100" : "z-0 opacity-0 pointer-events-none")}>
-                  <div className="flex-1 overflow-y-auto custom-scrollbar pb-6">
+                  
+                  {/* 🚀 당겨서 새로고침 래퍼 적용 🚀 */}
+                  <PullToRefreshWrapper onRefresh={async () => { await fetchDeliveryData(true); }}>
                       <div className="p-4 space-y-3">
                           <div className="grid grid-cols-2 gap-3 max-w-4xl mx-auto w-full">
                               <div className="bg-white border border-slate-200 rounded-2xl p-3 flex flex-col gap-1 shadow-sm cursor-pointer hover:bg-slate-50" onClick={() => { setModalTarget('start'); setIsDestModalOpen(true); }}><div className="flex items-center gap-2"><Flag className="w-3 h-3 text-blue-600" /><span className="text-[10px] font-bold text-slate-400 uppercase">Start</span></div><div className="text-xs font-bold text-slate-700 truncate">{startDestType === 'company' ? 'Company' : startDestType === 'home' ? 'Home' : 'Custom'}</div></div>
@@ -741,20 +836,20 @@ export default function DriverDashboardPage() {
                                                 setIsPhotoOptionModalOpen(true); 
                                             }} 
                                             onNavigate={() => {
-                                                window.location.href = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(item.delivery_address)}`;
+                                                window.location.href = `http://maps.google.com/maps?daddr=${encodeURIComponent(item.delivery_address)}`;
                                             }} 
                                             onCall={() => item.phone && (window.location.href = `tel:${item.phone}`)} 
                                             onMemo={() => handleOpenItemMemo(item.invoice_to)} 
                                             onOpenItems={() => handleOpenItems(item)}
                                             onUpdateLocation={() => handleUpdateLocation(item.id, item.customer_id)} 
-                                            onViewProof={(url: string) => setViewProofUrl(url)} // 🚀 뷰어 핸들러 전달
+                                            onViewProof={(url: string) => setViewProofUrl(url)}
                                           />;
                                       })}
                                   </SortableContext>
                               </DndContext>
                           )}
                       </div>
-                  </div>
+                  </PullToRefreshWrapper>
               </div>
 
               {/* 🗺️ MAP VIEW */}
@@ -811,9 +906,9 @@ export default function DriverDashboardPage() {
                                   >
                                       {activeMarkerId === inv.id && (
                                           <InfoWindow 
-                                            position={leg.end_location} 
-                                            onCloseClick={() => setActiveMarkerId(null)} 
-                                            options={{ disableAutoPan: true, pixelOffset: new window.google.maps.Size(0, -30) }}
+                                              position={leg.end_location} 
+                                              onCloseClick={() => setActiveMarkerId(null)} 
+                                              options={{ disableAutoPan: true, pixelOffset: new window.google.maps.Size(0, -30) }}
                                           >
                                               <div style={{ padding: '4px 8px', fontFamily: 'sans-serif', maxWidth: '200px' }}>
                                                   <div style={{ fontWeight: 'bold', fontSize: '14px', color: '#1e293b' }}>{inv.invoice_to}</div>
@@ -921,7 +1016,6 @@ export default function DriverDashboardPage() {
                           </div>
                           <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
                               <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Total Items</p>
-                              {/* 🚀 Types, CTN, Pkt 정보 모두 표시 */}
                               <div className="text-[13px] font-bold text-slate-700 flex items-center gap-1.5 flex-wrap leading-tight mt-0.5">
                                   <span className="text-blue-600 bg-blue-50 px-1.5 rounded">{getTotals().totalItems} Types</span>
                                   <span className="text-slate-300">|</span>
@@ -1039,7 +1133,6 @@ function SortableItem({ id, item, index, isActive, isDone, isEditing, dailyMemo,
         <div ref={setNodeRef} style={style} className="bg-slate-50 border p-4 rounded-xl opacity-70 flex flex-col shadow-sm transition-all">
             <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3 overflow-hidden">
-                    {/* 🚀 완료 상태 체크박스: 사진이 있으면 초록색 클릭 버튼, 없으면 일반 회색 버튼 */}
                     <button 
                         onClick={() => {
                             if (item.proof_url) onViewProof(item.proof_url);

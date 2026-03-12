@@ -271,6 +271,7 @@ interface ProductMaster {
     id: string; 
     product_name: string; 
     vendor_product_id?: string;
+    buy_price?: number; // 🚀 원가 필드
     sell_price_ctn: number; 
     sell_price_pack: number; 
     total_pack_ctn?: number; 
@@ -282,7 +283,8 @@ interface ProductMaster {
     is_active?: boolean;
 } 
 interface AllowedProduct { id: string; product_id: string; discount_ctn: number; discount_pack: number; }
-interface InvoiceItem { productId: string; unit: string; quantity: number; basePrice: number; discountRate: number; unitPrice: number; defaultUnitName?: string; }
+// 🚀 InvoiceItem 인터페이스에 unitCost 추가
+interface InvoiceItem { productId: string; unit: string; quantity: number; unitCost?: number; basePrice: number; discountRate: number; unitPrice: number; defaultUnitName?: string; }
 
 interface InvoiceFormProps {
   invoiceId?: string; 
@@ -328,8 +330,9 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
   const [availableCredit, setAvailableCredit] = useState(0); 
   
   const [originalItems, setOriginalItems] = useState<InvoiceItem[]>([]);
+  // 🚀 초기 아이템 데이터에 unitCost 포함
   const [items, setItems] = useState<InvoiceItem[]>([
-    { productId: "", unit: "CTN", quantity: 1, basePrice: 0, discountRate: 0, unitPrice: 0 }
+    { productId: "", unit: "CTN", quantity: 1, unitCost: 0, basePrice: 0, discountRate: 0, unitPrice: 0 }
   ]);
 
   // 1. Initial Load 
@@ -372,8 +375,23 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
             let unit = item.unit;
             if (!unit) { const match = item.description.match(/\((CTN|PACK)\)$/); unit = match ? match[1] : "CTN"; }
             const prod = item.products; 
+            
+            // 🚀 불러올 때 원가 계산
+            let cost = prod?.buy_price || 0;
+            if (unit !== "CTN" && !unit.toLowerCase().includes("carton")) {
+                const packsPerCtn = Math.max(1, prod?.total_pack_ctn || 1);
+                cost = cost / packsPerCtn;
+            }
+
             return {
-                productId: item.product_id, unit: unit, quantity: item.quantity, basePrice: item.base_price, discountRate: item.discount, unitPrice: item.unit_price, defaultUnitName: prod?.product_units?.unit_name || "CTN"
+                productId: item.product_id, 
+                unit: unit, 
+                quantity: item.quantity, 
+                unitCost: cost, // 🚀 원가 데이터 세팅
+                basePrice: item.base_price, 
+                discountRate: item.discount, 
+                unitPrice: item.unit_price, 
+                defaultUnitName: prod?.product_units?.unit_name || "CTN"
             };
           });
           setItems(loadedItems);
@@ -543,10 +561,21 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
   const customerOptions = useMemo(() => customers.map(c => ({ id: c.id, label: c.name })), [customers]);
 
-  const applyPriceLogic = (index: number, productId: string, unit: string, basePriceInput: number, discountRateInput: number, defaultUnitName?: string) => {
+  // 🚀 가격 계산 시 원가도 함께 업데이트 할 수 있도록 파라미터 추가
+  const applyPriceLogic = (index: number, productId: string, unit: string, basePriceInput: number, discountRateInput: number, defaultUnitName?: string, cost?: number) => {
     const netPrice = roundAmount(basePriceInput - (basePriceInput * (discountRateInput / 100)));
     const newItems = [...items];
-    newItems[index] = { ...newItems[index], productId, unit, basePrice: basePriceInput, discountRate: discountRateInput, unitPrice: netPrice, defaultUnitName: defaultUnitName || newItems[index].defaultUnitName };
+    const currentItem = newItems[index];
+    newItems[index] = { 
+        ...currentItem, 
+        productId, 
+        unit, 
+        basePrice: basePriceInput, 
+        discountRate: discountRateInput, 
+        unitPrice: netPrice, 
+        defaultUnitName: defaultUnitName || currentItem.defaultUnitName,
+        unitCost: cost !== undefined ? cost : currentItem.unitCost // 🚀 원가 유지 또는 업데이트
+    };
     setItems(newItems);
   };
 
@@ -561,7 +590,15 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     const isCtn = unitToSet === "CTN";
     const disc = ap ? (isCtn ? ap.discount_ctn : ap.discount_pack) : 0;
     const base = isCtn ? p.sell_price_ctn : p.sell_price_pack;
-    applyPriceLogic(index, productId, unitToSet, base, disc, defUnitName);
+    
+    // 🚀 원가 계산
+    let cost = p.buy_price || 0;
+    if (!isCtn) {
+        const packsPerCtn = Math.max(1, p.total_pack_ctn || 1);
+        cost = cost / packsPerCtn;
+    }
+
+    applyPriceLogic(index, productId, unitToSet, base, disc, defUnitName, cost);
   };
 
   const handleUnitChange = (index: number, unit: string) => {
@@ -572,17 +609,31 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       const isCtn = unit === "CTN";
       const disc = ap ? (isCtn ? ap.discount_ctn : ap.discount_pack) : 0;
       const base = isCtn ? p.sell_price_ctn : p.sell_price_pack;
-      applyPriceLogic(index, item.productId, unit, base, disc);
-    } else { const newItems = [...items]; newItems[index].unit = unit; setItems(newItems); }
+
+      // 🚀 Unit(CTN/PKT) 변경 시 원가 재계산
+      let cost = p.buy_price || 0;
+      if (!isCtn) {
+          const packsPerCtn = Math.max(1, p.total_pack_ctn || 1);
+          cost = cost / packsPerCtn;
+      }
+
+      applyPriceLogic(index, item.productId, unit, base, disc, undefined, cost);
+    } else { 
+      const newItems = [...items]; 
+      newItems[index].unit = unit; 
+      setItems(newItems); 
+    }
   };
 
   const handleDiscountChange = (index: number, newRate: number) => {
     const item = items[index]; if (!item.productId) return;
     applyPriceLogic(index, item.productId, item.unit, item.basePrice, newRate);
   };
+  
   const updateItem = (index: number, field: keyof InvoiceItem, value: any) => { const newItems = [...items]; newItems[index] = { ...newItems[index], [field]: value }; setItems(newItems); };
   const removeItem = (index: number) => { if (items.length > 1) setItems(items.filter((_, i) => i !== index)); };
-  const addItem = () => setItems([...items, { productId: "", unit: "CTN", quantity: 1, basePrice: 0, discountRate: 0, unitPrice: 0 }]);
+  // 🚀 새 아이템 추가 시 unitCost 0으로 초기화
+  const addItem = () => setItems([...items, { productId: "", unit: "CTN", quantity: 1, unitCost: 0, basePrice: 0, discountRate: 0, unitPrice: 0 }]);
   const handleProductClick = (index: number) => { if (index === items.length - 1) addItem(); };
 
   const subTotal = roundAmount(items.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0));
@@ -748,15 +799,56 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       const customerName = customers.find(c => c.id === selectedCustomerId)?.name || "Customer";
       let targetId = invoiceId;
 
-      if (isEditMode) {
+      if (isEditMode && targetId) {
+          const isCreditMemo = targetId.startsWith("CR-");
+
+          const updatePayload: any = { 
+              customer_id: selectedCustomerId, 
+              invoice_to: customerName, 
+              invoice_date: invoiceDate, 
+              due_date: dueDate, 
+              total_amount: grandTotal, 
+              subtotal: subTotal, 
+              gst_total: gstTotal, 
+              updated_who: currentUserName, 
+              memo: memo, 
+              driver_id: currentDriverId, 
+              is_pickup: isPickup 
+          };
+
+          if (isCreditMemo) {
+              updatePayload.paid_amount = grandTotal;
+          }
+
           const [ , invUpdateRes, invDelRes ] = await Promise.all([
               originalItems.length > 0 ? updateInventory(originalItems, true) : Promise.resolve(),
-              supabase.from("invoices").update({ customer_id: selectedCustomerId, invoice_to: customerName, invoice_date: invoiceDate, due_date: dueDate, total_amount: grandTotal, subtotal: subTotal, gst_total: gstTotal, updated_who: currentUserName, memo: memo, driver_id: currentDriverId, is_pickup: isPickup }).eq("id", invoiceId),
-              supabase.from("invoice_items").delete().eq("invoice_id", invoiceId)
+              supabase.from("invoices").update(updatePayload).eq("id", targetId),
+              supabase.from("invoice_items").delete().eq("invoice_id", targetId)
           ]);
           
           if (invUpdateRes && invUpdateRes.error) throw invUpdateRes.error; 
           if (invDelRes && invDelRes.error) throw invDelRes.error;
+
+          if (isCreditMemo) {
+              const { data: existingPayment } = await supabase
+                  .from("payments")
+                  .select("amount, unallocated_amount")
+                  .eq("id", targetId)
+                  .single();
+              
+              if (existingPayment) {
+                  const newCreditAmount = Math.abs(grandTotal);
+                  const allocatedAmount = existingPayment.amount - existingPayment.unallocated_amount;
+                  const newUnallocated = newCreditAmount - allocatedAmount;
+                  
+                  const { error: payErr } = await supabase.from("payments").update({
+                      amount: newCreditAmount,
+                      unallocated_amount: Math.max(0, newUnallocated)
+                  }).eq("id", targetId);
+                  
+                  if (payErr) throw payErr;
+              }
+          }
       } else {
           const { data: inv, error: err1 } = await supabase.from("invoices").insert({ customer_id: selectedCustomerId, invoice_to: customerName, invoice_date: invoiceDate, due_date: dueDate, total_amount: grandTotal, paid_amount: 0, subtotal: subTotal, gst_total: gstTotal, created_who: currentUserName, updated_who: currentUserName, status: "Unpaid", memo: memo, driver_id: currentDriverId, is_pickup: isPickup }).select().single();
           if (err1 || !inv) throw err1 || new Error("Invoice creation failed");
@@ -808,7 +900,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
   const resetForm = () => {
     setSelectedCustomerId(""); setInvoiceDate(today); setDueDate(""); setMemo("");
-    setItems([{ productId: "", unit: "CTN", quantity: 1, basePrice: 0, discountRate: 0, unitPrice: 0 }]);
+    setItems([{ productId: "", unit: "CTN", quantity: 1, unitCost: 0, basePrice: 0, discountRate: 0, unitPrice: 0 }]);
     setShowAllProducts(false); setAutoAddProduct(false); setAvailableCredit(0); setCurrentDriverId(null); 
     setIsPickup(false); setCustomerStats({ totalOverdue: 0, oldestInvoiceDate: null });
     setAllProducts([]); 
@@ -897,14 +989,16 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                 <thead className="bg-slate-50 border-b border-slate-200 text-slate-700 font-bold text-xs uppercase">
                   <tr>
                     <th className="px-4 py-3 w-[3%] text-center text-slate-400">#</th>
-                    <th className="px-4 py-3 w-[32%]">Product</th>
-                    <th className="px-4 py-3 w-[8%]">Unit</th>
+                    <th className="px-4 py-3 w-[26%]">Product</th>
+                    <th className="px-4 py-3 w-[8%] text-center">Unit</th>
+                    {/* 🚀 Cost 헤더 추가 */}
+                    <th className="px-4 py-3 w-[10%] text-right text-orange-600">Cost</th>
                     <th className="px-4 py-3 w-[10%] text-right bg-slate-100/50">Base</th>
                     <th className="px-4 py-3 w-[10%] text-right text-blue-700">Net</th>
                     <th className="px-4 py-3 w-[8%] text-right">Disc %</th>
                     <th className="px-4 py-3 w-[8%] text-center">Qty</th>
                     <th className="px-4 py-3 w-[12%] text-right">Total</th>
-                    <th className="w-[4%]"></th>
+                    <th className="w-[5%]"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -924,7 +1018,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                                 onClick={() => handleProductClick(idx)} 
                                 onSearch={handleSearchProducts} 
                                 onRemoveAllowed={showAllProducts ? undefined : handleRemoveAllowedProduct} 
-                                // 🚀 [핵심 수정] 상품 선택이 완료되면 바로 옆의 unit select 요소로 포커스 이동!
                                 onSelectComplete={() => {
                                   const unitSelect = document.getElementById(`unit-select-${idx}`);
                                   if (unitSelect) unitSelect.focus();
@@ -943,14 +1036,12 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                             />
                           </td>
                           <td className="p-2">
-                              {/* 🚀 Unit <select>에 ID 부여 및 포커스 스타일 적용 */}
                               <select 
                                 id={`unit-select-${idx}`}
                                 className={`w-full p-2 border border-slate-200 rounded text-center font-medium outline-none focus:ring-2 focus:ring-slate-900 focus:border-transparent transition-all text-xs ${!isCtnOrPack && item.productId ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : 'bg-slate-50 hover:bg-white'}`} 
                                 value={item.unit} 
                                 onChange={(e) => handleUnitChange(idx, e.target.value as any)} 
                                 disabled={!isCtnOrPack && !!item.productId}
-                                // 🚀 Enter 쳤을 때 수량(Qty)으로 넘어가게 하기
                                 onKeyDown={(e) => {
                                     if (e.key === 'Enter') {
                                         e.preventDefault();
@@ -961,18 +1052,20 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                                 {isCtnOrPack ? (<><option value="CTN">CTN</option><option value="PACK">PK</option></>) : (<option value={item.unit}>{item.unit}</option>)}
                               </select>
                           </td>
+                          {/* 🚀 Cost 데이터 표시 */}
+                          <td className="p-2 text-right font-medium text-orange-600 text-xs">
+                              ${(item.unitCost || 0).toFixed(2)}
+                          </td>
                           <td className="p-2 text-right text-slate-400 text-xs line-through decoration-slate-300">${item.basePrice.toFixed(2)}</td>
                           <td className="p-2 text-right font-bold text-blue-700 text-sm">${item.unitPrice.toFixed(2)}</td>
                           <td className="p-2 relative"><Input id={`disc-input-${idx}`} type="number" min="0" max="100" className="text-right h-9 text-xs border-blue-100 focus:border-blue-500 font-bold pr-2 bg-blue-50/50 text-blue-700" value={item.discountRate} onChange={(e) => handleDiscountChange(idx, Number(e.target.value))} /></td>
                           <td className="p-2">
-                              {/* 🚀 Qty <input>에 ID 부여 */}
                               <Input 
                                 id={`qty-input-${idx}`} 
                                 type="number" 
                                 step="1" 
                                 onKeyDown={(e) => { 
                                     if (e.key === '.' || e.key === 'e') e.preventDefault(); 
-                                    // 🚀 Qty에서 엔터치면 다음 줄 상품검색창 생성 후 이동 (선택 옵션)
                                     if (e.key === 'Enter') {
                                         e.preventDefault();
                                         if (idx === items.length - 1) {

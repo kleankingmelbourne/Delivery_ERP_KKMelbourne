@@ -37,8 +37,11 @@ export default function DriverLayout({ children }: DriverLayoutProps) {
   const [isMemoSaving, setIsMemoSaving] = useState(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  
+  // 🚀 [추가] 이전 할당되지 않은(새로운) 인보이스 개수를 기억하는 ref
+  const prevUnassignedCount = useRef<number>(0);
 
-  // 🚀 [중요 수정] 실시간 통신 폭주 방지(Debouncing) 적용
+  // 🚀 [중요 수정] 실시간 통신 폭주 방지 및 새 알림 로직 개선
   useEffect(() => {
     let isMounted = true;
     let channel: any = null;
@@ -54,12 +57,15 @@ export default function DriverLayout({ children }: DriverLayoutProps) {
         .eq('delivery_order', 0); 
       
       if (isMounted && count !== null) {
-        setHasNewDelivery(count > 0); 
+        // 🚀 [수정] 이전 개수보다 현재 개수가 많아졌을 때만 새 알림 띄우기
+        if (count > prevUnassignedCount.current) {
+            setHasNewDelivery(true);
+        }
+        prevUnassignedCount.current = count;
       }
     };
 
     const handleRealtimeUpdate = (userId: string) => {
-      // 이벤트 연속 발생 시 타이머 초기화 후 0.3초 뒤 1번만 실행
       clearTimeout(timeoutId);
       timeoutId = setTimeout(() => {
         checkNewDeliveries(userId);
@@ -71,7 +77,16 @@ export default function DriverLayout({ children }: DriverLayoutProps) {
       if (!user) return;
       setCurrentUserId(user.id); 
       
-      await checkNewDeliveries(user.id);
+      // 초기 로드 시 개수 세팅 (알림은 안 띄움)
+      const today = getMelbourneDate();
+      const { count } = await supabase
+        .from('invoices')
+        .select('*', { count: 'exact', head: true }) 
+        .eq('driver_id', user.id)
+        .eq('invoice_date', today)
+        .eq('delivery_order', 0);
+      
+      if (count !== null) prevUnassignedCount.current = count;
 
       channel = supabase.channel('realtime-driver-notifications')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'invoices' }, () => {
@@ -84,7 +99,7 @@ export default function DriverLayout({ children }: DriverLayoutProps) {
 
     return () => {
       isMounted = false;
-      clearTimeout(timeoutId); // 메모리 누수 방지
+      clearTimeout(timeoutId); 
       if (channel) supabase.removeChannel(channel);
     };
   }, [supabase]);
@@ -147,6 +162,12 @@ export default function DriverLayout({ children }: DriverLayoutProps) {
     }
   };
 
+  // 🚀 [추가] 알림 아이콘 클릭 시 알림 끄기 + 새로고침 역할
+  const handleBellClick = () => {
+      setHasNewDelivery(false);
+      // 필요하다면 여기서 화면 데이터를 새로고침하는 로직을 호출할 수도 있습니다.
+  };
+
   return (
     <div className="flex flex-col h-[100dvh] bg-slate-50 relative overflow-hidden">
       
@@ -166,7 +187,8 @@ export default function DriverLayout({ children }: DriverLayoutProps) {
             <NotebookPen className="w-5 h-5" />
           </button>
 
-          <button className="relative p-1">
+          {/* 🚀 [수정] 알림 끄기 이벤트 연결 */}
+          <button className="relative p-1" onClick={handleBellClick} title="Notifications">
             <Bell className="w-5 h-5 text-slate-300 hover:text-white transition-colors" />
             {hasNewDelivery && (
               <span className="absolute top-0 right-0 w-2.5 h-2.5 bg-red-500 rounded-full border border-slate-900 animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.8)]"></span>

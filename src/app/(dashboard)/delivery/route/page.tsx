@@ -7,7 +7,8 @@ import {
   Calendar as CalendarIcon, Truck, Map as MapIcon, Navigation, 
   MapPin, CheckCircle2, User, Loader2, MapPin as WarehouseIcon, Radio,
   Box, X, Circle, FileText, Sparkles, Building2, Home, MousePointerClick, 
-  Save, RotateCcw, Edit2, Check, GripVertical, Printer, ChevronLeft, ChevronRight, ChevronDown
+  Save, RotateCcw, Edit2, Check, GripVertical, Printer, ChevronLeft, ChevronRight, ChevronDown,
+  Key 
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -43,7 +44,13 @@ import {
   PointerSensor,
   useSensor,
   useSensors,
-  DragEndEvent
+  DragEndEvent,
+  pointerWithin,
+  DragOverlay,
+  defaultDropAnimationSideEffects,
+  DragStartEvent,
+  DragOverEvent,
+  DropAnimation
 } from '@dnd-kit/core';
 import {
   arrayMove,
@@ -55,14 +62,28 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 
 // --- Types ---
+interface InvoiceItem {
+  id: string;
+  description: string;
+  quantity: number;
+  unit: string;
+  products?: {
+    product_name?: string;
+    location?: string | null;
+    vendor_product_id: string | null;
+  } | null;
+}
+
 interface Invoice {
   id: string;
   invoice_to: string;
   invoice_date: string;
   delivery_order: number;
   delivery_run: number;
-  driver_id: string;
+  driver_id: string | null;
+  customer_id: string;
   is_completed: boolean;
+  is_pickup?: boolean;
   memo: string | null; 
   customers: {
     name: string;
@@ -73,17 +94,33 @@ interface Invoice {
     delivery_address: string | null;
     delivery_lat: number | null;
     delivery_lng: number | null;
+    in_charge_delivery?: string | null;
+    use_key?: boolean; 
   };
+  invoice_items?: InvoiceItem[];
 }
 
-interface InvoiceItem {
+interface DisplayInvoice extends Invoice {
+  current_driver_id: string | null;
+  current_run: number;
+  is_new_arrival?: boolean;
+}
+
+interface Driver {
   id: string;
-  description: string;
-  quantity: number;
-  unit: string;
-  products?: {
-    vendor_product_id: string | null;
-  } | null;
+  display_name: string | null;
+}
+
+interface DriverColumnState {
+    driver: Driver;
+    run: number;
+    columnId: string;
+}
+
+// 🚀 심플하게 이름과 ID만 유지
+interface KeyInvoiceInfo {
+  id: string;
+  name: string;
 }
 
 interface DriverRouteInfo {
@@ -93,6 +130,7 @@ interface DriverRouteInfo {
     count: number;
     completedCount: number;
     newCount: number; 
+    keyInvoices: KeyInvoiceInfo[]; 
 }
 
 interface LocationData {
@@ -160,6 +198,10 @@ export default function DeliveryRoutePage() {
   
   const [checkedItems, setCheckedItems] = useState<Set<string>>(new Set());
 
+  // 🚀 열쇠 모달 상태
+  const [isKeyDialogOpen, setIsKeyDialogOpen] = useState(false);
+  const [keyDialogData, setKeyDialogData] = useState<{driverName: string, invoices: KeyInvoiceInfo[]} | null>(null);
+
   const [touchStartX, setTouchStartX] = useState<number | null>(null);
   const [touchStartY, setTouchStartY] = useState<number | null>(null);
 
@@ -198,7 +240,7 @@ export default function DeliveryRoutePage() {
     try {
         const { data, error } = await supabase
             .from("invoices")
-            .select(`driver_id, delivery_run, delivery_order, is_completed, profiles:driver_id ( display_name, address, lat, lng, route_prefs )`)
+            .select(`id, driver_id, delivery_run, delivery_order, is_completed, customers ( name, use_key ), profiles:driver_id ( display_name, address, lat, lng, route_prefs )`)
             .eq("invoice_date", selectedDate)
             .neq("status", "Paid")
             .is("is_pickup", false) 
@@ -213,6 +255,7 @@ export default function DeliveryRoutePage() {
             const dId = item.driver_id;
             const profile = Array.isArray(item.profiles) ? item.profiles[0] : item.profiles;
             const dName = profile?.display_name || "Unknown";
+            const customer = Array.isArray(item.customers) ? item.customers[0] : item.customers;
             
             if (!locMap[dId]) {
                 locMap[dId] = {
@@ -226,7 +269,7 @@ export default function DeliveryRoutePage() {
             const run = (item.delivery_run === 0 || item.delivery_run === null) ? 1 : item.delivery_run;
             const key = `${dId}_${run}`;
             
-            if (!groups[key]) groups[key] = { driverId: dId, driverName: dName, run: run, count: 0, completedCount: 0, newCount: 0 };
+            if (!groups[key]) groups[key] = { driverId: dId, driverName: dName, run: run, count: 0, completedCount: 0, newCount: 0, keyInvoices: [] };
             
             groups[key].count += 1;
             
@@ -236,6 +279,13 @@ export default function DeliveryRoutePage() {
             
             if (item.delivery_order === 0 || item.delivery_order === null) {
                 groups[key].newCount += 1;
+            }
+
+            if (customer?.use_key) {
+                groups[key].keyInvoices.push({
+                    id: item.id,
+                    name: customer.name || "Unknown",
+                });
             }
         });
 
@@ -270,7 +320,7 @@ export default function DeliveryRoutePage() {
         .from("invoices")
         .select(`
             id, invoice_to, invoice_date, delivery_order, delivery_run, driver_id, is_completed, memo,
-            customers ( name, suburb, address, lat, lng, delivery_address, delivery_lat, delivery_lng )
+            customers ( name, suburb, address, lat, lng, delivery_address, delivery_lat, delivery_lng, use_key )
         `)
         .eq("invoice_date", selectedDate)
         .eq("driver_id", driverId)
@@ -624,9 +674,25 @@ export default function DeliveryRoutePage() {
                   </div>
                   <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-1.5 truncate">
+                          <div className="flex items-center gap-1.5 truncate pr-1">
                               <span className={cn("font-bold text-sm truncate", isSelected ? "text-emerald-900" : "text-slate-700")}>{route.driverName}</span>
                               {isDone && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
+                              
+                              {/* 🚀 열쇠 카운트 뱃지 표시 */}
+                              {route.keyInvoices.length > 0 && (
+                                  <div
+                                      onClick={(e) => {
+                                          e.stopPropagation();
+                                          setKeyDialogData({ driverName: route.driverName, invoices: route.keyInvoices });
+                                          setIsKeyDialogOpen(true);
+                                      }}
+                                      className="flex items-center gap-0.5 bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full text-[10px] font-bold hover:bg-amber-200 transition-colors shrink-0 cursor-pointer"
+                                      title="View keys required"
+                                  >
+                                      <Key className="w-3 h-3" />
+                                      {route.keyInvoices.length}
+                                  </div>
+                              )}
                           </div>
                           <div onClick={(e) => handlePrintRoute(e, route.driverId, route.run)} className={cn("p-1.5 rounded-md transition-colors cursor-pointer shrink-0", printingRouteKey === key ? "bg-indigo-50" : "text-slate-400 hover:text-indigo-600 hover:bg-indigo-50")}>{printingRouteKey === key ? <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600"/> : <Printer className="w-3.5 h-3.5" />}</div>
                       </div>
@@ -804,6 +870,42 @@ export default function DeliveryRoutePage() {
           ) : (<div className="flex flex-col items-center justify-center h-full text-slate-300"><Truck className="w-16 h-16 mb-4 opacity-10" /><p className="text-sm font-medium">Select a route to view details</p></div>)}
         </div>
       </div>
+
+      {/* 🚀 [수정] 열쇠 필요 고객 모달 (심플하게 이름만 표시) */}
+      <Dialog open={isKeyDialogOpen} onOpenChange={setIsKeyDialogOpen}>
+          <DialogContent className="sm:max-w-md bg-white p-0 overflow-hidden rounded-2xl shadow-xl">
+              <DialogHeader className="bg-amber-50 border-b border-amber-100 p-4">
+                  <DialogTitle className="flex items-center gap-2 text-amber-900 font-black text-lg">
+                      <Key className="w-5 h-5 text-amber-600" />
+                      Keys Required ({keyDialogData?.invoices.length || 0})
+                  </DialogTitle>
+                  <DialogDescription className="text-amber-700/80 font-medium">
+                      {keyDialogData?.driverName} Route
+                  </DialogDescription>
+              </DialogHeader>
+              <div className="p-4 overflow-y-auto max-h-[60vh] space-y-2 bg-slate-50/50">
+                  {keyDialogData?.invoices.map((inv, idx) => (
+                      <div key={inv.id} className="flex items-center p-3 bg-white border border-slate-200 rounded-xl shadow-sm hover:border-amber-300 transition-colors">
+                          <div className="flex items-center gap-3">
+                              <div className="w-6 h-6 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center font-bold text-xs shrink-0">
+                                  {idx + 1}
+                              </div>
+                              <span className="font-bold text-slate-800 text-[15px]">
+                                {inv.name || "Unknown"}
+                              </span>
+                          </div>
+                      </div>
+                  ))}
+                  {keyDialogData?.invoices.length === 0 && (
+                      <div className="text-center text-slate-400 py-10">No keys required for this route.</div>
+                  )}
+              </div>
+              <div className="p-3 border-t border-slate-100 bg-slate-50 flex justify-end">
+                  <Button variant="outline" onClick={() => setIsKeyDialogOpen(false)} className="bg-white hover:bg-slate-100">Close</Button>
+              </div>
+          </DialogContent>
+      </Dialog>
+
     </div>
 
     <Dialog open={isDetailOpen} onOpenChange={setIsDetailOpen}>
@@ -856,7 +958,6 @@ export default function DeliveryRoutePage() {
                                         const isChecked = checkedItems.has(item.id);
                                         const unitLower = (item.unit || '').toLowerCase();
                                         
-                                        // 🚀 [추가] 단위에 따른 불리언 값 계산
                                         const isCtn = unitLower.includes('ctn') || unitLower.includes('carton');
                                         const isPack = unitLower.includes('pack') || unitLower.includes('pkt');
 
@@ -864,7 +965,6 @@ export default function DeliveryRoutePage() {
                                             <tr 
                                                 key={item.id} 
                                                 onClick={() => toggleItemCheck(item.id)} 
-                                                // 🚀 [수정] 조건부로 행 전체 배경색 변경
                                                 className={cn(
                                                     "transition-all cursor-pointer text-[13px] border-b border-white",
                                                     isChecked ? "bg-slate-50 opacity-60 grayscale" : 
@@ -977,10 +1077,19 @@ function SortableInvoiceCard({ invoice, displayNum, isNewInDB, onClick }: { invo
                         displayNum === null ? "bg-amber-100 text-amber-600 border-amber-300" : "bg-white text-slate-700 border-slate-200")}>
                         {isCompleted ? <CheckCircle2 className="w-5 h-5" /> : (displayNum !== null ? displayNum : "!")}
                     </div>
-                    <div className="flex-1 min-w-0">
+                    
+                    <div className="flex-1 min-w-0 py-1">
                         <div className="flex items-center gap-2">
-                            <span className={cn("font-bold text-sm truncate flex items-center gap-2", isCompleted ? "text-slate-400 line-through" : "text-slate-800")}>
+                            <span className={cn("font-bold text-sm truncate flex items-center gap-1.5", isCompleted ? "text-slate-400 line-through" : "text-slate-800")}>
                                 {invoice.customers?.name || invoice.invoice_to || "Unknown"}
+                                
+                                {/* 🚀 [수정] 툴팁 에러 해결: span 으로 감싸기 */}
+                                {invoice.customers?.use_key && (
+                                    <span title="Physical Key Required" className="flex shrink-0">
+                                        <Key className="w-3.5 h-3.5 text-amber-500" />
+                                    </span>
+                                )}
+                                
                                 {isNewInDB && !isCompleted && (
                                     <Badge className="bg-amber-500 text-white text-[9px] h-4 px-1.5 hover:bg-amber-600">NEW</Badge>
                                 )}

@@ -540,7 +540,6 @@ export default function SetDeliveryPage() {
     } else { alert(`${driverToAdd.display_name} is already assigned for Run 1 & 2.`); }
   };
 
-  // 🚀 [수정] 이동(할당/재할당/Unassign) 시 해당 인보이스의 delivery_order를 0으로 강제 초기화합니다.
   const handleLocalMove = (invoiceId: string, targetColumnId: string | null) => {
     setLocalInvoices(prev => prev.map(inv => {
       if (inv.id === invoiceId && inv.is_completed) return inv;
@@ -550,7 +549,7 @@ export default function SetDeliveryPage() {
               current_driver_id: null, 
               current_run: 1, 
               is_new_arrival: true,
-              delivery_order: 0 // 언어사인 시 순서 초기화
+              delivery_order: 0 
           }; 
           
           const lastUnderscoreIndex = targetColumnId.lastIndexOf('_');
@@ -561,8 +560,8 @@ export default function SetDeliveryPage() {
               ...inv, 
               current_driver_id: driverId, 
               current_run: parseInt(runStr) || 1,
-              is_new_arrival: false, // 할당되면 파란 NEW 뱃지는 사라짐
-              delivery_order: 0 // 🚀 [중요] 위치가 바뀌었으므로 배송 경로(Route) 화면에서 NEW로 보이도록 0으로 세팅
+              is_new_arrival: false, 
+              delivery_order: 0 
           };
       }
       return inv;
@@ -591,7 +590,7 @@ export default function SetDeliveryPage() {
             current_driver_id: defaultDriverId, 
             current_run: 1, 
             is_new_arrival: false,
-            delivery_order: 0 // 자동 할당 시에도 순서는 초기화
+            delivery_order: 0 
         };
       }
       return inv;
@@ -630,7 +629,6 @@ export default function SetDeliveryPage() {
         
         let orderToSave = inv.delivery_order;
         
-        // 원본과 비교해서 드라이버가 바뀌었거나, 처음 할당되는 경우 order를 무조건 0으로 설정
         if (
             (original && inv.current_driver_id !== original.current_driver_id) || 
             (original && !original.current_driver_id && inv.current_driver_id)    
@@ -683,7 +681,6 @@ export default function SetDeliveryPage() {
 
   const handleDragStart = (event: DragStartEvent) => { setActiveId(event.active.id as string); };
   
-  // 🚀 [수정] 드래그 앤 드롭 시에도 도착 컬럼이 다르면 delivery_order: 0 적용
   const handleDragOver = (event: DragOverEvent) => {
     const { active, over } = event;
     if (!over) return;
@@ -716,7 +713,7 @@ export default function SetDeliveryPage() {
               ...inv, 
               current_driver_id: targetDriverId, 
               current_run: targetRun,
-              delivery_order: 0 // 드래그로 넘어갈 때도 0으로 초기화
+              delivery_order: 0 
           }; 
           return inv; 
       }));
@@ -914,21 +911,33 @@ function SortableItem(props: any) {
   return <div ref={setNodeRef} style={style} {...attributes} {...listeners} className="touch-none"><SlimInvoiceCard {...props} /></div>;
 }
 
+// 🚀 금액 표시를 위해 SlimInvoiceCard 대폭 수정
 function SlimInvoiceCard({ invoice, columns, currentColumnId, onMove, isOverlay = false }: { invoice: DisplayInvoice; columns: DriverColumnState[]; currentColumnId: string; onMove: (id: string, colId: string | null) => void; isOverlay?: boolean; }) {
   const isCompleted = invoice.is_completed; 
   const isNew = invoice.is_new_arrival;
 
   return (
-    <div className={cn("relative flex items-center justify-between w-full bg-white border-b border-slate-100 px-2 h-7 select-none transition-all duration-500", isOverlay && "shadow-lg ring-1 ring-emerald-500 z-50 rounded-sm bg-white", !isOverlay && isCompleted && "bg-slate-100/80 text-slate-400 pointer-events-none", !isOverlay && !isCompleted && "hover:bg-blue-50/50 transition-colors group", isNew && "bg-blue-100/80 ring-2 ring-inset ring-blue-400 border-blue-400")}>
-      <div className={cn("flex-1 truncate text-xs font-medium leading-none mt-[1px]", isCompleted ? "text-slate-400 line-through" : "text-slate-700")} title={invoice.customers?.name}>
-        {invoice.customers?.name || "Unknown"}
-        {isNew && (<span className="ml-2 inline-flex items-center px-1 py-0.5 rounded text-[8px] font-bold bg-blue-500 text-white animate-pulse">NEW</span>)}
+    <div className={cn("relative flex items-center justify-between w-full bg-white border-b border-slate-100 px-2 py-1.5 min-h-[38px] select-none transition-all duration-500", isOverlay && "shadow-lg ring-1 ring-emerald-500 z-50 rounded-sm bg-white", !isOverlay && isCompleted && "bg-slate-100/80 text-slate-400 pointer-events-none", !isOverlay && !isCompleted && "hover:bg-blue-50/50 transition-colors group", isNew && "bg-blue-100/80 ring-2 ring-inset ring-blue-400 border-blue-400")}>
+      
+      <div className="flex-1 flex flex-col justify-center overflow-hidden pr-2">
+        <div className="flex items-center gap-1.5">
+          <span className={cn("truncate text-xs font-bold leading-tight", isCompleted ? "text-slate-400 line-through" : "text-slate-700")} title={invoice.customers?.name}>
+            {invoice.customers?.name || "Unknown"}
+          </span>
+          {isNew && (<span className="shrink-0 inline-flex items-center px-1 py-0.5 rounded text-[8px] font-bold bg-blue-500 text-white animate-pulse">NEW</span>)}
+        </div>
+        
+        {/* 🚀 인보이스 Total Amount 표시 */}
+        <span className={cn("text-[9px] leading-tight font-medium mt-0.5", isCompleted ? "text-slate-300" : "text-emerald-600")}>
+          ${invoice.total_amount?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || "0.00"}
+        </span>
       </div>
+
       {!isOverlay && !isCompleted && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-4 w-4 shrink-0 text-slate-300 hover:text-blue-600 hover:bg-blue-50 opacity-0 group-hover:opacity-100 transition-opacity p-0" onPointerDown={(e) => e.stopPropagation()}>
-              <MoreHorizontal className="w-3 h-3" />
+            <Button variant="ghost" size="icon" className="h-5 w-5 shrink-0 text-slate-300 hover:text-blue-600 hover:bg-blue-50 opacity-0 group-hover:opacity-100 transition-opacity p-0" onPointerDown={(e) => e.stopPropagation()}>
+              <MoreHorizontal className="w-3.5 h-3.5" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-40">

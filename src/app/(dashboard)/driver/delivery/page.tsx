@@ -7,7 +7,8 @@ import {
   Phone, Check, Navigation, Package, Camera, X, Loader2, 
   ArrowUpDown, Play, Unlock, Save, Home, 
   Sparkles, Building2, MousePointerClick, Flag, Circle,
-  MessageSquareText, MapPin, ListOrdered, MapIcon, RefreshCw, ImageIcon, Pencil, ArrowDown
+  MessageSquareText, MapPin, ListOrdered, MapIcon, RefreshCw, ImageIcon, Pencil, ArrowDown,
+  Key // 🚀 [추가] Key 아이콘 임포트
 } from "lucide-react";
 import {
   DndContext, 
@@ -60,6 +61,7 @@ interface DeliveryItem {
   delivery_order: number; 
   lat?: number;
   lng?: number;
+  use_key?: boolean; // 🚀 [추가] 열쇠 사용 여부
 }
 
 interface RunState {
@@ -106,7 +108,6 @@ const MAP_CONTAINER_STYLE = { width: '100%', height: '100%' };
 const MAP_OPTIONS = { zoomControl: false, streetViewControl: false, mapTypeControl: false, fullscreenControl: false };
 const DIR_OPTIONS = { suppressMarkers: true, preserveViewport: false };
 
-// 🚀 [추가] 아이폰 당겨서 새로고침(Pull-to-Refresh) 래퍼 컴포넌트
 function PullToRefreshWrapper({ onRefresh, children }: { onRefresh: () => Promise<void>, children: React.ReactNode }) {
   const [startY, setStartY] = useState(0);
   const [pulling, setPulling] = useState(false);
@@ -151,7 +152,6 @@ function PullToRefreshWrapper({ onRefresh, children }: { onRefresh: () => Promis
     }
   };
 
-  // iOS Safari의 기본 오버스크롤 동작 방지 (부드러운 당김 효과를 위해)
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -289,6 +289,9 @@ export default function DriverDashboardPage() {
   const [newPw, setNewPw] = useState(""); 
   const [isSavingPw, setIsSavingPw] = useState(false);
 
+  // 🚀 [추가] 열쇠 명단 팝업용 상태
+  const [isKeyDialogOpen, setIsKeyDialogOpen] = useState(false);
+
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -322,6 +325,9 @@ export default function DriverDashboardPage() {
 
   const currentList = deliveries.filter(d => (d.delivery_run === 0 ? 1 : d.delivery_run) === activeRun);
   const activeItem = currentList.find(d => !d.is_completed);
+
+  // 🚀 [추가] 오늘 챙겨야 할 열쇠 명단 추출 (현재 선택된 Run 기준)
+  const keyInvoices = currentList.filter(d => d.use_key);
 
   const handleSetPoint = (type: 'company' | 'home' | 'custom') => {
     if (modalTarget === 'start') {
@@ -373,9 +379,10 @@ export default function DriverDashboardPage() {
           setCurrentUserName(authUserName);
           const today = getMelbourneDate();
           
+          // 🚀 [수정] customers 에서 use_key 정보 가져오기
           const { data: invoiceData, error: invoiceError } = await supabase.from('invoices').select(`
               id, invoice_to, memo, total_amount, proof_url, status, is_completed, delivery_run, delivery_order, driver_id, invoice_date, customer_id,
-              customers ( contact_name, customer_pw, mobile, delivery_address, delivery_state, delivery_suburb, delivery_postcode, delivery_lat, delivery_lng, lat, lng )
+              customers ( contact_name, customer_pw, use_key, mobile, delivery_address, delivery_state, delivery_suburb, delivery_postcode, delivery_lat, delivery_lng, lat, lng )
           `).eq('invoice_date', today).eq('driver_id', user.id).neq('delivery_run', 0).order('delivery_order', { ascending: true });
           
           if (invoiceError) {
@@ -397,6 +404,7 @@ export default function DriverDashboardPage() {
                       memo: item.memo || "", 
                       contact_name: c?.contact_name || "",
                       customer_pw: c?.customer_pw || "", 
+                      use_key: c?.use_key || false, // 🚀 [추가] 열쇠 사용 여부 매핑
                       total_amount: item.total_amount || 0, 
                       proof_url: item.proof_url || null,
                       delivery_address: `${c?.delivery_address || ''}, ${c?.delivery_suburb || ''}`.replace(/^, /, ""),
@@ -787,6 +795,18 @@ export default function DriverDashboardPage() {
                     <h1 className="font-extrabold text-xl text-slate-900 truncate max-w-[200px]">{currentUserName}</h1>
                     {(isBackgroundSyncing || isUploading) && <RefreshCw className="w-4 h-4 text-blue-500 animate-spin" />}
                 </div>
+                {/* 🚀 [추가] 우측 상단 열쇠 뱃지 (클릭 시 팝업 오픈) */}
+                <div className="flex items-center">
+                    {keyInvoices.length > 0 && (
+                        <button
+                            onClick={() => setIsKeyDialogOpen(true)}
+                            className="flex items-center gap-1 text-sm font-black text-amber-700 bg-amber-100 border border-amber-300 px-3 py-1.5 rounded-full shadow-sm hover:bg-amber-200 transition-colors active:scale-95"
+                        >
+                            <Key className="w-4 h-4" />
+                            {keyInvoices.length}
+                        </button>
+                    )}
+                </div>
             </div>
             <div className="px-4 pb-3 flex gap-2 max-w-4xl mx-auto w-full">
                 {[1, 2].map(run => (
@@ -798,7 +818,6 @@ export default function DriverDashboardPage() {
           <div className="flex-1 relative overflow-hidden bg-slate-50">
               <div className={cn("absolute inset-0 flex flex-col overflow-hidden bg-slate-50 transition-opacity duration-200", activeTab === 'list' ? "z-10 opacity-100" : "z-0 opacity-0 pointer-events-none")}>
                   
-                  {/* 🚀 당겨서 새로고침 래퍼 적용 🚀 */}
                   <PullToRefreshWrapper onRefresh={async () => { await fetchDeliveryData(true); }}>
                       <div className="p-4 space-y-3">
                           <div className="grid grid-cols-2 gap-3 max-w-4xl mx-auto w-full">
@@ -836,7 +855,7 @@ export default function DriverDashboardPage() {
                                                 setIsPhotoOptionModalOpen(true); 
                                             }} 
                                             onNavigate={() => {
-                                                window.location.href = `http://maps.google.com/maps?daddr=${encodeURIComponent(item.delivery_address)}`;
+                                                window.location.href = `http://googleusercontent.com/maps.google.com/2{encodeURIComponent(item.delivery_address)}`;
                                             }} 
                                             onCall={() => item.phone && (window.location.href = `tel:${item.phone}`)} 
                                             onMemo={() => handleOpenItemMemo(item.invoice_to)} 
@@ -947,6 +966,42 @@ export default function DriverDashboardPage() {
         </div>
       </div>
 
+      {/* 🚀 [추가] 모바일 화면용 열쇠 명단 팝업 (가운데 정렬) */}
+      <Dialog open={isKeyDialogOpen} onOpenChange={setIsKeyDialogOpen}>
+          <DialogContent className="w-[90%] max-w-sm bg-white p-0 overflow-hidden rounded-2xl shadow-xl z-[200]">
+              <DialogHeader className="bg-amber-50 border-b border-amber-100 p-4 pb-3">
+                  <DialogTitle className="flex items-center justify-center gap-2 text-amber-900 font-black text-lg">
+                      <Key className="w-5 h-5 text-amber-600" />
+                      Keys Required ({keyInvoices.length})
+                  </DialogTitle>
+                  <DialogDescription className="text-center text-amber-700/80 font-medium text-xs mt-1">
+                      Run {activeRun} Customers
+                  </DialogDescription>
+              </DialogHeader>
+              <div className="p-4 overflow-y-auto max-h-[50vh] space-y-2 bg-slate-50/50">
+                  {keyInvoices.map((inv, idx) => (
+                      <div key={inv.id} className="flex items-center gap-3 p-3 bg-white border border-slate-200 rounded-xl shadow-sm">
+                          <div className="w-7 h-7 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center font-bold text-sm shrink-0">
+                              {idx + 1}
+                          </div>
+                          <div className="flex flex-col flex-1 min-w-0">
+                              <span className="font-bold text-slate-800 text-sm truncate">
+                                {inv.invoice_to || "Unknown"}
+                              </span>
+                          </div>
+                      </div>
+                  ))}
+                  {keyInvoices.length === 0 && (
+                      <div className="text-center text-slate-400 py-10 font-medium">No keys required for this run.</div>
+                  )}
+              </div>
+              <div className="p-3 border-t border-slate-100 bg-slate-50 flex justify-end">
+                  <Button variant="outline" onClick={() => setIsKeyDialogOpen(false)} className="bg-white hover:bg-slate-100 font-bold">Close</Button>
+              </div>
+          </DialogContent>
+      </Dialog>
+
+      {/* 기타 기존 모달들... */}
       <Dialog open={isPhotoOptionModalOpen} onOpenChange={setIsPhotoOptionModalOpen}>
           <DialogContent className="w-[90%] rounded-3xl max-w-sm p-6 bg-white border-slate-100 shadow-2xl">
               <DialogHeader className="mb-2">
@@ -1148,7 +1203,10 @@ function SortableItem({ id, item, index, isActive, isDone, isEditing, dailyMemo,
                     </button>
                     
                     <div className="flex flex-col overflow-hidden grayscale">
-                        <span className="text-slate-500 font-medium line-through text-sm truncate">{isNewItem ? "! " : ""}{item.invoice_to}</span>
+                        <span className="text-slate-500 font-medium line-through text-sm truncate flex items-center gap-1">
+                            {isNewItem ? "! " : ""}{item.invoice_to}
+                            {item.use_key && <Key className="w-3 h-3 text-slate-400 shrink-0"/>}
+                        </span>
                     </div>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
@@ -1169,7 +1227,15 @@ function SortableItem({ id, item, index, isActive, isDone, isEditing, dailyMemo,
     if (isActive && !isEditing) return (
         <div ref={setNodeRef} style={style} className={cn("bg-white border-2 shadow-xl p-5 rounded-2xl transform scale-[1.02] relative animate-in zoom-in-95 duration-300", isNewItem ? "border-rose-500" : "border-blue-600")}>
             <div className={cn("absolute top-0 left-0 text-white text-[10px] font-bold px-3 py-1 rounded-br-xl uppercase", isNewItem ? "bg-rose-500" : "bg-blue-600")}>Current</div>
-            <div className="mt-4 flex items-center justify-between"><h3 className="text-2xl font-black"><span className={isNewItem ? "text-rose-500 mr-1" : ""}>{displayNumber}{isNewItem ? "" : ". "}</span>{item.invoice_to}</h3><div className="flex items-center gap-2"><Button size="icon" variant="ghost" onClick={onOpenItems} className="h-10 w-10 rounded-full text-slate-400 hover:bg-slate-100"><Package className="w-5 h-5" /></Button><Button size="icon" variant="ghost" onClick={onMemo} className={cn("h-10 w-10 rounded-full", hasMemo ? "bg-blue-50 text-blue-600" : "text-slate-400 hover:bg-slate-100")}><MessageSquareText className={cn("w-5 h-5", hasMemo && "fill-blue-200")} /></Button></div></div>
+            <div className="mt-4 flex items-center justify-between">
+                <h3 className="text-2xl font-black flex items-center gap-2">
+                    <span className={isNewItem ? "text-rose-500 mr-1" : ""}>{displayNumber}{isNewItem ? "" : ". "}</span>
+                    {item.invoice_to}
+                    {/* 🚀 [추가] 활성 상태인 카드에도 열쇠 아이콘 강조 표시 */}
+                    {item.use_key && <span title="Physical Key Required" className="flex shrink-0"><Key className="w-6 h-6 text-amber-500"/></span>}
+                </h3>
+                <div className="flex items-center gap-2"><Button size="icon" variant="ghost" onClick={onOpenItems} className="h-10 w-10 rounded-full text-slate-400 hover:bg-slate-100"><Package className="w-5 h-5" /></Button><Button size="icon" variant="ghost" onClick={onMemo} className={cn("h-10 w-10 rounded-full", hasMemo ? "bg-blue-50 text-blue-600" : "text-slate-400 hover:bg-slate-100")}><MessageSquareText className={cn("w-5 h-5", hasMemo && "fill-blue-200")} /></Button></div>
+            </div>
             <p className="text-slate-600 text-sm mt-1 leading-tight"><span className="font-semibold text-slate-800">CONTACT: </span><span className="font-normal">{item.contact_name || ""}</span><span className="mx-1.5 text-slate-300">|</span><span>{item.delivery_address}</span></p>
 
             {validAdminMemo && (
@@ -1192,7 +1258,11 @@ function SortableItem({ id, item, index, isActive, isDone, isEditing, dailyMemo,
                 <div className={cn("w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold shrink-0 transition-colors", isNewItem ? (isEditing ? "bg-rose-100 text-rose-600" : "bg-rose-500 text-white animate-pulse") : (isEditing ? "bg-blue-100 text-blue-600" : "bg-slate-100 text-slate-400"))}>{displayNumber}</div>
                 
                 <div className="overflow-hidden pr-2 flex-1">
-                    <div className="font-bold text-slate-800 text-sm truncate">{item.invoice_to}</div>
+                    <div className="font-bold text-slate-800 text-sm truncate flex items-center gap-1.5">
+                        {item.invoice_to}
+                        {/* 🚀 [추가] 대기 중인 카드에도 열쇠 아이콘 표시 */}
+                        {item.use_key && <span title="Physical Key Required" className="flex shrink-0"><Key className="w-3.5 h-3.5 text-amber-500" /></span>}
+                    </div>
                     
                     <div className="text-[10px] text-slate-400 truncate mt-0.5">
                         <span className="font-semibold text-slate-500">CONTACT: </span>

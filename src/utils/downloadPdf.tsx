@@ -15,7 +15,7 @@ import { PDFDocument } from 'pdf-lib';
 
 Font.register({
   family: 'NotoSansKR',
-  src: '/font/NotoSansKR-Medium.ttf', // public 폴더 경로와 일치해야 함
+  src: '/font/NotoSansKR-Medium.ttf', 
 });
 
 // ==================================================================
@@ -25,7 +25,6 @@ export const getInvoiceData = async (invoiceId: string): Promise<any | null> => 
   if (!invoiceId) return null;
   const supabase = createClient();
   
-  // 💡 [최적화] Invoice 데이터와 Company Settings를 동시에 병렬로 가져옵니다.
   const [invoiceRes, settingsRes] = await Promise.all([
     supabase
       .from('invoices')
@@ -171,7 +170,6 @@ export const downloadBulkPdf = async (ids: string[]) => {
   }
 
   const mergedPdfBytes = await mergedPdf.save();
-  // 💡 [해결 포인트] mergedPdfBytes 뒤에 as any 를 붙여서 타입 에러를 무시합니다.
   const mergedBlob = new Blob([mergedPdfBytes as any], { type: 'application/pdf' });
   const dateStr = new Date().toISOString().split('T')[0];
   saveAs(mergedBlob, `Bulk_Invoices_${dateStr}.pdf`);
@@ -197,7 +195,6 @@ export const printBulkPdf = async (ids: string[]) => {
   }
 
   const mergedPdfBytes = await mergedPdf.save();
-  // 💡 [해결 포인트] 여기도 마찬가지로 as any 를 추가합니다.
   const mergedBlob = new Blob([mergedPdfBytes as any], { type: 'application/pdf' });
   window.open(URL.createObjectURL(mergedBlob), '_blank');
 };
@@ -234,7 +231,6 @@ export const downloadPickingSummary = async (ids: string[]) => {
 
   const summaryList = Array.from(summaryMap.values()).sort((a, b) => (a.location || "").localeCompare(b.location || ""));
   
-  // 🚀 [수정] 텍스트 파일 헤더 및 표 형식 레이아웃 적용
   let content = `Picking Summary\n====================================================================================\n`;
   content += `[Location] | Qty & Unit | Vendor ID       | Product Name\n`;
   content += `------------------------------------------------------------------------------------\n`;
@@ -244,7 +240,6 @@ export const downloadPickingSummary = async (ids: string[]) => {
     const qtyUnit = `${i.qty} ${i.unit}`.padEnd(10);
     const vId = (i.vendorProductId || "-").padEnd(15);
     
-    // 🚀 [수정] Location -> Qty -> Vendor ID -> Name 순서로 텍스트 결합
     content += `[${loc}] | ${qtyUnit} | ${vId} | ${i.name}\n`;
   });
 
@@ -261,7 +256,6 @@ export const downloadSummaryTxt = downloadPickingSummary;
 export const fetchAndGenerateStatementBlob = async (customerId: string, startDate: string, endDate: string, customerName: string) => {
   const supabase = createClient();
   
-  // 💡 [최적화] 7개의 독립적인 쿼리를 하나의 Promise.all로 묶어 동시에 실행 (시간 7배 단축)
   const [
     { data: customer },
     { data: invoices },
@@ -269,7 +263,8 @@ export const fetchAndGenerateStatementBlob = async (customerId: string, startDat
     { data: allOpenInvoices },
     { data: prevInv },
     { data: prevPay },
-    { data: settingsList }
+    { data: settingsList },
+    { data: creditData }
   ] = await Promise.all([
     supabase.from("customers").select("*").eq("id", customerId).maybeSingle(),
     supabase.from("invoices").select("*").eq("customer_id", customerId).gte("invoice_date", startDate).lte("invoice_date", endDate),
@@ -277,7 +272,8 @@ export const fetchAndGenerateStatementBlob = async (customerId: string, startDat
     supabase.from("invoices").select("invoice_date, total_amount, paid_amount, id").eq("customer_id", customerId).neq("status", "Paid"),
     supabase.from("invoices").select("total_amount").eq("customer_id", customerId).lt("invoice_date", startDate),
     supabase.from("payments").select("amount").eq("customer_id", customerId).lt("payment_date", startDate),
-    supabase.from('company_settings').select('*').limit(1)
+    supabase.from('company_settings').select('*').limit(1),
+    supabase.from('payments').select('unallocated_amount').eq('customer_id', customerId).gt('unallocated_amount', 0)
   ]);
 
   const transactions: StatementTransaction[] = [];
@@ -314,6 +310,7 @@ export const fetchAndGenerateStatementBlob = async (customerId: string, startDat
   const ageing: StatementAgeing = { current: 0, days30: 0, days60: 0, days90: 0, over90: 0, total: 0 };
   const today = new Date();
 
+  // 1. 먼저 순수하게 연체된 미납액만 각 버킷에 할당
   allOpenInvoices?.forEach((inv: any) => {
     const outstanding = inv.total_amount - inv.paid_amount;
     if (outstanding !== 0) {
@@ -329,6 +326,27 @@ export const fetchAndGenerateStatementBlob = async (customerId: string, startDat
     }
   });
   
+  // 2. 고객의 총 크레딧 잔액 구하기
+  let remainingCredit = creditData ? creditData.reduce((sum, p) => sum + (p.unallocated_amount || 0), 0) : 0;
+
+  // 3. 🚀 [수정 포인트] 크레딧을 오래된 연체 구간부터 차감 (가장 오래된 빚부터 청산)
+  if (remainingCredit > 0) {
+      const applyCredit = (amount: number) => {
+          const deduction = Math.min(amount, remainingCredit);
+          remainingCredit -= deduction;
+          return amount - deduction;
+      };
+
+      ageing.over90 = applyCredit(ageing.over90);
+      ageing.days90 = applyCredit(ageing.days90);
+      ageing.days60 = applyCredit(ageing.days60);
+      ageing.days30 = applyCredit(ageing.days30);
+      
+      // 그래도 크레딧이 남았다면, Current 칸에서 차감 (마이너스로 표시됨)
+      ageing.current -= remainingCredit; 
+  }
+
+  // 4. 표에 표시될 최종 합계 업데이트
   ageing.total = ageing.current + ageing.days30 + ageing.days60 + ageing.days90 + ageing.over90;
 
   const settings = settingsList?.[0] || {};
@@ -340,7 +358,7 @@ export const fetchAndGenerateStatementBlob = async (customerId: string, startDat
   const statementData: StatementData = {
     customerName, startDate, endDate, 
     openingBalance: openingBal, 
-    ageing: ageing, 
+    ageing: ageing,
     transactions: transactions.sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime()),
     customerId: customer?.id,
     customerAddress: customerAddress,
@@ -377,7 +395,6 @@ export const getQuotationData = async (quotationId: string): Promise<QuotationDa
   if (!quotationId) return null;
   const supabase = createClient();
 
-  // 💡 [최적화] 견적서 데이터와 세팅을 동시 병렬 요청
   const [quoteRes, settingsRes] = await Promise.all([
     supabase.from('quotations').select(`*, customers (*), quotation_items (quantity, unit, unit_price, amount, products (*))`).eq('id', quotationId).single(),
     supabase.from('company_settings').select('*').limit(1)
@@ -471,7 +488,6 @@ export const printQuotationPdf = async (id: string) => {
 export const getPurchaseOrderData = async (poId: string): Promise<PurchaseOrderData | null> => {
   const supabase = createClient();
   
-  // 💡 [최적화] Purchase Order 정보, 품목, 회사 세팅을 동시 병렬 요청
   const [poRes, itemsRes, settingsRes] = await Promise.all([
     supabase.from('purchase_orders').select(`*, product_vendors (*)`).eq('id', poId).single(),
     supabase.from('purchase_order_items').select(`*, products (vendor_product_id, product_name)`).eq('po_id', poId),

@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { 
   X, Save, Eye, EyeOff, CheckCircle2, XCircle, 
-  Ban, ShieldCheck, Loader2, ChevronDown, MapPin, Users
+  Ban, ShieldCheck, Loader2, ChevronDown, MapPin, Users, Key
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -46,11 +46,12 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
   const searchCache = useRef<Record<string, any[]>>({});
 
   const initialData = {
-    name: "", company: "", email: "", email_cc: "", password: "", contact_name: "", mobile: "", tel: "", abn: "", // 🚀 [추가] email_cc 초기값
+    name: "", company: "", email: "", email_cc: "", password: "", contact_name: "", mobile: "", tel: "", abn: "",
     group_id: "", 
     in_charge_sale: "",     
     in_charge_delivery: "", 
     login_permit: true, disable_order: false,
+    use_key: false,
     credit_limit: "", due_date: "C.O.D",
     customer_pw: "", 
     address: "", suburb: "", state: "", postcode: "", lat: null as number | null, lng: null as number | null,
@@ -102,12 +103,13 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
           name: cleanData.name || "",
           company: cleanData.company || "",
           email: cleanData.email || "",
-          email_cc: cleanData.email_cc || "", // 🚀 [추가] DB에서 CC 이메일 가져오기
+          email_cc: cleanData.email_cc || "", 
           contact_name: cleanData.contact_name || "", 
           mobile: cleanData.mobile || "",
           tel: cleanData.tel || "",
           abn: cleanData.abn || "",
           customer_pw: cleanData.customer_pw || "", 
+          use_key: cleanData.use_key || false,
           address: cleanData.address || "",
           suburb: cleanData.suburb || "",
           state: cleanData.state || "",
@@ -423,7 +425,6 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
                 
                 <div className="space-y-2"><Label>Email</Label><Input type="email" value={formData.email} onChange={(e) => handleChange("email", e.target.value)} placeholder="name@example.com" /></div>
                 
-                {/* 🚀 [추가] Email CC */}
                 <div className="space-y-2">
                   <Label>Email CC</Label>
                   <Input 
@@ -437,15 +438,42 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
                 <div className="space-y-2"><Label>Customer Group</Label><div className="relative"><select value={formData.group_id} onChange={(e) => handleChange("group_id", e.target.value)} className="flex h-10 w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-slate-900 appearance-none"><option value="">No Group</option>{groupOptions.map((g) => (<option key={g.id} value={g.id}>{g.name}</option>))}</select><ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" /></div></div>
                 <div className="space-y-2"><Label>ABN</Label><Input value={formData.abn} onChange={(e) => handleChange("abn", e.target.value)} placeholder="XX XXX XXX XXX" /></div>
                 
-                <div className="space-y-2">
-                    <Label className="text-blue-700 font-bold">Delivery Access PW (Max 10)</Label>
-                    <Input 
-                        value={formData.customer_pw} 
-                        onChange={(e) => handleChange("customer_pw", e.target.value)} 
-                        maxLength={10} 
-                        placeholder="e.g. 1234 or *9999" 
-                        className="bg-blue-50 border-blue-200 focus-visible:ring-blue-500"
-                    />
+                {/* 🚀 [디자인 수정] 배송 비밀번호 및 열쇠 필수 박스 묶음 (양옆 나란히) */}
+                <div className="col-span-1 md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50/50 p-4 rounded-xl border border-slate-100 items-end">
+                    <div className="space-y-2">
+                        <Label className="text-blue-700 font-bold block">Delivery Access PW (Max 10)</Label>
+                        <Input 
+                            value={formData.customer_pw} 
+                            onChange={(e) => handleChange("customer_pw", e.target.value)} 
+                            maxLength={10} 
+                            placeholder="e.g. 1234 or *9999" 
+                            className="bg-white border-blue-200 focus-visible:ring-blue-500 h-11"
+                        />
+                    </div>
+                    
+                    {/* 🚀 눈에 확 띄는 Physical Key 체크박스 영역 */}
+                    <div className={cn(
+                        "flex items-center space-x-3 px-4 h-11 rounded-lg border-2 transition-all cursor-pointer",
+                        formData.use_key 
+                            ? "bg-amber-100 border-amber-500 shadow-md" 
+                            : "bg-white border-slate-200 hover:bg-slate-100 hover:border-slate-300"
+                    )}
+                    onClick={() => handleChange("use_key", !formData.use_key)}
+                    >
+                        <Checkbox 
+                            id="useKey" 
+                            checked={formData.use_key} 
+                            onCheckedChange={(c) => handleChange("use_key", !!c)} 
+                            className="w-5 h-5 rounded border-slate-400 data-[state=checked]:bg-amber-600 data-[state=checked]:border-amber-600"
+                            onClick={(e) => e.stopPropagation()} 
+                        />
+                        <label htmlFor="useKey" className="text-sm font-medium cursor-pointer select-none flex items-center gap-2 flex-1">
+                            <Key className={cn("w-5 h-5", formData.use_key ? "text-amber-600" : "text-slate-400")}/> 
+                            <span className={formData.use_key ? "text-amber-900" : "text-slate-600"}>
+                                Physical Key Required
+                            </span>
+                        </label>
+                    </div>
                 </div>
 
                 <div className="space-y-2"><Label>Contact Name</Label><Input value={formData.contact_name} onChange={(e) => handleChange("contact_name", e.target.value)} placeholder="Manager or Contact Person" /></div>

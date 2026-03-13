@@ -855,7 +855,10 @@ export default function DriverDashboardPage() {
                                                 setIsPhotoOptionModalOpen(true); 
                                             }} 
                                             onNavigate={() => {
-                                                window.location.href = `http://googleusercontent.com/maps.google.com/2{encodeURIComponent(item.delivery_address)}`;
+                                                const destination = (item.lat && item.lng) 
+                                                    ? `${item.lat},${item.lng}` 
+                                                    : encodeURIComponent(item.delivery_address);
+                                                window.location.href = `https://www.google.com/maps/dir/?api=1&destination=${destination}`;
                                             }} 
                                             onCall={() => item.phone && (window.location.href = `tel:${item.phone}`)} 
                                             onMemo={() => handleOpenItemMemo(item.invoice_to)} 

@@ -263,6 +263,11 @@ export default function SetDeliveryPage() {
     targetInvoices.forEach(inv => {
         if (inv.invoice_items) {
             inv.invoice_items.forEach(item => {
+                const qty = Number(item.quantity) || 0;
+                
+                // 🚀 [추가] 수량이 0 이하인 경우 (마이너스 수량) 피킹 리스트에서 완전히 무시!
+                if (qty <= 0) return;
+
                 const name = item.products?.product_name || "Unknown Item";
                 const location = item.products?.location || "";
                 const vendorProductId = item.products?.vendor_product_id || ""; 
@@ -274,7 +279,6 @@ export default function SetDeliveryPage() {
                     rawUnit = "PACK";
                 }
 
-                const qty = Number(item.quantity) || 0;
                 const uniqueKey = `${name}_${rawUnit}`;
 
                 if (!combinedItems[uniqueKey]) {

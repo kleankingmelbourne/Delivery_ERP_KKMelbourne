@@ -271,7 +271,7 @@ interface ProductMaster {
     id: string; 
     product_name: string; 
     vendor_product_id?: string;
-    buy_price?: number; // 🚀 원가 필드
+    buy_price?: number; 
     sell_price_ctn: number; 
     sell_price_pack: number; 
     total_pack_ctn?: number; 
@@ -283,7 +283,6 @@ interface ProductMaster {
     is_active?: boolean;
 } 
 interface AllowedProduct { id: string; product_id: string; discount_ctn: number; discount_pack: number; }
-// 🚀 InvoiceItem 인터페이스에 unitCost 추가
 interface InvoiceItem { productId: string; unit: string; quantity: number; unitCost?: number; basePrice: number; discountRate: number; unitPrice: number; defaultUnitName?: string; }
 
 interface InvoiceFormProps {
@@ -330,7 +329,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
   const [availableCredit, setAvailableCredit] = useState(0); 
   
   const [originalItems, setOriginalItems] = useState<InvoiceItem[]>([]);
-  // 🚀 초기 아이템 데이터에 unitCost 포함
   const [items, setItems] = useState<InvoiceItem[]>([
     { productId: "", unit: "CTN", quantity: 1, unitCost: 0, basePrice: 0, discountRate: 0, unitPrice: 0 }
   ]);
@@ -376,7 +374,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
             if (!unit) { const match = item.description.match(/\((CTN|PACK)\)$/); unit = match ? match[1] : "CTN"; }
             const prod = item.products; 
             
-            // 🚀 불러올 때 원가 계산
             let cost = prod?.buy_price || 0;
             if (unit !== "CTN" && !unit.toLowerCase().includes("carton")) {
                 const packsPerCtn = Math.max(1, prod?.total_pack_ctn || 1);
@@ -387,7 +384,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                 productId: item.product_id, 
                 unit: unit, 
                 quantity: item.quantity, 
-                unitCost: cost, // 🚀 원가 데이터 세팅
+                unitCost: cost, 
                 basePrice: item.base_price, 
                 discountRate: item.discount, 
                 unitPrice: item.unit_price, 
@@ -561,7 +558,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
   const customerOptions = useMemo(() => customers.map(c => ({ id: c.id, label: c.name })), [customers]);
 
-  // 🚀 가격 계산 시 원가도 함께 업데이트 할 수 있도록 파라미터 추가
   const applyPriceLogic = (index: number, productId: string, unit: string, basePriceInput: number, discountRateInput: number, defaultUnitName?: string, cost?: number) => {
     const netPrice = roundAmount(basePriceInput - (basePriceInput * (discountRateInput / 100)));
     const newItems = [...items];
@@ -574,7 +570,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
         discountRate: discountRateInput, 
         unitPrice: netPrice, 
         defaultUnitName: defaultUnitName || currentItem.defaultUnitName,
-        unitCost: cost !== undefined ? cost : currentItem.unitCost // 🚀 원가 유지 또는 업데이트
+        unitCost: cost !== undefined ? cost : currentItem.unitCost 
     };
     setItems(newItems);
   };
@@ -591,7 +587,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     const disc = ap ? (isCtn ? ap.discount_ctn : ap.discount_pack) : 0;
     const base = isCtn ? p.sell_price_ctn : p.sell_price_pack;
     
-    // 🚀 원가 계산
     let cost = p.buy_price || 0;
     if (!isCtn) {
         const packsPerCtn = Math.max(1, p.total_pack_ctn || 1);
@@ -610,7 +605,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       const disc = ap ? (isCtn ? ap.discount_ctn : ap.discount_pack) : 0;
       const base = isCtn ? p.sell_price_ctn : p.sell_price_pack;
 
-      // 🚀 Unit(CTN/PKT) 변경 시 원가 재계산
       let cost = p.buy_price || 0;
       if (!isCtn) {
           const packsPerCtn = Math.max(1, p.total_pack_ctn || 1);
@@ -632,7 +626,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
   
   const updateItem = (index: number, field: keyof InvoiceItem, value: any) => { const newItems = [...items]; newItems[index] = { ...newItems[index], [field]: value }; setItems(newItems); };
   const removeItem = (index: number) => { if (items.length > 1) setItems(items.filter((_, i) => i !== index)); };
-  // 🚀 새 아이템 추가 시 unitCost 0으로 초기화
   const addItem = () => setItems([...items, { productId: "", unit: "CTN", quantity: 1, unitCost: 0, basePrice: 0, discountRate: 0, unitPrice: 0 }]);
   const handleProductClick = (index: number) => { if (index === items.length - 1) addItem(); };
 
@@ -648,11 +641,13 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       prevGrandTotalRef.current = grandTotal;
   }, [grandTotal]);
   
+  // 🚀 [수정] 동일 상품이 여러 개일 경우 수량을 먼저 합산(그룹화)하여 계산하도록 수정
   const checkStockAvailability = async (itemList: InvoiceItem[]) => {
       const insufficientItems: string[] = [];
-      const productIds = itemList.map(i => i.productId).filter(Boolean);
-      
-      if (productIds.length === 0) return [];
+      const validItems = itemList.filter(i => i.productId);
+      if (validItems.length === 0) return [];
+
+      const productIds = Array.from(new Set(validItems.map(i => i.productId)));
 
       const { data: products } = await supabase
           .from('products')
@@ -661,36 +656,56 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
       if (!products) return [];
 
-      for (const item of itemList) {
-          if (!item.productId) continue;
-          const product = products.find((p: any) => p.id === item.productId);
-          
+      // 1. 필요한 총 수량을 상품별/단위별로 그룹화
+      const requiredQtyMap = new Map<string, { ctn: number, pack: number }>();
+      
+      validItems.forEach(item => {
+          if (!requiredQtyMap.has(item.productId)) {
+              requiredQtyMap.set(item.productId, { ctn: 0, pack: 0 });
+          }
+          const req = requiredQtyMap.get(item.productId)!;
+          if (item.unit === 'CTN') req.ctn += item.quantity;
+          else req.pack += item.quantity;
+      });
+
+      // 2. 그룹화된 수량으로 재고 체크
+      for (const [productId, req] of requiredQtyMap.entries()) {
+          const product = products.find((p: any) => p.id === productId);
           if (product) {
               let currentCtn = product.current_stock_level || 0;
               let currentPack = product.current_stock_level_pack || 0;
               const packsPerCtn = product.total_pack_ctn || 1; 
 
               if (isEditMode) {
-                  const originalItem = originalItems.find(oi => oi.productId === item.productId && oi.unit === item.unit);
-                  if (originalItem) {
-                      if (originalItem.unit === 'CTN') currentCtn += originalItem.quantity; else currentPack += originalItem.quantity;
-                  }
+                  // 수정 모드일 경우 기존 인보이스에 있던 수량을 원상복구(더해줌) 한 뒤 비교
+                  const originalForProduct = originalItems.filter(oi => oi.productId === productId);
+                  originalForProduct.forEach(oi => {
+                      if (oi.unit === 'CTN') currentCtn += oi.quantity; 
+                      else currentPack += oi.quantity;
+                  });
               }
 
-              if (item.unit === "CTN") {
-                  if (currentCtn < item.quantity) insufficientItems.push(`${product.product_name} (${item.unit})`);
-              } else {
+              if (req.ctn > 0 && currentCtn < req.ctn) {
+                  insufficientItems.push(`${product.product_name} (CTN)`);
+              }
+              
+              if (req.pack > 0) {
                   const totalAvailablePacks = currentPack + (currentCtn * packsPerCtn);
-                  if (totalAvailablePacks < item.quantity) insufficientItems.push(`${product.product_name} (${item.unit})`);
+                  if (totalAvailablePacks < req.pack) {
+                      insufficientItems.push(`${product.product_name} (PACK)`);
+                  }
               }
           }
       }
       return insufficientItems;
   };
 
+  // 🚀 [수정] 동일 상품이 여러 개일 경우 수량을 합산(그룹화)하여 한 번에 재고를 업데이트하도록 수정
   const updateInventory = async (itemList: InvoiceItem[], isReturn: boolean) => {
-    const productIds = itemList.map(i => i.productId).filter(Boolean);
-    if (productIds.length === 0) return;
+    const validItems = itemList.filter(i => i.productId);
+    if (validItems.length === 0) return;
+
+    const productIds = Array.from(new Set(validItems.map(i => i.productId)));
 
     const { data: products } = await supabase
         .from('products')
@@ -699,27 +714,43 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
     if (!products) return;
 
+    // 1. 차감/복구할 총 수량을 상품별로 그룹화
+    const updateQtyMap = new Map<string, { ctn: number, pack: number }>();
+    
+    validItems.forEach(item => {
+        if (!updateQtyMap.has(item.productId)) {
+            updateQtyMap.set(item.productId, { ctn: 0, pack: 0 });
+        }
+        const req = updateQtyMap.get(item.productId)!;
+        if (item.unit === 'CTN') req.ctn += item.quantity;
+        else req.pack += item.quantity;
+    });
+
     const updatePromises = []; 
 
-    for (const item of itemList) {
-        if (!item.productId) continue;
-        const product = products.find((p: any) => p.id === item.productId);
+    // 2. 그룹화된 수량을 기준으로 각 상품별로 한 번씩만 DB 업데이트 실행
+    for (const [productId, req] of updateQtyMap.entries()) {
+        const product = products.find((p: any) => p.id === productId);
         if (!product) continue;
 
         let currentCtn = product.current_stock_level || 0;
         let currentPack = product.current_stock_level_pack || 0;
         const packsPerCtn = product.total_pack_ctn || 1; 
-        const qty = item.quantity; 
 
         if (isReturn) {
-            if (item.unit === 'CTN') currentCtn += qty; else currentPack += qty;
+            currentCtn += req.ctn; 
+            currentPack += req.pack;
         } else {
-            if (item.unit === 'CTN') currentCtn -= qty; 
-            else { 
-                if (currentPack >= qty) currentPack -= qty;
-                else {
-                    if (currentCtn > 0) { currentCtn -= 1; currentPack += packsPerCtn; currentPack -= qty; } 
-                    else currentPack -= qty;
+            currentCtn -= req.ctn; 
+            if (currentPack >= req.pack) {
+                currentPack -= req.pack;
+            } else {
+                if (currentCtn > 0) { 
+                    currentCtn -= 1; 
+                    currentPack += packsPerCtn; 
+                    currentPack -= req.pack; 
+                } else {
+                    currentPack -= req.pack; // 마이너스 허용
                 }
             }
         }
@@ -731,7 +762,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                     current_stock_level: currentCtn, 
                     current_stock_level_pack: currentPack 
                 })
-                .eq('id', item.productId)
+                .eq('id', productId)
         );
     }
 
@@ -991,7 +1022,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                     <th className="px-4 py-3 w-[3%] text-center text-slate-400">#</th>
                     <th className="px-4 py-3 w-[26%]">Product</th>
                     <th className="px-4 py-3 w-[8%] text-center">Unit</th>
-                    {/* 🚀 Cost 헤더 추가 */}
                     <th className="px-4 py-3 w-[10%] text-right text-orange-600">Cost</th>
                     <th className="px-4 py-3 w-[10%] text-right bg-slate-100/50">Base</th>
                     <th className="px-4 py-3 w-[10%] text-right text-blue-700">Net</th>
@@ -1052,7 +1082,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                                 {isCtnOrPack ? (<><option value="CTN">CTN</option><option value="PACK">PK</option></>) : (<option value={item.unit}>{item.unit}</option>)}
                               </select>
                           </td>
-                          {/* 🚀 Cost 데이터 표시 */}
                           <td className="p-2 text-right font-medium text-orange-600 text-xs">
                               ${(item.unitCost || 0).toFixed(2)}
                           </td>

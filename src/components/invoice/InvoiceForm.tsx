@@ -641,7 +641,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       prevGrandTotalRef.current = grandTotal;
   }, [grandTotal]);
   
-  // 🚀 [수정] 동일 상품이 여러 개일 경우 수량을 먼저 합산(그룹화)하여 계산하도록 수정
+  // 🚀 [수정] 박스/팩 올림/내림 계산 적용 (재고 확인용)
   const checkStockAvailability = async (itemList: InvoiceItem[]) => {
       const insufficientItems: string[] = [];
       const validItems = itemList.filter(i => i.productId);
@@ -656,7 +656,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
       if (!products) return [];
 
-      // 1. 필요한 총 수량을 상품별/단위별로 그룹화
       const requiredQtyMap = new Map<string, { ctn: number, pack: number }>();
       
       validItems.forEach(item => {
@@ -668,39 +667,37 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
           else req.pack += item.quantity;
       });
 
-      // 2. 그룹화된 수량으로 재고 체크
       for (const [productId, req] of requiredQtyMap.entries()) {
           const product = products.find((p: any) => p.id === productId);
           if (product) {
               let currentCtn = product.current_stock_level || 0;
               let currentPack = product.current_stock_level_pack || 0;
-              const packsPerCtn = product.total_pack_ctn || 1; 
+              const packsPerCtn = Math.max(1, product.total_pack_ctn || 1); 
+
+              // 현재 보유 수량을 모두 팩 단위로 통합
+              let totalAvailablePacks = (currentCtn * packsPerCtn) + currentPack;
 
               if (isEditMode) {
-                  // 수정 모드일 경우 기존 인보이스에 있던 수량을 원상복구(더해줌) 한 뒤 비교
+                  // 수정 모드: 기존 인보이스 수량을 현재 재고에 다시 더해줌(원상복구)
                   const originalForProduct = originalItems.filter(oi => oi.productId === productId);
                   originalForProduct.forEach(oi => {
-                      if (oi.unit === 'CTN') currentCtn += oi.quantity; 
-                      else currentPack += oi.quantity;
+                      if (oi.unit === 'CTN') totalAvailablePacks += (oi.quantity * packsPerCtn); 
+                      else totalAvailablePacks += oi.quantity;
                   });
               }
 
-              if (req.ctn > 0 && currentCtn < req.ctn) {
-                  insufficientItems.push(`${product.product_name} (CTN)`);
-              }
-              
-              if (req.pack > 0) {
-                  const totalAvailablePacks = currentPack + (currentCtn * packsPerCtn);
-                  if (totalAvailablePacks < req.pack) {
-                      insufficientItems.push(`${product.product_name} (PACK)`);
-                  }
+              // 차감해야 할 총 수량을 팩 단위로 통합
+              const totalRequiredPacks = (req.ctn * packsPerCtn) + req.pack;
+
+              if (totalAvailablePacks < totalRequiredPacks) {
+                  insufficientItems.push(`${product.product_name}`);
               }
           }
       }
       return insufficientItems;
   };
 
-  // 🚀 [수정] 동일 상품이 여러 개일 경우 수량을 합산(그룹화)하여 한 번에 재고를 업데이트하도록 수정
+  // 🚀 [수정] 박스/팩 올림/내림 자동 계산 적용 (DB 업데이트용)
   const updateInventory = async (itemList: InvoiceItem[], isReturn: boolean) => {
     const validItems = itemList.filter(i => i.productId);
     if (validItems.length === 0) return;
@@ -714,7 +711,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
     if (!products) return;
 
-    // 1. 차감/복구할 총 수량을 상품별로 그룹화
     const updateQtyMap = new Map<string, { ctn: number, pack: number }>();
     
     validItems.forEach(item => {
@@ -728,39 +724,43 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
     const updatePromises = []; 
 
-    // 2. 그룹화된 수량을 기준으로 각 상품별로 한 번씩만 DB 업데이트 실행
     for (const [productId, req] of updateQtyMap.entries()) {
         const product = products.find((p: any) => p.id === productId);
         if (!product) continue;
 
-        let currentCtn = product.current_stock_level || 0;
-        let currentPack = product.current_stock_level_pack || 0;
-        const packsPerCtn = product.total_pack_ctn || 1; 
+        const currentCtn = product.current_stock_level || 0;
+        const currentPack = product.current_stock_level_pack || 0;
+        const packsPerCtn = Math.max(1, product.total_pack_ctn || 1); 
 
-        if (isReturn) {
-            currentCtn += req.ctn; 
-            currentPack += req.pack;
-        } else {
-            currentCtn -= req.ctn; 
-            if (currentPack >= req.pack) {
-                currentPack -= req.pack;
-            } else {
-                if (currentCtn > 0) { 
-                    currentCtn -= 1; 
-                    currentPack += packsPerCtn; 
-                    currentPack -= req.pack; 
-                } else {
-                    currentPack -= req.pack; // 마이너스 허용
-                }
-            }
-        }
+        // 1. 현재 재고를 모두 팩(최소단위)으로 변환
+        let totalCurrentPacks = (currentCtn * packsPerCtn) + currentPack;
         
+        // 2. 변동(차감/증가)될 재고를 모두 팩으로 변환
+        const totalUpdatePacks = (req.ctn * packsPerCtn) + req.pack;
+
+        // 3. 더하거나 빼기
+        if (isReturn) {
+            totalCurrentPacks += totalUpdatePacks;
+        } else {
+            totalCurrentPacks -= totalUpdatePacks;
+        }
+
+        // 4. 결과를 다시 박스(CTN)와 팩(PACK)으로 깔끔하게 나누기
+        let newCtn = Math.floor(totalCurrentPacks / packsPerCtn);
+        let newPack = totalCurrentPacks % packsPerCtn;
+        
+        // 자바스크립트 특성상 나머지가 음수일 수 있으므로 보정 (예: -1 % 10 = -1 -> 9팩으로 보정)
+        if (newPack < 0) {
+            newPack += packsPerCtn;
+            // newCtn은 Math.floor에서 이미 내림 처리되어 -1이 적용되었으므로 손댈 필요 없음
+        }
+
         updatePromises.push(
             supabase
                 .from('products')
                 .update({ 
-                    current_stock_level: currentCtn, 
-                    current_stock_level_pack: currentPack 
+                    current_stock_level: newCtn, 
+                    current_stock_level_pack: newPack 
                 })
                 .eq('id', productId)
         );

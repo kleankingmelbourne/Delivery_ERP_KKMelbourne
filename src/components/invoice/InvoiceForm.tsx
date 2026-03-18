@@ -18,6 +18,13 @@ import { useAuth } from "@/components/providers/AuthProvider";
 // --- [Utility] ---
 const roundAmount = (num: number) => Math.round((num + Number.EPSILON) * 100) / 100;
 
+// 🚀 단위가 박스(CTN/Carton/Box)인지 정확히 판별하는 도우미 함수
+const isCtnUnit = (unitStr: string | undefined | null) => {
+    if (!unitStr) return false;
+    const s = unitStr.toLowerCase();
+    return s.includes('ctn') || s.includes('carton') || s.includes('box');
+};
+
 // --- [Utility] Debounce Hook ---
 function useDebounce<T>(value: T, delay: number): T {
   const [debouncedValue, setDebouncedValue] = useState(value);
@@ -274,7 +281,7 @@ interface ProductMaster {
     buy_price?: number; 
     sell_price_ctn: number; 
     sell_price_pack: number; 
-    total_pack_ctn?: number; 
+    total_pack_ctn?: number; // 🚀 DB 컬럼명 적용
     default_unit_id?: string; 
     product_units?: { unit_name: string }; 
     unit_name?: string; 
@@ -375,7 +382,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
             const prod = item.products; 
             
             let cost = prod?.buy_price || 0;
-            if (unit !== "CTN" && !unit.toLowerCase().includes("carton")) {
+            if (!isCtnUnit(unit)) {
                 const packsPerCtn = Math.max(1, prod?.total_pack_ctn || 1);
                 cost = cost / packsPerCtn;
             }
@@ -583,7 +590,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     if (unitToSet.toLowerCase().includes("carton")) unitToSet = "CTN";
     if (unitToSet.toLowerCase() === "pack") unitToSet = "PACK";
     const ap = allowedProducts.find(ap => ap.product_id === productId);
-    const isCtn = unitToSet === "CTN";
+    const isCtn = isCtnUnit(unitToSet);
     const disc = ap ? (isCtn ? ap.discount_ctn : ap.discount_pack) : 0;
     const base = isCtn ? p.sell_price_ctn : p.sell_price_pack;
     
@@ -601,7 +608,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     const p = allProducts.find(p => p.id === item.productId);
     if (p) {
       const ap = allowedProducts.find(ap => ap.product_id === item.productId);
-      const isCtn = unit === "CTN";
+      const isCtn = isCtnUnit(unit);
       const disc = ap ? (isCtn ? ap.discount_ctn : ap.discount_pack) : 0;
       const base = isCtn ? p.sell_price_ctn : p.sell_price_pack;
 
@@ -641,7 +648,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       prevGrandTotalRef.current = grandTotal;
   }, [grandTotal]);
   
-  // 🚀 [수정] 박스/팩 올림/내림 계산 적용 (재고 확인용)
+  // 🚀 [수정] 박스 단위 유무를 판별하여, 박스가 있으면 올림/내림 처리하고, 없으면 팩 단위로만 단순 합산
   const checkStockAvailability = async (itemList: InvoiceItem[]) => {
       const insufficientItems: string[] = [];
       const validItems = itemList.filter(i => i.productId);
@@ -663,41 +670,66 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
               requiredQtyMap.set(item.productId, { ctn: 0, pack: 0 });
           }
           const req = requiredQtyMap.get(item.productId)!;
-          if (item.unit === 'CTN') req.ctn += item.quantity;
-          else req.pack += item.quantity;
+          const qty = Number(item.quantity) || 0;
+          if (isCtnUnit(item.unit)) req.ctn += qty;
+          else req.pack += qty;
       });
 
       for (const [productId, req] of requiredQtyMap.entries()) {
           const product = products.find((p: any) => p.id === productId);
           if (product) {
-              let currentCtn = product.current_stock_level || 0;
-              let currentPack = product.current_stock_level_pack || 0;
-              const packsPerCtn = Math.max(1, product.total_pack_ctn || 1); 
+              let currentCtn = Number(product.current_stock_level) || 0;
+              let currentPack = Number(product.current_stock_level_pack) || 0;
+              const packsPerCtn = Number(product.total_pack_ctn) || 0; 
+              
+              // 🚀 1팩 초과 구성이면 박스 개념 있음 / 아니면 팩 전용
+              const hasCarton = packsPerCtn > 1;
 
-              // 현재 보유 수량을 모두 팩 단위로 통합
-              let totalAvailablePacks = (currentCtn * packsPerCtn) + currentPack;
+              if (hasCarton) {
+                  let totalAvailablePacks = (currentCtn * packsPerCtn) + currentPack;
 
-              if (isEditMode) {
-                  // 수정 모드: 기존 인보이스 수량을 현재 재고에 다시 더해줌(원상복구)
-                  const originalForProduct = originalItems.filter(oi => oi.productId === productId);
-                  originalForProduct.forEach(oi => {
-                      if (oi.unit === 'CTN') totalAvailablePacks += (oi.quantity * packsPerCtn); 
-                      else totalAvailablePacks += oi.quantity;
-                  });
-              }
+                  if (isEditMode) {
+                      // 수정 모드: 기존 인보이스 수량을 현재 재고에 다시 더해줌(원상복구)
+                      const originalForProduct = originalItems.filter(oi => oi.productId === productId);
+                      originalForProduct.forEach(oi => {
+                          const oiQty = Number(oi.quantity) || 0;
+                          if (isCtnUnit(oi.unit)) totalAvailablePacks += (oiQty * packsPerCtn); 
+                          else totalAvailablePacks += oiQty;
+                      });
+                  }
 
-              // 차감해야 할 총 수량을 팩 단위로 통합
-              const totalRequiredPacks = (req.ctn * packsPerCtn) + req.pack;
+                  const totalRequiredPacks = (req.ctn * packsPerCtn) + req.pack;
 
-              if (totalAvailablePacks < totalRequiredPacks) {
-                  insufficientItems.push(`${product.product_name}`);
+                  if (totalAvailablePacks < totalRequiredPacks) {
+                      insufficientItems.push(`${product.product_name}`);
+                  }
+              } else {
+                  // 박스 개념이 없는 상품은 변환 없이 그대로 비교
+                  let availCtn = currentCtn;
+                  let availPack = currentPack;
+
+                  if (isEditMode) {
+                      const originalForProduct = originalItems.filter(oi => oi.productId === productId);
+                      originalForProduct.forEach(oi => {
+                          const oiQty = Number(oi.quantity) || 0;
+                          if (isCtnUnit(oi.unit)) availCtn += oiQty; 
+                          else availPack += oiQty;
+                      });
+                  }
+
+                  if (req.ctn > 0 && availCtn < req.ctn) {
+                      insufficientItems.push(`${product.product_name} (CTN)`);
+                  }
+                  if (req.pack > 0 && availPack < req.pack) {
+                      insufficientItems.push(`${product.product_name} (PACK)`);
+                  }
               }
           }
       }
       return insufficientItems;
   };
 
-  // 🚀 [수정] 박스/팩 올림/내림 자동 계산 적용 (DB 업데이트용)
+  // 🚀 [수정] 박스/팩 자동 올림/내림 처리 (DB 업데이트용)
   const updateInventory = async (itemList: InvoiceItem[], isReturn: boolean) => {
     const validItems = itemList.filter(i => i.productId);
     if (validItems.length === 0) return;
@@ -718,8 +750,10 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
             updateQtyMap.set(item.productId, { ctn: 0, pack: 0 });
         }
         const req = updateQtyMap.get(item.productId)!;
-        if (item.unit === 'CTN') req.ctn += item.quantity;
-        else req.pack += item.quantity;
+        const qty = Number(item.quantity) || 0;
+        
+        if (isCtnUnit(item.unit)) req.ctn += qty;
+        else req.pack += qty;
     });
 
     const updatePromises = []; 
@@ -728,31 +762,43 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
         const product = products.find((p: any) => p.id === productId);
         if (!product) continue;
 
-        const currentCtn = product.current_stock_level || 0;
-        const currentPack = product.current_stock_level_pack || 0;
-        const packsPerCtn = Math.max(1, product.total_pack_ctn || 1); 
-
-        // 1. 현재 재고를 모두 팩(최소단위)으로 변환
-        let totalCurrentPacks = (currentCtn * packsPerCtn) + currentPack;
+        const currentCtn = Number(product.current_stock_level) || 0;
+        const currentPack = Number(product.current_stock_level_pack) || 0;
+        const packsPerCtn = Number(product.total_pack_ctn) || 0; 
         
-        // 2. 변동(차감/증가)될 재고를 모두 팩으로 변환
-        const totalUpdatePacks = (req.ctn * packsPerCtn) + req.pack;
+        // 🚀 박스 개념이 있는 상품인지 확인
+        const hasCarton = packsPerCtn > 1;
 
-        // 3. 더하거나 빼기
-        if (isReturn) {
-            totalCurrentPacks += totalUpdatePacks;
+        let newCtn = currentCtn;
+        let newPack = currentPack;
+
+        if (hasCarton) {
+            let totalCurrentPacks = (currentCtn * packsPerCtn) + currentPack;
+            const totalUpdatePacks = (req.ctn * packsPerCtn) + req.pack;
+
+            if (isReturn) {
+                totalCurrentPacks += totalUpdatePacks;
+            } else {
+                totalCurrentPacks -= totalUpdatePacks;
+            }
+
+            // JavaScript에서 음수를 나눌 때 내림(Math.floor) 처리하여 정확한 박스 수 도출
+            newCtn = Math.floor(totalCurrentPacks / packsPerCtn);
+            newPack = totalCurrentPacks % packsPerCtn;
+            
+            // % 연산자가 음수를 뱉을 수 있으므로 보정
+            if (newPack < 0) {
+                newPack += packsPerCtn;
+            }
         } else {
-            totalCurrentPacks -= totalUpdatePacks;
-        }
-
-        // 4. 결과를 다시 박스(CTN)와 팩(PACK)으로 깔끔하게 나누기
-        let newCtn = Math.floor(totalCurrentPacks / packsPerCtn);
-        let newPack = totalCurrentPacks % packsPerCtn;
-        
-        // 자바스크립트 특성상 나머지가 음수일 수 있으므로 보정 (예: -1 % 10 = -1 -> 9팩으로 보정)
-        if (newPack < 0) {
-            newPack += packsPerCtn;
-            // newCtn은 Math.floor에서 이미 내림 처리되어 -1이 적용되었으므로 손댈 필요 없음
+            // 🚀 박스 개념이 없으면 팩-박스 변환(나눗셈)을 전혀 하지 않고 그냥 더하기 빼기만 진행
+            if (isReturn) {
+                newCtn += req.ctn;
+                newPack += req.pack;
+            } else {
+                newCtn -= req.ctn;
+                newPack -= req.pack;
+            }
         }
 
         updatePromises.push(
@@ -902,7 +948,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
         allowedProducts.forEach(ap => updatesMap.set(ap.product_id, { ctn: ap.discount_ctn, pack: ap.discount_pack }));
         validItems.forEach(item => {
           const current = updatesMap.get(item.productId) || { ctn: 0, pack: 0 };
-          if (item.unit === "CTN") current.ctn = item.discountRate; else current.pack = item.discountRate; 
+          if (isCtnUnit(item.unit)) current.ctn = item.discountRate; else current.pack = item.discountRate; 
           updatesMap.set(item.productId, current);
         });
         const updates = validItems.map(item => {

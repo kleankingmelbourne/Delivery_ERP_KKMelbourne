@@ -438,20 +438,20 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
                 <div className="space-y-2"><Label>Customer Group</Label><div className="relative"><select value={formData.group_id} onChange={(e) => handleChange("group_id", e.target.value)} className="flex h-10 w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-slate-900 appearance-none"><option value="">No Group</option>{groupOptions.map((g) => (<option key={g.id} value={g.id}>{g.name}</option>))}</select><ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" /></div></div>
                 <div className="space-y-2"><Label>ABN</Label><Input value={formData.abn} onChange={(e) => handleChange("abn", e.target.value)} placeholder="XX XXX XXX XXX" /></div>
                 
-                {/* 🚀 [디자인 수정] 배송 비밀번호 및 열쇠 필수 박스 묶음 (양옆 나란히) */}
                 <div className="col-span-1 md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50/50 p-4 rounded-xl border border-slate-100 items-end">
                     <div className="space-y-2">
-                        <Label className="text-blue-700 font-bold block">Delivery Access PW (Max 10)</Label>
+                        {/* 🚀 [수정] Delivery Access PW 라벨 텍스트 변경 (Max 50) */}
+                        <Label className="text-blue-700 font-bold block">Delivery Access PW (Max 50)</Label>
                         <Input 
                             value={formData.customer_pw} 
                             onChange={(e) => handleChange("customer_pw", e.target.value)} 
-                            maxLength={10} 
+                            /* 🚀 [수정] 최대 입력 길이 제한 50으로 연장 */
+                            maxLength={50} 
                             placeholder="e.g. 1234 or *9999" 
                             className="bg-white border-blue-200 focus-visible:ring-blue-500 h-11"
                         />
                     </div>
                     
-                    {/* 🚀 눈에 확 띄는 Physical Key 체크박스 영역 */}
                     <div className={cn(
                         "flex items-center space-x-3 px-4 h-11 rounded-lg border-2 transition-all cursor-pointer",
                         formData.use_key 

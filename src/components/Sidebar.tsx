@@ -30,7 +30,8 @@ import {
   Banknote,       
   Receipt,
   RefreshCw, 
-  LogsIcon
+  LogsIcon,
+  UserX
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import Image from "next/image"
@@ -121,6 +122,8 @@ const menuItems = [
       { name: "PAYMENT REPORT", href: "/report/payment", icon: Receipt },
       { name: "OUTSTANDING", href: "/report/outstanding", icon: Banknote },
       { name: "DELIVERY LOG", href: "/report/deliverylog", icon: LogsIcon },
+      { name: "DORMANT REPORT", href: "/report/dormant", icon: UserX },
+
     ]
   },
 

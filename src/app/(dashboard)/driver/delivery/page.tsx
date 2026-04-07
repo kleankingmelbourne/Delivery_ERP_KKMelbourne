@@ -8,7 +8,7 @@ import {
   ArrowUpDown, Play, Unlock, Save, Home, 
   Sparkles, Building2, MousePointerClick, Flag, Circle,
   MessageSquareText, MapPin, ListOrdered, MapIcon, RefreshCw, ImageIcon, Pencil, ArrowDown,
-  Key // 🚀 [추가] Key 아이콘 임포트
+  Key, AlertTriangle, Download, BellRing // 🚀 [추가] 팝업용 BellRing 아이콘 임포트
 } from "lucide-react";
 import {
   DndContext, 
@@ -61,7 +61,8 @@ interface DeliveryItem {
   delivery_order: number; 
   lat?: number;
   lng?: number;
-  use_key?: boolean; // 🚀 [추가] 열쇠 사용 여부
+  use_key?: boolean; 
+  created_who?: string; 
 }
 
 interface RunState {
@@ -246,6 +247,12 @@ export default function DriverDashboardPage() {
       2: { isStarted: false, isEditing: false }
   });
 
+  // 🚀 [추가] 편집 모드(Edit) 상태를 백그라운드 싱크에서 안전하게 체크하기 위한 Ref
+  const isEditingRef = useRef(false);
+  useEffect(() => {
+      isEditingRef.current = Object.values(runStates).some(rs => rs.isEditing);
+  }, [runStates]);
+
   const [startDestType, setStartDestType] = useState<'company' | 'home' | 'custom'>('company');
   const [finalDestType, setFinalDestType] = useState<'company' | 'home' | 'custom'>('company');
   const [customStart, setCustomStart] = useState("");
@@ -272,6 +279,12 @@ export default function DriverDashboardPage() {
   const [targetId, setTargetId] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
 
+  const [uploadErrorData, setUploadErrorData] = useState<{ file: File, targetId: string, customerName: string } | null>(null);
+
+  // 🚀 [추가] 새 배송 팝업 알림을 위한 상태
+  const [newDeliveryAlert, setNewDeliveryAlert] = useState<{ show: boolean; customers: string[] }>({ show: false, customers: [] });
+  const prevInvoiceIds = useRef<Set<string>>(new Set());
+
   const [viewProofUrl, setViewProofUrl] = useState<string | null>(null);
 
   const [dailyMemo, setDailyMemo] = useState(""); 
@@ -281,7 +294,7 @@ export default function DriverDashboardPage() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const [isItemsModalOpen, setIsItemsModalOpen] = useState(false);
-  const [selectedInvoiceForItems, setSelectedInvoiceForItems] = useState<{id: string, name: string, memo: string, totalAmount: number, customerId: string, customerPw: string} | null>(null);
+  const [selectedInvoiceForItems, setSelectedInvoiceForItems] = useState<{id: string, name: string, memo: string, totalAmount: number, customerId: string, customerPw: string, createdWho: string} | null>(null);
   const [invoiceItems, setInvoiceItems] = useState<any[]>([]);
   const [isItemsLoading, setIsItemsLoading] = useState(false);
   const [checkedItems, setCheckedItems] = useState<Record<string, boolean>>({});
@@ -289,7 +302,6 @@ export default function DriverDashboardPage() {
   const [newPw, setNewPw] = useState(""); 
   const [isSavingPw, setIsSavingPw] = useState(false);
 
-  // 🚀 [추가] 열쇠 명단 팝업용 상태
   const [isKeyDialogOpen, setIsKeyDialogOpen] = useState(false);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
@@ -326,7 +338,6 @@ export default function DriverDashboardPage() {
   const currentList = deliveries.filter(d => (d.delivery_run === 0 ? 1 : d.delivery_run) === activeRun);
   const activeItem = currentList.find(d => !d.is_completed);
 
-  // 🚀 [추가] 오늘 챙겨야 할 열쇠 명단 추출 (현재 선택된 Run 기준)
   const keyInvoices = currentList.filter(d => d.use_key);
 
   const handleSetPoint = (type: 'company' | 'home' | 'custom') => {
@@ -379,9 +390,8 @@ export default function DriverDashboardPage() {
           setCurrentUserName(authUserName);
           const today = getMelbourneDate();
           
-          // 🚀 [수정] customers 에서 use_key 정보 가져오기
           const { data: invoiceData, error: invoiceError } = await supabase.from('invoices').select(`
-              id, invoice_to, memo, total_amount, proof_url, status, is_completed, delivery_run, delivery_order, driver_id, invoice_date, customer_id,
+              id, invoice_to, memo, total_amount, proof_url, status, is_completed, delivery_run, delivery_order, driver_id, invoice_date, customer_id, created_who,
               customers ( contact_name, customer_pw, use_key, mobile, delivery_address, delivery_state, delivery_suburb, delivery_postcode, delivery_lat, delivery_lng, lat, lng )
           `).eq('invoice_date', today).eq('driver_id', user.id).neq('delivery_run', 0).order('delivery_order', { ascending: true });
           
@@ -404,7 +414,8 @@ export default function DriverDashboardPage() {
                       memo: item.memo || "", 
                       contact_name: c?.contact_name || "",
                       customer_pw: c?.customer_pw || "", 
-                      use_key: c?.use_key || false, // 🚀 [추가] 열쇠 사용 여부 매핑
+                      use_key: c?.use_key || false, 
+                      created_who: item.created_who || "System",
                       total_amount: item.total_amount || 0, 
                       proof_url: item.proof_url || null,
                       delivery_address: `${c?.delivery_address || ''}, ${c?.delivery_suburb || ''}`.replace(/^, /, ""),
@@ -417,8 +428,44 @@ export default function DriverDashboardPage() {
                       lng: c?.delivery_lng || c?.lng
                   } as DeliveryItem;
               });
+
+              // 🚀 [추가] 실시간으로 새로운 배송건이 들어왔는지 감지하고 팝업 띄우기
+              const currentIds = new Set(rawItems.map(item => item.id));
+              if (isSilent && prevInvoiceIds.current.size > 0) {
+                  const addedItems = rawItems.filter(item => !prevInvoiceIds.current.has(item.id));
+                  if (addedItems.length > 0) {
+                      setNewDeliveryAlert({
+                          show: true,
+                          customers: addedItems.map(i => i.invoice_to)
+                      });
+                  }
+              }
+              prevInvoiceIds.current = currentIds;
+
               const sortedItems = sortDeliveries(rawItems);
-              setDeliveries(sortedItems); setOriginalDeliveries(sortedItems);
+              
+              // 🚀 [핵심 수정] 기사님이 수정(Edit) 중일 때 목록이 통째로 덮어씌워지며 꼬이는 문제 해결
+              setDeliveries(currentLocal => {
+                  if (isEditingRef.current && isSilent) {
+                      // 1. 현재 로컬 화면에 떠있는 ID들을 파악
+                      const currentLocalIds = new Set(currentLocal.map(d => d.id));
+                      // 2. 새로 추가된 아이템만 뽑아내기 (DB에서 방금 추가된 것)
+                      const newlyAdded = sortedItems.filter(d => !currentLocalIds.has(d.id));
+                      
+                      // 3. 기존에 화면에 있던 아이템들은 "현재 드래그/수정 중인 순서(delivery_order)"를 그대로 유지한 채 데이터만 업데이트
+                      const updatedLocal = currentLocal.map(localItem => {
+                          const dbItem = sortedItems.find(si => si.id === localItem.id);
+                          return dbItem ? { ...dbItem, delivery_order: localItem.delivery_order } : null;
+                      }).filter(Boolean) as DeliveryItem[];
+
+                      // 4. 새로 추가된 아이템은 맨 위에 붙이고, 기존 순서는 안전하게 보존!
+                      return [...newlyAdded, ...updatedLocal];
+                  }
+                  // 편집 중이 아닐 때는 DB에서 온 최신 정렬 상태를 그대로 적용
+                  return sortedItems;
+              });
+              
+              setOriginalDeliveries(sortedItems);
               
               setRunStates(prev => ({
                   1: { 
@@ -496,7 +543,8 @@ export default function DriverDashboardPage() {
           memo: item.memo || "",
           totalAmount: item.total_amount || 0,
           customerId: item.customer_id,
-          customerPw: item.customer_pw || ""
+          customerPw: item.customer_pw || "",
+          createdWho: item.created_who || "System"
       });
       setNewPw(item.customer_pw || "");
       setIsEditingPw(false);
@@ -671,6 +719,52 @@ export default function DriverDashboardPage() {
     } finally { setIsSavingOrder(false); }
   };
 
+  const executeUpload = async (file: File, targetIdToUpload: string, customerName: string) => {
+      setIsUploading(true);
+      setDeliveries(prev => prev.map(d => d.id === targetIdToUpload ? { ...d, is_completed: true } : d));
+
+      try {
+          const compressedFile = await imageCompression(file, { 
+              maxSizeMB: 0.7, 
+              maxWidthOrHeight: 1280, 
+              useWebWorker: true, 
+              initialQuality: 0.6 
+          });
+
+          const fileName = `${targetIdToUpload}_${Date.now()}.jpg`;
+          
+          const { error: uploadError } = await supabase.storage
+              .from('delivery-proofs')
+              .upload(fileName, compressedFile);
+
+          if (uploadError) throw uploadError;
+
+          const { data: { publicUrl } } = supabase.storage.from('delivery-proofs').getPublicUrl(fileName);
+
+          const { error: dbError } = await supabase
+              .from('invoices')
+              .update({ is_completed: true, proof_url: publicUrl })
+              .eq('id', targetIdToUpload);
+
+          if (dbError) throw dbError;
+
+          setDeliveries(prev => prev.map(d => d.id === targetIdToUpload ? { ...d, proof_url: publicUrl } : d));
+
+      } catch (error: any) {
+          console.error("Background upload failed:", error);
+          
+          setDeliveries(prev => prev.map(d => d.id === targetIdToUpload ? { ...d, is_completed: false } : d));
+          
+          setUploadErrorData({
+              file: file,
+              targetId: targetIdToUpload,
+              customerName: customerName
+          });
+      } finally {
+          setIsUploading(false);
+      }
+  };
+
   const handleConfirmUpload = async () => {
     if (!selectedFile || !targetId) return;
 
@@ -678,47 +772,34 @@ export default function DriverDashboardPage() {
     const currentFile = selectedFile;
     const customerName = deliveries.find(d => d.id === currentTargetId)?.invoice_to || "Unknown";
 
-    setDeliveries(prev => prev.map(d => d.id === currentTargetId ? { ...d, is_completed: true } : d));
     setPreviewUrl(null);
     setSelectedFile(null);
     setTargetId(null);
 
-    setIsUploading(true);
-    
-    try {
-        const compressedFile = await imageCompression(currentFile, { 
-            maxSizeMB: 0.7, 
-            maxWidthOrHeight: 1280, 
-            useWebWorker: true, 
-            initialQuality: 0.6 
-        });
+    await executeUpload(currentFile, currentTargetId, customerName);
+  };
 
-        const fileName = `${currentTargetId}_${Date.now()}.jpg`;
-        
-        const { error: uploadError } = await supabase.storage
-            .from('delivery-proofs')
-            .upload(fileName, compressedFile);
+  const handleRetryUpload = () => {
+      if (!uploadErrorData) return;
+      const { file, targetId: tId, customerName } = uploadErrorData;
+      setUploadErrorData(null); 
+      executeUpload(file, tId, customerName);
+  };
 
-        if (uploadError) throw uploadError;
+  const handleSaveForLater = () => {
+      if (!uploadErrorData) return;
+      const { file, customerName } = uploadErrorData;
+      
+      const url = URL.createObjectURL(file);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Proof_${customerName.replace(/[^a-zA-Z0-9가-힣]/g, '_')}_${Date.now()}.jpg`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
 
-        const { data: { publicUrl } } = supabase.storage.from('delivery-proofs').getPublicUrl(fileName);
-
-        const { error: dbError } = await supabase
-            .from('invoices')
-            .update({ is_completed: true, proof_url: publicUrl })
-            .eq('id', currentTargetId);
-
-        if (dbError) throw dbError;
-
-        setDeliveries(prev => prev.map(d => d.id === currentTargetId ? { ...d, proof_url: publicUrl } : d));
-
-    } catch (error: any) {
-        console.error("Background task failed:", error);
-        alert(`⚠️ Upload Failed for [${customerName}].\nPlease check internet.`);
-        setDeliveries(prev => prev.map(d => d.id === currentTargetId ? { ...d, is_completed: false } : d));
-    } finally {
-        setIsUploading(false);
-    }
+      setUploadErrorData(null);
   };
 
   const handleSaveMemo = async () => {
@@ -789,13 +870,78 @@ export default function DriverDashboardPage() {
             </div>
           )}
 
+          {/* 🚀 [추가] 새 배송 팝업 알림 다이얼로그 */}
+          <Dialog open={newDeliveryAlert.show} onOpenChange={(open) => !open && setNewDeliveryAlert({ show: false, customers: [] })}>
+              <DialogContent className="w-[90%] max-w-sm rounded-3xl p-6 bg-white shadow-2xl z-[300]">
+                  <DialogHeader className="flex flex-col items-center gap-3">
+                      <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center animate-bounce shadow-inner">
+                          <BellRing className="w-8 h-8" />
+                      </div>
+                      <DialogTitle className="text-xl font-black text-slate-900 text-center leading-tight">
+                          New Delivery Added!
+                      </DialogTitle>
+                      <DialogDescription className="text-center text-slate-500 font-medium mt-1 text-sm">
+                          You have {newDeliveryAlert.customers.length} new delivery assigned to your run.
+                      </DialogDescription>
+                  </DialogHeader>
+                  
+                  <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 max-h-40 overflow-y-auto mt-2 custom-scrollbar">
+                      <ul className="space-y-2.5">
+                          {newDeliveryAlert.customers.map((c, idx) => (
+                              <li key={idx} className="flex items-center gap-2.5 text-sm font-bold text-slate-800">
+                                  <span className="w-2 h-2 rounded-full bg-blue-500 shrink-0 shadow-sm" />
+                                  <span className="truncate">{c}</span>
+                              </li>
+                          ))}
+                      </ul>
+                  </div>
+
+                  <div className="mt-4 pt-2">
+                      <Button 
+                          className="w-full h-14 bg-blue-600 hover:bg-blue-700 text-white font-bold text-lg rounded-xl shadow-lg active:scale-95 transition-transform" 
+                          onClick={() => setNewDeliveryAlert({ show: false, customers: [] })}
+                      >
+                          Okay, got it
+                      </Button>
+                  </div>
+              </DialogContent>
+          </Dialog>
+
+          <Dialog open={!!uploadErrorData} onOpenChange={(open) => { if (!open) setUploadErrorData(null); }}>
+              <DialogContent className="w-[90%] rounded-3xl max-w-sm p-6 bg-white border-slate-100 shadow-2xl z-[250]">
+                  <DialogHeader className="mb-2">
+                      <DialogTitle className="text-center text-xl font-black text-rose-600 flex flex-col items-center gap-2">
+                          <AlertTriangle className="w-10 h-10" />
+                          Upload Failed
+                      </DialogTitle>
+                      <DialogDescription className="text-center text-slate-600 font-medium mt-2">
+                          Network issue occurred while saving photo for <br/><strong className="text-slate-800">{uploadErrorData?.customerName}</strong>.<br/>What would you like to do?
+                      </DialogDescription>
+                  </DialogHeader>
+                  <div className="flex flex-col gap-3 mt-4">
+                      <Button 
+                          className="h-14 bg-blue-600 hover:bg-blue-700 text-white font-bold text-[15px] rounded-xl flex items-center justify-center gap-2 shadow-md" 
+                          onClick={handleRetryUpload}
+                      >
+                          <RefreshCw className="w-5 h-5" /> Retry Upload Now
+                      </Button>
+                      <Button 
+                          variant="outline" 
+                          className="h-14 border-slate-300 hover:bg-slate-100 text-slate-700 font-bold text-[14px] rounded-xl flex items-center justify-center gap-2" 
+                          onClick={handleSaveForLater}
+                      >
+                          <Download className="w-5 h-5 text-emerald-600" /> Save Photo & Do It Later
+                      </Button>
+                  </div>
+              </DialogContent>
+          </Dialog>
+
           <div className="shrink-0 bg-white z-20 border-b border-slate-100 shadow-sm relative">
             <div className="flex items-center justify-between p-4 pb-2 max-w-4xl mx-auto w-full">
                 <div className="flex items-center gap-2">
                     <h1 className="font-extrabold text-xl text-slate-900 truncate max-w-[200px]">{currentUserName}</h1>
                     {(isBackgroundSyncing || isUploading) && <RefreshCw className="w-4 h-4 text-blue-500 animate-spin" />}
                 </div>
-                {/* 🚀 [추가] 우측 상단 열쇠 뱃지 (클릭 시 팝업 오픈) */}
                 <div className="flex items-center">
                     {keyInvoices.length > 0 && (
                         <button
@@ -839,32 +985,32 @@ export default function DriverDashboardPage() {
                                   <SortableContext items={listWithLabels.map(d => d.id)} strategy={verticalListSortingStrategy}>
                                       {listWithLabels.map((item, index) => {
                                           return <SortableItem 
-                                            key={item.id} 
-                                            id={item.id} 
-                                            item={item} 
-                                            index={index} 
-                                            isActive={isStarted && !item.is_completed && activeItem?.id === item.id} 
-                                            isDone={item.is_completed} 
-                                            isEditing={isEditing} 
-                                            dailyMemo={dailyMemo} 
-                                            isUpdatingLocation={updatingLocationId === item.id} 
-                                            displayNumber={item.displayNumber} 
-                                            isNewItem={item.isZeroOrder} 
-                                            onComplete={() => { 
-                                                setTargetId(item.id); 
-                                                setIsPhotoOptionModalOpen(true); 
-                                            }} 
-                                            onNavigate={() => {
-                                                const destination = (item.lat && item.lng) 
-                                                    ? `${item.lat},${item.lng}` 
-                                                    : encodeURIComponent(item.delivery_address);
-                                                window.location.href = `https://www.google.com/maps/dir/?api=1&destination=${destination}`;
-                                            }} 
-                                            onCall={() => item.phone && (window.location.href = `tel:${item.phone}`)} 
-                                            onMemo={() => handleOpenItemMemo(item.invoice_to)} 
-                                            onOpenItems={() => handleOpenItems(item)}
-                                            onUpdateLocation={() => handleUpdateLocation(item.id, item.customer_id)} 
-                                            onViewProof={(url: string) => setViewProofUrl(url)}
+                                              key={item.id} 
+                                              id={item.id} 
+                                              item={item} 
+                                              index={index} 
+                                              isActive={isStarted && !item.is_completed && activeItem?.id === item.id} 
+                                              isDone={item.is_completed} 
+                                              isEditing={isEditing} 
+                                              dailyMemo={dailyMemo} 
+                                              isUpdatingLocation={updatingLocationId === item.id} 
+                                              displayNumber={item.displayNumber} 
+                                              isNewItem={item.isZeroOrder} 
+                                              onComplete={() => { 
+                                                  setTargetId(item.id); 
+                                                  setIsPhotoOptionModalOpen(true); 
+                                              }} 
+                                              onNavigate={() => {
+                                                  const destination = (item.lat && item.lng) 
+                                                      ? `${item.lat},${item.lng}` 
+                                                      : encodeURIComponent(item.delivery_address);
+                                                  window.location.href = `https://www.google.com/maps/dir/?api=1&destination=${destination}`;
+                                              }} 
+                                              onCall={() => item.phone && (window.location.href = `tel:${item.phone}`)} 
+                                              onMemo={() => handleOpenItemMemo(item.invoice_to)} 
+                                              onOpenItems={() => handleOpenItems(item)}
+                                              onUpdateLocation={() => handleUpdateLocation(item.id, item.customer_id)} 
+                                              onViewProof={(url: string) => setViewProofUrl(url)}
                                           />;
                                       })}
                                   </SortableContext>
@@ -905,26 +1051,26 @@ export default function DriverDashboardPage() {
 
                               return (
                                   <Marker 
-                                    key={inv.id} 
-                                    position={leg.end_location} 
-                                    label={{ 
-                                        text: String(inv.displayNumber), 
-                                        color: 'white', 
-                                        fontWeight: 'bold',
-                                        fontSize: '13px'
-                                    }}
-                                    icon={{
-                                        path: PIN_SVG_PATH,
-                                        fillColor: inv.isZeroOrder ? "#ef4444" : "#e11d48", 
-                                        fillOpacity: 1,
-                                        strokeWeight: 1.5,
-                                        strokeColor: "#991b1b",
-                                        scale: 2,
-                                        anchor: new window.google.maps.Point(12, 24),
-                                        labelOrigin: new window.google.maps.Point(12, 10)
-                                    }}
-                                    opacity={inv.is_completed ? 0.4 : 1.0} 
-                                    onClick={() => setActiveMarkerId(inv.id)}
+                                      key={inv.id} 
+                                      position={leg.end_location} 
+                                      label={{ 
+                                          text: String(inv.displayNumber), 
+                                          color: 'white', 
+                                          fontWeight: 'bold',
+                                          fontSize: '13px'
+                                      }}
+                                      icon={{
+                                          path: PIN_SVG_PATH,
+                                          fillColor: inv.isZeroOrder ? "#ef4444" : "#e11d48", 
+                                          fillOpacity: 1,
+                                          strokeWeight: 1.5,
+                                          strokeColor: "#991b1b",
+                                          scale: 2,
+                                          anchor: new window.google.maps.Point(12, 24),
+                                          labelOrigin: new window.google.maps.Point(12, 10)
+                                      }}
+                                      opacity={inv.is_completed ? 0.4 : 1.0} 
+                                      onClick={() => setActiveMarkerId(inv.id)}
                                   >
                                       {activeMarkerId === inv.id && (
                                           <InfoWindow 
@@ -969,7 +1115,6 @@ export default function DriverDashboardPage() {
         </div>
       </div>
 
-      {/* 🚀 [추가] 모바일 화면용 열쇠 명단 팝업 (가운데 정렬) */}
       <Dialog open={isKeyDialogOpen} onOpenChange={setIsKeyDialogOpen}>
           <DialogContent className="w-[90%] max-w-sm bg-white p-0 overflow-hidden rounded-2xl shadow-xl z-[200]">
               <DialogHeader className="bg-amber-50 border-b border-amber-100 p-4 pb-3">
@@ -1004,7 +1149,6 @@ export default function DriverDashboardPage() {
           </DialogContent>
       </Dialog>
 
-      {/* 기타 기존 모달들... */}
       <Dialog open={isPhotoOptionModalOpen} onOpenChange={setIsPhotoOptionModalOpen}>
           <DialogContent className="w-[90%] rounded-3xl max-w-sm p-6 bg-white border-slate-100 shadow-2xl">
               <DialogHeader className="mb-2">
@@ -1047,7 +1191,14 @@ export default function DriverDashboardPage() {
               <DialogHeader className="p-4 bg-white border-b border-slate-200 shrink-0 flex flex-row items-start justify-between">
                   <div className="flex flex-col items-start text-left">
                       <DialogTitle className="text-xl font-black text-slate-800 m-0 leading-tight">Delivery Items</DialogTitle>
-                      <span className="text-sm font-medium text-blue-600 mt-1">{selectedInvoiceForItems?.name}</span>
+                      <div className="flex items-center gap-2 mt-1">
+                          <span className="text-sm font-medium text-blue-600">{selectedInvoiceForItems?.name}</span>
+                          {selectedInvoiceForItems?.createdWho && (
+                              <span className="text-[10px] font-bold bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded border border-slate-200">
+                                  By: {selectedInvoiceForItems.createdWho}
+                              </span>
+                          )}
+                      </div>
                   </div>
                   <DialogDescription className="hidden">View items</DialogDescription>
                   <button onClick={() => setIsItemsModalOpen(false)} className="p-2 bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200 transition-colors"><X className="w-5 h-5" /></button>
@@ -1186,7 +1337,6 @@ function SortableItem({ id, item, index, isActive, isDone, isEditing, dailyMemo,
 
     const validAdminMemo = item.memo && typeof item.memo === 'string' && item.memo.trim() !== "" && item.memo.toLowerCase() !== "null";
 
-    // 🚀 1. 완료된 배송 (isDone)
     if (isDone) return ( 
         <div ref={setNodeRef} style={style} className="bg-slate-50 border p-4 rounded-xl opacity-70 flex flex-col shadow-sm transition-all">
             <div className="flex items-center justify-between">
@@ -1206,9 +1356,10 @@ function SortableItem({ id, item, index, isActive, isDone, isEditing, dailyMemo,
                     </button>
                     
                     <div className="flex flex-col overflow-hidden grayscale">
-                        <span className="text-slate-500 font-medium line-through text-sm truncate flex items-center gap-1">
+                        <span className="text-slate-500 font-medium line-through text-sm truncate flex items-center flex-wrap gap-1">
                             {isNewItem ? "! " : ""}{item.invoice_to}
                             {item.use_key && <Key className="w-3 h-3 text-slate-400 shrink-0"/>}
+                            {item.created_who && <span className="ml-1 text-[9px] font-bold bg-slate-200 text-slate-500 px-1.5 py-0.5 rounded no-underline">By: {item.created_who}</span>}
                         </span>
                     </div>
                 </div>
@@ -1226,7 +1377,6 @@ function SortableItem({ id, item, index, isActive, isDone, isEditing, dailyMemo,
         </div>
     );
 
-    // 🚀 2. 현재 활성 배송 (isActive)
     if (isActive && !isEditing) return (
         <div ref={setNodeRef} style={style} className={cn("bg-white border-2 shadow-xl p-5 rounded-2xl transform scale-[1.02] relative animate-in zoom-in-95 duration-300", isNewItem ? "border-rose-500" : "border-blue-600")}>
             <div className={cn("absolute top-0 left-0 text-white text-[10px] font-bold px-3 py-1 rounded-br-xl uppercase", isNewItem ? "bg-rose-500" : "bg-blue-600")}>Current</div>
@@ -1234,12 +1384,22 @@ function SortableItem({ id, item, index, isActive, isDone, isEditing, dailyMemo,
                 <h3 className="text-2xl font-black flex items-center gap-2">
                     <span className={isNewItem ? "text-rose-500 mr-1" : ""}>{displayNumber}{isNewItem ? "" : ". "}</span>
                     {item.invoice_to}
-                    {/* 🚀 [추가] 활성 상태인 카드에도 열쇠 아이콘 강조 표시 */}
                     {item.use_key && <span title="Physical Key Required" className="flex shrink-0"><Key className="w-6 h-6 text-amber-500"/></span>}
                 </h3>
                 <div className="flex items-center gap-2"><Button size="icon" variant="ghost" onClick={onOpenItems} className="h-10 w-10 rounded-full text-slate-400 hover:bg-slate-100"><Package className="w-5 h-5" /></Button><Button size="icon" variant="ghost" onClick={onMemo} className={cn("h-10 w-10 rounded-full", hasMemo ? "bg-blue-50 text-blue-600" : "text-slate-400 hover:bg-slate-100")}><MessageSquareText className={cn("w-5 h-5", hasMemo && "fill-blue-200")} /></Button></div>
             </div>
-            <p className="text-slate-600 text-sm mt-1 leading-tight"><span className="font-semibold text-slate-800">CONTACT: </span><span className="font-normal">{item.contact_name || ""}</span><span className="mx-1.5 text-slate-300">|</span><span>{item.delivery_address}</span></p>
+            <p className="text-slate-600 text-sm mt-1 leading-tight flex items-center flex-wrap gap-x-1.5 gap-y-1">
+                <span className="font-semibold text-slate-800">CONTACT: </span>
+                <span className="font-normal">{item.contact_name || ""}</span>
+                <span className="text-slate-300">|</span>
+                <span>{item.delivery_address}</span>
+                {item.created_who && (
+                    <>
+                        <span className="text-slate-300">|</span>
+                        <span className="text-[10px] font-bold bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded">By: {item.created_who}</span>
+                    </>
+                )}
+            </p>
 
             {validAdminMemo && (
                 <div className="mt-3 p-3 bg-amber-50 rounded-xl border border-amber-200 shadow-inner">
@@ -1254,7 +1414,6 @@ function SortableItem({ id, item, index, isActive, isDone, isEditing, dailyMemo,
         </div>
     );
 
-    // 🚀 3. 일반 대기 배송
     return (
         <div ref={setNodeRef} style={style} className={cn("bg-white p-4 rounded-xl border flex items-center justify-between shadow-sm transition-all", isEditing ? "border-blue-200 ring-2 ring-blue-50" : (isNewItem ? "border-rose-200 shadow-rose-100/50" : "opacity-70 border-slate-100"))}>
             <div className="flex items-center gap-3 overflow-hidden">
@@ -1263,15 +1422,20 @@ function SortableItem({ id, item, index, isActive, isDone, isEditing, dailyMemo,
                 <div className="overflow-hidden pr-2 flex-1">
                     <div className="font-bold text-slate-800 text-sm truncate flex items-center gap-1.5">
                         {item.invoice_to}
-                        {/* 🚀 [추가] 대기 중인 카드에도 열쇠 아이콘 표시 */}
                         {item.use_key && <span title="Physical Key Required" className="flex shrink-0"><Key className="w-3.5 h-3.5 text-amber-500" /></span>}
                     </div>
                     
-                    <div className="text-[10px] text-slate-400 truncate mt-0.5">
+                    <div className="text-[10px] text-slate-400 truncate mt-0.5 flex items-center flex-wrap gap-x-1.5 gap-y-1">
                         <span className="font-semibold text-slate-500">CONTACT: </span>
                         <span className="font-normal text-slate-500">{item.contact_name || ""}</span>
-                        <span className="mx-1.5 text-slate-300">|</span>
+                        <span className="text-slate-300">|</span>
                         <span>{item.delivery_address}</span>
+                        {item.created_who && (
+                            <>
+                                <span className="text-slate-300">|</span>
+                                <span className="text-[9px] font-bold bg-slate-100 text-slate-400 px-1 py-0.5 rounded border border-slate-200">By: {item.created_who}</span>
+                            </>
+                        )}
                     </div>
 
                     {validAdminMemo && (

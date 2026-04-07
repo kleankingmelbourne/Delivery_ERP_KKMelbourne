@@ -195,7 +195,8 @@ function SearchableSelect({
         }} 
         className={`flex items-center justify-between w-full px-3 py-2 text-sm border rounded-md cursor-pointer bg-white transition-all ${disabled ? "bg-slate-100 text-slate-400 cursor-not-allowed" : "hover:border-slate-400 focus:ring-2 focus:ring-slate-900"} ${isOpen ? "ring-2 ring-slate-900 border-slate-900" : "border-slate-200"}`}
       >
-        <span className={`block truncate ${!selectedOption ? "text-slate-400" : "text-slate-900 font-medium"}`}>
+        {/* 🚀 [수정] title 속성을 추가하여 마우스를 올리면 잘린 긴 이름이 툴팁으로 표시되도록 함 */}
+        <span title={selectedOption ? selectedOption.label : placeholder} className={`block truncate ${!selectedOption ? "text-slate-400" : "text-slate-900 font-medium"}`}>
             {selectedOption ? selectedOption.label : placeholder}
         </span>
         <ChevronDown className="w-4 h-4 text-slate-400 opacity-50 shrink-0 ml-2" />
@@ -281,7 +282,7 @@ interface ProductMaster {
     buy_price?: number; 
     sell_price_ctn: number; 
     sell_price_pack: number; 
-    total_pack_ctn?: number; // 🚀 DB 컬럼명 적용
+    total_pack_ctn?: number; 
     default_unit_id?: string; 
     product_units?: { unit_name: string }; 
     unit_name?: string; 
@@ -290,7 +291,19 @@ interface ProductMaster {
     is_active?: boolean;
 } 
 interface AllowedProduct { id: string; product_id: string; discount_ctn: number; discount_pack: number; }
-interface InvoiceItem { productId: string; unit: string; quantity: number; unitCost?: number; basePrice: number; discountRate: number; unitPrice: number; defaultUnitName?: string; }
+
+// 🚀 [수정] InvoiceItem 인터페이스에 isGstIncluded 속성 추가
+interface InvoiceItem { 
+    productId: string; 
+    unit: string; 
+    quantity: number; 
+    unitCost?: number; 
+    basePrice: number; 
+    discountRate: number; 
+    unitPrice: number; 
+    defaultUnitName?: string; 
+    isGstIncluded?: boolean; 
+}
 
 interface InvoiceFormProps {
   invoiceId?: string; 
@@ -336,8 +349,9 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
   const [availableCredit, setAvailableCredit] = useState(0); 
   
   const [originalItems, setOriginalItems] = useState<InvoiceItem[]>([]);
+  // 🚀 [수정] 초기 상태에 isGstIncluded: true 추가
   const [items, setItems] = useState<InvoiceItem[]>([
-    { productId: "", unit: "CTN", quantity: 1, unitCost: 0, basePrice: 0, discountRate: 0, unitPrice: 0 }
+    { productId: "", unit: "CTN", quantity: 1, unitCost: 0, basePrice: 0, discountRate: 0, unitPrice: 0, isGstIncluded: true }
   ]);
 
   // 1. Initial Load 
@@ -395,7 +409,8 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                 basePrice: item.base_price, 
                 discountRate: item.discount, 
                 unitPrice: item.unit_price, 
-                defaultUnitName: prod?.product_units?.unit_name || "CTN"
+                defaultUnitName: prod?.product_units?.unit_name || "CTN",
+                isGstIncluded: item.is_gst_included !== false // 🚀 기본값은 항상 true
             };
           });
           setItems(loadedItems);
@@ -577,7 +592,8 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
         discountRate: discountRateInput, 
         unitPrice: netPrice, 
         defaultUnitName: defaultUnitName || currentItem.defaultUnitName,
-        unitCost: cost !== undefined ? cost : currentItem.unitCost 
+        unitCost: cost !== undefined ? cost : currentItem.unitCost,
+        isGstIncluded: currentItem.isGstIncluded !== false // 기존 값 유지
     };
     setItems(newItems);
   };
@@ -633,11 +649,18 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
   
   const updateItem = (index: number, field: keyof InvoiceItem, value: any) => { const newItems = [...items]; newItems[index] = { ...newItems[index], [field]: value }; setItems(newItems); };
   const removeItem = (index: number) => { if (items.length > 1) setItems(items.filter((_, i) => i !== index)); };
-  const addItem = () => setItems([...items, { productId: "", unit: "CTN", quantity: 1, unitCost: 0, basePrice: 0, discountRate: 0, unitPrice: 0 }]);
+  
+  // 🚀 새 아이템 추가 시에도 GST 기본값은 true
+  const addItem = () => setItems([...items, { productId: "", unit: "CTN", quantity: 1, unitCost: 0, basePrice: 0, discountRate: 0, unitPrice: 0, isGstIncluded: true }]);
   const handleProductClick = (index: number) => { if (index === items.length - 1) addItem(); };
 
+  // 🚀 [수정] 체크가 해제된 아이템은 GST 계산에서 뺌
   const subTotal = roundAmount(items.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0));
-  const gstTotal = roundAmount(subTotal * 0.1);
+  const gstTotal = roundAmount(items.reduce((sum, item) => {
+      const itemTotal = item.quantity * item.unitPrice;
+      // isGstIncluded가 false인 항목은 0원으로 계산, 아니면 10% 더함
+      return sum + ((item.isGstIncluded !== false) ? itemTotal * 0.1 : 0);
+  }, 0));
   const grandTotal = roundAmount(subTotal + gstTotal);
 
   const prevGrandTotalRef = useRef(grandTotal);
@@ -648,7 +671,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       prevGrandTotalRef.current = grandTotal;
   }, [grandTotal]);
   
-  // 🚀 [수정] 박스 단위 유무를 판별하여, 박스가 있으면 올림/내림 처리하고, 없으면 팩 단위로만 단순 합산
   const checkStockAvailability = async (itemList: InvoiceItem[]) => {
       const insufficientItems: string[] = [];
       const validItems = itemList.filter(i => i.productId);
@@ -682,14 +704,12 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
               let currentPack = Number(product.current_stock_level_pack) || 0;
               const packsPerCtn = Number(product.total_pack_ctn) || 0; 
               
-              // 🚀 1팩 초과 구성이면 박스 개념 있음 / 아니면 팩 전용
               const hasCarton = packsPerCtn > 1;
 
               if (hasCarton) {
                   let totalAvailablePacks = (currentCtn * packsPerCtn) + currentPack;
 
                   if (isEditMode) {
-                      // 수정 모드: 기존 인보이스 수량을 현재 재고에 다시 더해줌(원상복구)
                       const originalForProduct = originalItems.filter(oi => oi.productId === productId);
                       originalForProduct.forEach(oi => {
                           const oiQty = Number(oi.quantity) || 0;
@@ -704,7 +724,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                       insufficientItems.push(`${product.product_name}`);
                   }
               } else {
-                  // 박스 개념이 없는 상품은 변환 없이 그대로 비교
                   let availCtn = currentCtn;
                   let availPack = currentPack;
 
@@ -729,7 +748,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       return insufficientItems;
   };
 
-  // 🚀 [수정] 박스/팩 자동 올림/내림 처리 (DB 업데이트용)
   const updateInventory = async (itemList: InvoiceItem[], isReturn: boolean) => {
     const validItems = itemList.filter(i => i.productId);
     if (validItems.length === 0) return;
@@ -766,7 +784,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
         const currentPack = Number(product.current_stock_level_pack) || 0;
         const packsPerCtn = Number(product.total_pack_ctn) || 0; 
         
-        // 🚀 박스 개념이 있는 상품인지 확인
         const hasCarton = packsPerCtn > 1;
 
         let newCtn = currentCtn;
@@ -782,16 +799,13 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                 totalCurrentPacks -= totalUpdatePacks;
             }
 
-            // JavaScript에서 음수를 나눌 때 내림(Math.floor) 처리하여 정확한 박스 수 도출
             newCtn = Math.floor(totalCurrentPacks / packsPerCtn);
             newPack = totalCurrentPacks % packsPerCtn;
             
-            // % 연산자가 음수를 뱉을 수 있으므로 보정
             if (newPack < 0) {
                 newPack += packsPerCtn;
             }
         } else {
-            // 🚀 박스 개념이 없으면 팩-박스 변환(나눗셈)을 전혀 하지 않고 그냥 더하기 빼기만 진행
             if (isReturn) {
                 newCtn += req.ctn;
                 newPack += req.pack;
@@ -833,7 +847,18 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
         if (validItems.length > 0) {
           const itemsData = validItems.map(item => {
               const p = allProducts.find(x => x.id === item.productId);
-              return { invoice_id: nextId, product_id: item.productId, description: `${p?.product_name || 'Item'} (${item.unit})`, quantity: item.quantity, unit: item.unit, base_price: item.basePrice, discount: item.discountRate, unit_price: item.unitPrice, amount: roundAmount(item.quantity * item.unitPrice) };
+              return { 
+                  invoice_id: nextId, 
+                  product_id: item.productId, 
+                  description: `${p?.product_name || 'Item'} (${item.unit})`, 
+                  quantity: item.quantity, 
+                  unit: item.unit, 
+                  base_price: item.basePrice, 
+                  discount: item.discountRate, 
+                  unit_price: item.unitPrice, 
+                  amount: roundAmount(item.quantity * item.unitPrice),
+                  is_gst_included: item.isGstIncluded !== false // 🚀 DB 전송
+              };
           });
           parallelTasks.push(supabase.from("invoice_items").insert(itemsData));
           parallelTasks.push(updateInventory(validItems, true));
@@ -934,7 +959,18 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       
       const itemsData = validItems.map(item => {
         const p = allProducts.find(x => x.id === item.productId);
-        return { invoice_id: targetId, product_id: item.productId, description: `${p?.product_name || 'Unknown'} (${item.unit})`, quantity: item.quantity, unit: item.unit, base_price: item.basePrice, discount: item.discountRate, unit_price: item.unitPrice, amount: roundAmount(item.quantity * item.unitPrice) };
+        return { 
+            invoice_id: targetId, 
+            product_id: item.productId, 
+            description: `${p?.product_name || 'Unknown'} (${item.unit})`, 
+            quantity: item.quantity, 
+            unit: item.unit, 
+            base_price: item.basePrice, 
+            discount: item.discountRate, 
+            unit_price: item.unitPrice, 
+            amount: roundAmount(item.quantity * item.unitPrice),
+            is_gst_included: item.isGstIncluded !== false // 🚀 DB 전송
+        };
       });
 
       const parallelSaveTasks = [
@@ -977,7 +1013,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
   const resetForm = () => {
     setSelectedCustomerId(""); setInvoiceDate(today); setDueDate(""); setMemo("");
-    setItems([{ productId: "", unit: "CTN", quantity: 1, unitCost: 0, basePrice: 0, discountRate: 0, unitPrice: 0 }]);
+    setItems([{ productId: "", unit: "CTN", quantity: 1, unitCost: 0, basePrice: 0, discountRate: 0, unitPrice: 0, isGstIncluded: true }]);
     setShowAllProducts(false); setAutoAddProduct(false); setAvailableCredit(0); setCurrentDriverId(null); 
     setIsPickup(false); setCustomerStats({ totalOverdue: 0, oldestInvoiceDate: null });
     setAllProducts([]); 
@@ -1064,22 +1100,25 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
             <div className="border border-slate-200 rounded-lg"> 
               <table className="w-full text-sm text-left table-fixed">
                 <thead className="bg-slate-50 border-b border-slate-200 text-slate-700 font-bold text-xs uppercase">
+                  {/* 🚀 테이블 컬럼 비율(w-[%]) 재조정 */}
                   <tr>
-                    <th className="px-4 py-3 w-[3%] text-center text-slate-400">#</th>
-                    <th className="px-4 py-3 w-[26%]">Product</th>
-                    <th className="px-4 py-3 w-[8%] text-center">Unit</th>
-                    <th className="px-4 py-3 w-[10%] text-right text-orange-600">Cost</th>
-                    <th className="px-4 py-3 w-[10%] text-right bg-slate-100/50">Base</th>
-                    <th className="px-4 py-3 w-[10%] text-right text-blue-700">Net</th>
-                    <th className="px-4 py-3 w-[8%] text-right">Disc %</th>
-                    <th className="px-4 py-3 w-[8%] text-center">Qty</th>
-                    <th className="px-4 py-3 w-[12%] text-right">Total</th>
+                    <th className="px-3 py-3 w-[3%] text-center text-slate-400">#</th>
+                    <th className="px-3 py-3 w-[24%]">Product</th>
+                    <th className="px-3 py-3 w-[8%] text-center">Unit</th>
+                    <th className="px-3 py-3 w-[9%] text-right text-orange-600">Cost</th>
+                    <th className="px-3 py-3 w-[9%] text-right bg-slate-100/50">Base</th>
+                    <th className="px-3 py-3 w-[9%] text-right text-blue-700">Net</th>
+                    <th className="px-3 py-3 w-[7%] text-right">Disc %</th>
+                    <th className="px-3 py-3 w-[8%] text-center">Qty</th>
+                    {/* 🚀 새로운 GST 헤더 추가 */}
+                    <th className="px-3 py-3 w-[6%] text-center">GST</th>
+                    <th className="px-3 py-3 w-[12%] text-right">Total</th>
                     <th className="w-[5%]"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {items.map((item, idx) => {
-                    const isCtnOrPack = item.defaultUnitName?.toLowerCase().includes("carton") || item.defaultUnitName?.toLowerCase().includes("ctn") || item.defaultUnitName === "CTN";
+                    const isCtnOrPack = isCtnUnit(item.defaultUnitName);
                     return (
                         <tr key={idx} className="hover:bg-slate-50/50">
                           <td className="p-2 text-center text-xs text-slate-400 font-bold">{idx + 1}</td>
@@ -1156,7 +1195,16 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                                 onChange={(e) => { const val = e.target.value; if (val === '') updateItem(idx, "quantity", ''); else updateItem(idx, "quantity", parseInt(val, 10)); }} 
                               />
                           </td>
-                          <td className="px-4 py-3 text-right font-bold text-slate-900">${(item.quantity * item.unitPrice).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                          {/* 🚀 GST 체크박스 셀 추가 */}
+                          <td className="p-2 text-center">
+                              <div className="flex items-center justify-center w-full h-full">
+                                  <Checkbox 
+                                      checked={item.isGstIncluded !== false}
+                                      onCheckedChange={(c) => updateItem(idx, "isGstIncluded", !!c)}
+                                  />
+                              </div>
+                          </td>
+                          <td className="px-3 py-3 text-right font-bold text-slate-900">${(item.quantity * item.unitPrice).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                           <td className="p-2 text-center"><button onClick={() => removeItem(idx)} className="text-slate-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button></td>
                         </tr>
                     );

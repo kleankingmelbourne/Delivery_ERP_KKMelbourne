@@ -49,7 +49,7 @@ const styles = StyleSheet.create({
   invoiceTitle: { fontSize: 14, fontWeight: 'bold', textAlign: 'center', marginBottom: 8, borderBottomWidth: 1, borderColor: '#ddd', paddingBottom: 5 },
   
   paymentBox: { width: '100%', borderWidth: 1, borderColor: '#ddd', padding: 10, backgroundColor: '#fafafa' },
-  paymentTitle: { fontSize: 11, fontWeight: 'bold', marginBottom: 6, textDecoration: 'underline' },
+  paymentTitle: { fontSize: 11, fontWeight: 'bold', marginBottom: 6, textDecoration: 'underline', marginTop: 15 },
   
   metaRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
   metaLabel: { fontWeight: 'bold', color: '#555' },
@@ -102,6 +102,19 @@ const styles = StyleSheet.create({
   footerContainer: { marginTop: 30, borderTopWidth: 2, borderColor: '#eee', paddingTop: 15 },
   infoSection: { marginTop: 0, padding: 5 },
   infoText: { fontSize: 8, color: '#555', lineHeight: 1.5, textAlign: 'left' },
+
+  pageFooterText: {
+    position: 'absolute',
+    bottom: 20, 
+    left: 30,
+    right: 30,
+    fontSize: 8, 
+    color: '#666', 
+    textAlign: 'center',
+    borderTopWidth: 0.5,
+    borderColor: '#eee',
+    paddingTop: 5,
+  }
 });
 
 export const QuotationPage = ({ data }: { data: QuotationData }) => {
@@ -127,14 +140,6 @@ export const QuotationPage = ({ data }: { data: QuotationData }) => {
             <View style={styles.metaRow}><Text style={styles.metaLabel}>DATE:</Text><Text>{data.date}</Text></View>
             <View style={styles.metaRow}><Text style={styles.metaLabel}>VALID UNTIL:</Text><Text>{data.dueDate}</Text></View>
           </View>
-          {/* <View style={styles.paymentBox}>
-            <Text style={styles.paymentTitle}>Banking Details</Text>
-            <View style={styles.bankingRow}><Text style={styles.bankingLabel}>BANK:</Text><Text>{data.bankName || "-"}</Text></View>
-            <View style={styles.bankingRow}><Text style={styles.bankingLabel}>BSB:</Text><Text>{data.bsb || "-"}</Text></View>
-            <View style={styles.bankingRow}><Text style={styles.bankingLabel}>A/C NO:</Text><Text>{data.accountNumber || "-"}</Text></View>
-            <View style={styles.separatorLine} />
-            <View style={styles.payIdRow}><Text style={styles.payIdLabel}>PayID:</Text><Text>{data.bank_payid || "-"}</Text></View>
-          </View> */}
         </View>
       </View>
 
@@ -142,7 +147,6 @@ export const QuotationPage = ({ data }: { data: QuotationData }) => {
           <View style={styles.addressColumn}>
               <Text style={styles.sectionTitle}>QUOTE TO</Text>
               <Text style={styles.nameText}>{data.customerName}</Text> 
-              {/* Address에 Mobile이 포함되어 넘어옴 */}
               <Text style={styles.addressText}>{data.address}</Text>
           </View>
           <View style={styles.addressColumn}>
@@ -164,7 +168,6 @@ export const QuotationPage = ({ data }: { data: QuotationData }) => {
           <Text style={styles.colQty}>QTY</Text>
           <Text style={styles.colUnit}>UNIT</Text>
           <Text style={styles.colDesc}>PRODUCT NAME</Text>
-          {/* [CHANGE] 헤더 이름을 ITEM -> ID로 변경 */}
           <Text style={styles.colItem}>ID</Text>
           <Text style={styles.colPrice}>PRICE</Text>
           <Text style={styles.colAmount}>AMOUNT</Text>
@@ -174,7 +177,6 @@ export const QuotationPage = ({ data }: { data: QuotationData }) => {
             <Text style={styles.colQty}>{item.qty}</Text>
             <Text style={styles.colUnit}>{item.unit}</Text>
             <Text style={styles.colDesc}>{item.description}</Text>
-            {/* vendor_product_id가 들어옴 */}
             <Text style={styles.colItem}>{item.itemCode}</Text>
             <Text style={styles.colPrice}>${item.unitPrice.toFixed(2)}</Text>
             <Text style={styles.colAmount}>${item.amount.toFixed(2)}</Text>
@@ -182,29 +184,44 @@ export const QuotationPage = ({ data }: { data: QuotationData }) => {
         ))}
       </View>
 
-      <View style={styles.totalSection}>
-        <View style={styles.totalBox}>
-          <View style={styles.totalRow}><Text>Subtotal</Text><Text>${data.subtotal.toFixed(2)}</Text></View>
-          <View style={styles.totalRow}><Text>GST</Text><Text>${data.gst.toFixed(2)}</Text></View>
-          
-          <View style={styles.totalRowBalance}>
-              <Text style={styles.totalLabel}>TOTAL AMOUNT</Text>
-              <Text style={styles.totalValue}>${data.totalAmount.toFixed(2)}</Text>
+      {/* 🚀 [해결] 하단 전체(합계 정보 + 결제 정보 + 약관 정보)를 wrap={false}로 감싸서 페이지 경계선에서 쪼개짐 방지 */}
+      <View wrap={false}>
+        <View style={styles.totalSection}>
+          <View style={styles.totalBox}>
+            <View style={styles.totalRow}><Text>Subtotal</Text><Text>${data.subtotal.toFixed(2)}</Text></View>
+            <View style={styles.totalRow}><Text>GST</Text><Text>${data.gst.toFixed(2)}</Text></View>
+            
+            <View style={styles.totalRowBalance}>
+                <Text style={styles.totalLabel}>TOTAL AMOUNT</Text>
+                <Text style={styles.totalValue}>${data.totalAmount.toFixed(2)}</Text>
+            </View>
           </View>
+        </View>
+
+        <Text style={styles.paymentTitle}>Banking Details</Text>
+        <View style={styles.bankingRow}>
+          <Text>BANK: </Text><Text>{data.bankName || "-"}   BSB: </Text><Text>{data.bsb || "-"}   A/C NO: </Text><Text>{data.accountNumber || "-"}   or   PayID: </Text><Text>{data.bank_payid || "-"}</Text>
+        </View>
+        
+        <View style={styles.footerContainer}>
+          {data.invoiceInfo && (
+            <View style={styles.infoSection}>
+              <Text style={styles.infoText}>{data.invoiceInfo}</Text>
+            </View>
+          )}
         </View>
       </View>
 
-      <Text style={styles.paymentTitle}>Banking Details</Text>
-      <View style={styles.bankingRow}><Text>BANK: </Text><Text>{data.bankName || "-"}   BSB: </Text><Text>{data.bsb || "-"}   A/C NO: </Text><Text>{data.accountNumber || "-"}   or   PayID: </Text><Text>{data.bank_payid || "-"}</Text>
-      </View>
-      
-      <View style={styles.footerContainer}>
-        {data.invoiceInfo && (
-          <View style={styles.infoSection}>
-            <Text style={styles.infoText}>{data.invoiceInfo}</Text>
-          </View>
-        )}
-      </View>
+      {/* 🚀 [추가] 2장 이상 넘어갈 때 렌더링되는 페이지 하단 푸터 */}
+      <Text 
+        style={styles.pageFooterText} 
+        fixed 
+        render={({ pageNumber, totalPages }) => (
+          totalPages > 1 
+            ? `${data.invoiceNo}    |    ${data.customerName}    |    Page ${pageNumber} of ${totalPages}` 
+            : ""
+        )} 
+      />
     </Page>
   );
 };

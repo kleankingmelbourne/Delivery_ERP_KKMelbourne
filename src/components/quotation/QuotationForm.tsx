@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 
-// ✅ [추가] 전역 상태에서 사용자 이름을 가져오기 위한 훅
+// ✅ 전역 상태에서 사용자 이름을 가져오기 위한 훅
 import { useAuth } from "@/components/providers/AuthProvider";
 
 // --- [Utility] ---
@@ -193,6 +193,7 @@ interface ProductMaster {
   vendor_product_id: string | null; 
   sell_price_ctn: number; 
   sell_price_pack: number; 
+  buy_price: number | null; 
   unit_name?: string; 
 }
 interface QuotationItem {
@@ -240,7 +241,7 @@ export default function QuotationForm({ quotationId }: QuotationFormProps) {
       if (isEditMode) {
         const [custRes, prodRes, quoteRes] = await Promise.all([
           supabase.from("customers").select("id, name, note"),
-          supabase.from("products").select("id, product_name, vendor_product_id, sell_price_ctn, sell_price_pack, product_units(unit_name)"),
+          supabase.from("products").select("id, product_name, vendor_product_id, sell_price_ctn, sell_price_pack, buy_price, product_units(unit_name)"),
           supabase.from("quotations").select("*, quotation_items(*)").eq("id", quotationId).single()
         ]);
 
@@ -289,7 +290,7 @@ export default function QuotationForm({ quotationId }: QuotationFormProps) {
       } else {
         const [custRes, prodRes] = await Promise.all([
           supabase.from("customers").select("id, name, note"),
-          supabase.from("products").select("id, product_name, vendor_product_id, sell_price_ctn, sell_price_pack, product_units(unit_name)")
+          supabase.from("products").select("id, product_name, vendor_product_id, sell_price_ctn, sell_price_pack, buy_price, product_units(unit_name)")
         ]);
 
         if (custRes.data) setCustomers(custRes.data);
@@ -541,38 +542,39 @@ export default function QuotationForm({ quotationId }: QuotationFormProps) {
             <div className="border border-slate-200 rounded-lg"> 
               <table className="w-full text-sm text-left">
                 <thead className="bg-slate-50 border-b border-slate-200 text-slate-700 font-bold text-xs uppercase">
+                  {/* 🚀 컬럼 비율 재조정 및 Cost 컬럼 추가 */}
                   <tr>
-                    {/* 🚀 Vendor ID 컬럼 추가 및 전체 비율 조정 */}
-                    <th className="px-4 py-3 w-[15%]">Vendor ID</th> 
-                    <th className="px-4 py-3 w-[25%]">Product</th> 
-                    <th className="px-4 py-3 w-[8%]">Unit</th>     
-                    <th className="px-4 py-3 w-[9%] text-right bg-slate-100/50">Base</th>
-                    <th className="px-4 py-3 w-[9%] text-right text-blue-700">Net</th>   
-                    <th className="px-4 py-3 w-[8%] text-right">Disc %</th> 
-                    <th className="px-4 py-3 w-[8%] text-center">Qty</th>   
-                    <th className="px-4 py-3 w-[14%] text-right">Total</th>
+                    <th className="px-3 py-3 w-[12%]">Vendor ID</th> 
+                    <th className="px-3 py-3 w-[22%]">Product</th> 
+                    <th className="px-3 py-3 w-[8%] text-center">Unit</th>
+                    <th className="px-3 py-3 w-[9%] text-right text-orange-600">Cost</th>
+                    <th className="px-3 py-3 w-[9%] text-right bg-slate-100/50">Base</th>
+                    <th className="px-3 py-3 w-[9%] text-right text-blue-700">Net</th>   
+                    <th className="px-3 py-3 w-[8%] text-right">Disc %</th> 
+                    <th className="px-3 py-3 w-[8%] text-center">Qty</th>   
+                    <th className="px-3 py-3 w-[11%] text-right">Total</th>
                     <th className="w-[4%]"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {items.map((item, idx) => {
-                    // 🚀 선택된 상품의 벤더 아이디를 찾아서 매핑합니다.
                     const product = allProducts.find(p => p.id === item.productId);
                     const vendorId = product?.vendor_product_id || "-";
+                    const productName = product?.product_name || ""; 
+                    const costValue = product?.buy_price || 0; 
 
                     return (
                       <tr key={idx} className="hover:bg-slate-50/50">
-                        {/* 🚀 Vendor ID 표시 셀 */}
-                        <td className="px-4 py-2 font-mono text-[13px] text-slate-500">
+                        <td className="px-3 py-2 font-mono text-[13px] text-slate-500">
                           {vendorId}
                         </td>
-                        <td className="p-2">
+                        <td className="p-2" title={productName}>
                           <CreatableSelect
                             options={productOptions}
                             value={{ id: item.productId, name: "" }} 
                             onChange={(val) => handleProductChange(idx, val)}
                             placeholder="Search product..."
-                            className="w-full min-w-[200px]"
+                            className="w-full min-w-[180px]"
                             allowCreate={false} 
                             onDropdownOpen={() => handleProductDropdownOpen(idx)}
                           />
@@ -590,6 +592,11 @@ export default function QuotationForm({ quotationId }: QuotationFormProps) {
                             )}
                           </select>
                         </td>
+                        {/* 🚀 Cost(원가) 컬럼 추가 */}
+                        <td className="p-2 text-right font-medium text-orange-600 text-xs">
+                          ${costValue.toFixed(2)}
+                        </td>
+                        {/* 🚀 기존 말풍선(title) 기능 삭제 */}
                         <td className="p-2 text-right text-slate-400 text-xs line-through decoration-slate-300">
                           ${item.basePrice.toFixed(2)}
                         </td>
@@ -607,7 +614,7 @@ export default function QuotationForm({ quotationId }: QuotationFormProps) {
                         <td className="p-2">
                           <Input type="number" min="1" className="text-center h-9" value={item.quantity} onChange={(e) => updateItem(idx, "quantity", Number(e.target.value))} />
                         </td>
-                        <td className="px-4 py-3 text-right font-bold text-slate-900">
+                        <td className="px-3 py-3 text-right font-bold text-slate-900">
                           ${(item.quantity * item.unitPrice).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                         </td>
                         <td className="p-2 text-center">

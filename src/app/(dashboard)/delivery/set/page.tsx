@@ -181,7 +181,8 @@ export default function SetDeliveryPage() {
       const { data: allProfileData } = await supabase.from("profiles").select("id, display_name").eq("status", "active").order("display_name");
       if (allProfileData) setAllStaff(allProfileData);
 
-      const { data: invoiceData, error: invoiceError } = await supabase.from("invoices").select(`id, invoice_date, created_at, total_amount, driver_id, customer_id, is_completed, is_pickup, delivery_run, delivery_order, customers ( name, in_charge_delivery ), invoice_items ( quantity, unit, products ( product_name, location, vendor_product_id ) )`).eq("invoice_date", selectedDate).neq("status", "Paid").is("is_pickup", false).order("id");
+      // 🚀 [수정] .neq("status", "Paid") 조건을 삭제하여 Paid(결제완료) 상태여도 불러오도록 수정함!
+      const { data: invoiceData, error: invoiceError } = await supabase.from("invoices").select(`id, invoice_date, created_at, total_amount, driver_id, customer_id, is_completed, is_pickup, delivery_run, delivery_order, customers ( name, in_charge_delivery ), invoice_items ( quantity, unit, products ( product_name, location, vendor_product_id ) )`).eq("invoice_date", selectedDate).is("is_pickup", false).order("id");
       if (invoiceError) throw invoiceError;
 
       const rawInvoices = (invoiceData as any[]).filter(inv => inv.is_pickup !== true);
@@ -265,7 +266,7 @@ export default function SetDeliveryPage() {
             inv.invoice_items.forEach(item => {
                 const qty = Number(item.quantity) || 0;
                 
-                // 🚀 [추가] 수량이 0 이하인 경우 (마이너스 수량) 피킹 리스트에서 완전히 무시!
+                // 수량이 0 이하인 경우 (마이너스 수량) 피킹 리스트에서 완전히 무시!
                 if (qty <= 0) return;
 
                 const name = item.products?.product_name || "Unknown Item";
@@ -915,7 +916,6 @@ function SortableItem(props: any) {
   return <div ref={setNodeRef} style={style} {...attributes} {...listeners} className="touch-none"><SlimInvoiceCard {...props} /></div>;
 }
 
-// 🚀 금액 표시를 위해 SlimInvoiceCard 대폭 수정
 function SlimInvoiceCard({ invoice, columns, currentColumnId, onMove, isOverlay = false }: { invoice: DisplayInvoice; columns: DriverColumnState[]; currentColumnId: string; onMove: (id: string, colId: string | null) => void; isOverlay?: boolean; }) {
   const isCompleted = invoice.is_completed; 
   const isNew = invoice.is_new_arrival;
@@ -931,7 +931,6 @@ function SlimInvoiceCard({ invoice, columns, currentColumnId, onMove, isOverlay 
           {isNew && (<span className="shrink-0 inline-flex items-center px-1 py-0.5 rounded text-[8px] font-bold bg-blue-500 text-white animate-pulse">NEW</span>)}
         </div>
         
-        {/* 🚀 인보이스 Total Amount 표시 */}
         <span className={cn("text-[9px] leading-tight font-medium mt-0.5", isCompleted ? "text-slate-300" : "text-emerald-600")}>
           ${invoice.total_amount?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || "0.00"}
         </span>

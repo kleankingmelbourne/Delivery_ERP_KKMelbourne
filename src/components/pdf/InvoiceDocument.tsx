@@ -1,3 +1,5 @@
+"use client";
+
 import React from 'react';
 import { Page, Text, View, Document, StyleSheet, Image } from '@react-pdf/renderer';
 
@@ -66,8 +68,12 @@ const styles = StyleSheet.create({
   contactRow: { flexDirection: 'row', marginTop: 4, justifyContent: 'flex-start' },
   contactCol: { width: '50%' },
 
-  memoContainer: { marginBottom: 3, borderWidth: 1, borderColor: '#000', padding: 6, backgroundColor: '#fff' },
-  memoLabel: { fontSize: 9, fontWeight: 'bold', marginBottom: 2, textDecoration: 'underline', color: '#000' },
+  // 🚀 [변경] 메모 컨테이너 스타일 (위아래 여백 조정 및 배경색)
+  memoContainer: { marginTop: 15, marginBottom: 5, borderWidth: 1, borderColor: '#000', backgroundColor: '#fff' },
+  // 🚀 [변경] 메모 라벨을 반전 효과(검정 배경, 흰 글씨)로 강조
+  memoLabelContainer: { backgroundColor: '#000', paddingVertical: 4, paddingHorizontal: 6 },
+  memoLabel: { fontSize: 10, fontWeight: 'bold', color: '#fff' },
+  memoTextContainer: { padding: 8 },
   memoText: { fontSize: 9, lineHeight: 1.3, color: '#000' },
   
   tableContainer: { marginTop: 1, marginBottom: 5 },
@@ -103,14 +109,13 @@ const styles = StyleSheet.create({
   infoSection: { marginTop: 0, padding: 0 },
   infoText: { fontSize: 8, color: '#000', lineHeight: 1.3, textAlign: 'left' }, 
 
-  // 🚀 [추가] 멀티 페이지를 위한 하단 푸터 스타일 설정
   pageFooterText: {
     position: 'absolute',
-    bottom: 20, // 위치 살짝 위로 조정
+    bottom: 20, 
     left: 30,
     right: 30,
-    fontSize: 8, // 글자 크기 살짝 확대
-    color: '#666', // 약간 회색조로 변경하여 본문과 구분
+    fontSize: 8, 
+    color: '#666', 
     textAlign: 'center',
     borderTopWidth: 0.5,
     borderColor: '#eee',
@@ -168,13 +173,6 @@ export const InvoicePage = ({ data }: { data: InvoiceData }) => {
           </View>
       </View>
 
-      {data.memo && (
-        <View style={styles.memoContainer}>
-          <Text style={styles.memoLabel}>MEMO :</Text>
-          <Text style={styles.memoText}>{data.memo}</Text>
-        </View>
-      )}
-
       <View style={styles.tableContainer}>
         <View style={styles.tableHeader}>
           <Text style={styles.colQty}>QTY</Text>
@@ -196,66 +194,80 @@ export const InvoicePage = ({ data }: { data: InvoiceData }) => {
         ))}
       </View>
 
-      <View style={styles.bottomSection}>
-        {/* 왼쪽: HOW TO PAY */}
-        <View style={styles.paymentBox}>
-          <Text style={styles.paymentTitle}>HOW TO PAY</Text>
-          <View style={styles.paymentRow}>
-            <Text style={styles.paymentLabel}>BANK:</Text>
-            <Text style={styles.paymentValue}>{data.bankName || "-"}</Text>
+      {/* 🚀 [해결] 하단 전체(결제/합계 정보 + 메로 + 약관 정보)를 wrap={false} 뷰로 감싸서 페이지 경계선에서 쪼개지지 않도록 강제 방어! */}
+      <View wrap={false}>
+        <View style={styles.bottomSection}>
+          {/* 왼쪽: HOW TO PAY */}
+          <View style={styles.paymentBox}>
+            <Text style={styles.paymentTitle}>HOW TO PAY</Text>
+            <View style={styles.paymentRow}>
+              <Text style={styles.paymentLabel}>BANK:</Text>
+              <Text style={styles.paymentValue}>{data.bankName || "-"}</Text>
+            </View>
+            <View style={styles.paymentRow}>
+              <Text style={styles.paymentLabel}>BSB:</Text>
+              <Text style={styles.paymentValue}>{data.bsb || "-"}</Text>
+            </View>
+            <View style={styles.paymentRow}>
+              <Text style={styles.paymentLabel}>A/C:</Text>
+              <Text style={styles.paymentValue}>{data.accountNumber || "-"}</Text>
+            </View>
+            <View style={styles.paymentRow}>
+              <Text style={styles.paymentLabel}>PayID:</Text>
+              <Text style={styles.paymentValue}>{data.bank_payid || "-"}</Text>
+            </View>
           </View>
-          <View style={styles.paymentRow}>
-            <Text style={styles.paymentLabel}>BSB:</Text>
-            <Text style={styles.paymentValue}>{data.bsb || "-"}</Text>
-          </View>
-          <View style={styles.paymentRow}>
-            <Text style={styles.paymentLabel}>A/C:</Text>
-            <Text style={styles.paymentValue}>{data.accountNumber || "-"}</Text>
-          </View>
-          <View style={styles.paymentRow}>
-            <Text style={styles.paymentLabel}>PayID:</Text>
-            <Text style={styles.paymentValue}>{data.bank_payid || "-"}</Text>
+
+          {/* 오른쪽: 금액 합계 */}
+          <View style={styles.totalsCard}>
+            <View style={styles.totalsRow}>
+              <Text style={styles.totalsLabel}>Subtotal</Text>
+              <Text style={styles.totalsValue}>${data.subtotal.toFixed(2)}</Text>
+            </View>
+            <View style={styles.totalsRow}>
+              <Text style={styles.totalsLabel}>GST</Text>
+              <Text style={styles.totalsValue}>${data.gst.toFixed(2)}</Text>
+            </View>
+            <View style={styles.totalsRow}>
+              <Text style={styles.totalsLabel}>Total (inc GST)</Text>
+              <Text style={styles.totalsValue}>${data.totalAmount.toFixed(2)}</Text>
+            </View>
+            
+            <View style={styles.totalsDivider} />
+            
+            <View style={styles.totalsRow}>
+              <Text style={styles.totalsLabel}>Received</Text>
+              <Text style={styles.totalsValue}>${(data.paidAmount || 0).toFixed(2)}</Text>
+            </View>
+
+            <View style={styles.balanceRow}>
+              <Text style={styles.balanceLabel}>BALANCE DUE</Text>
+              <Text style={styles.balanceValue}>${data.balanceDue.toFixed(2)}</Text>
+            </View>
           </View>
         </View>
 
-        {/* 오른쪽: 금액 합계 */}
-        <View style={styles.totalsCard}>
-          <View style={styles.totalsRow}>
-            <Text style={styles.totalsLabel}>Subtotal</Text>
-            <Text style={styles.totalsValue}>${data.subtotal.toFixed(2)}</Text>
-          </View>
-          <View style={styles.totalsRow}>
-            <Text style={styles.totalsLabel}>GST</Text>
-            <Text style={styles.totalsValue}>${data.gst.toFixed(2)}</Text>
-          </View>
-          <View style={styles.totalsRow}>
-            <Text style={styles.totalsLabel}>Total (inc GST)</Text>
-            <Text style={styles.totalsValue}>${data.totalAmount.toFixed(2)}</Text>
-          </View>
-          
-          <View style={styles.totalsDivider} />
-          
-          <View style={styles.totalsRow}>
-            <Text style={styles.totalsLabel}>Received</Text>
-            <Text style={styles.totalsValue}>${(data.paidAmount || 0).toFixed(2)}</Text>
-          </View>
-
-          <View style={styles.balanceRow}>
-            <Text style={styles.balanceLabel}>BALANCE DUE</Text>
-            <Text style={styles.balanceValue}>${data.balanceDue.toFixed(2)}</Text>
-          </View>
-        </View>
-      </View>
-
-      <View style={styles.footerContainer}>
-        {data.invoiceInfo && (
-          <View style={styles.infoSection}>
-            <Text style={styles.infoText}>{data.invoiceInfo}</Text>
+        {/* 🚀 [변경] 테이블 위에서 여기(금액 박스와 Footer 사이)로 위치 이동 */}
+        {data.memo && (
+          <View style={styles.memoContainer}>
+            <View style={styles.memoLabelContainer}>
+              <Text style={styles.memoLabel}>MEMO / NOTES</Text>
+            </View>
+            <View style={styles.memoTextContainer}>
+              <Text style={styles.memoText}>{data.memo}</Text>
+            </View>
           </View>
         )}
+
+        <View style={styles.footerContainer}>
+          {data.invoiceInfo && (
+            <View style={styles.infoSection}>
+              <Text style={styles.infoText}>{data.invoiceInfo}</Text>
+            </View>
+          )}
+        </View>
       </View>
 
-      {/* 🚀 [추가] 2장 이상 넘어갈 때 렌더링되는 페이지 하단 푸터 */}
       <Text 
         style={styles.pageFooterText} 
         fixed 

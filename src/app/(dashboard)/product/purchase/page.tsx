@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useState, Fragment } from "react";
+import { useEffect, useState, Fragment, useMemo } from "react";
 import { createClient } from "@/utils/supabase/client";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { 
   Plus, Search, Calendar, MoreHorizontal, Trash2, 
-  Download, Printer, Mail, Edit, Loader2, X, ChevronDown, ChevronUp, Package
+  Download, Printer, Mail, Edit, Loader2, X, ChevronDown, ChevronUp, Package, Calculator
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,6 +23,11 @@ import {
 import { downloadPurchaseOrderPdf, printPurchaseOrderPdf } from "@/utils/downloadPdf";
 import EmailSendDialog from "@/components/email/EmailSendDialog";
 
+// 🚀 [추가] 날짜 포맷팅 도우미 함수 (YYYY-MM-DD)
+const getFormattedDate = (date: Date) => {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+};
+
 export default function PurchaseOrderListPage() {
   const supabase = createClient();
   const router = useRouter();
@@ -37,6 +42,13 @@ export default function PurchaseOrderListPage() {
   
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
   const [emailDialogData, setEmailDialogData] = useState<any>(null);
+
+  // 🚀 [수정] 초기 날짜를 이번 달 1일 ~ 오늘로 설정
+  const today = new Date();
+  const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+
+  const [startDate, setStartDate] = useState(getFormattedDate(firstDayOfMonth));
+  const [endDate, setEndDate] = useState(getFormattedDate(today));
 
   useEffect(() => {
     fetchOrders();
@@ -60,10 +72,26 @@ export default function PurchaseOrderListPage() {
     setLoading(false);
   };
 
-  const filteredOrders = orders.filter((po) => 
-    po.product_vendors?.vendor_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (po.po_number && po.po_number.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+  const filteredOrders = useMemo(() => {
+    return orders.filter((po) => {
+      const matchesSearch = po.product_vendors?.vendor_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                            (po.po_number && po.po_number.toLowerCase().includes(searchTerm.toLowerCase()));
+      
+      let matchesDate = true;
+      if (startDate && po.po_date) {
+        matchesDate = matchesDate && po.po_date >= startDate;
+      }
+      if (endDate && po.po_date) {
+        matchesDate = matchesDate && po.po_date <= endDate;
+      }
+
+      return matchesSearch && matchesDate;
+    });
+  }, [orders, searchTerm, startDate, endDate]);
+
+  const totalAmountFiltered = useMemo(() => {
+    return filteredOrders.reduce((sum, po) => sum + Number(po.total_amount || 0), 0);
+  }, [filteredOrders]);
 
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
@@ -142,7 +170,6 @@ export default function PurchaseOrderListPage() {
     setEmailDialogOpen(true);
   };
 
-  // [NEW] Status Color Helper
   const getStatusStyle = (status: string) => {
     const s = status?.toLowerCase() || "";
     if (s === 'done' || s === 'received') return "bg-emerald-100 text-emerald-700 border-emerald-200";
@@ -179,43 +206,89 @@ export default function PurchaseOrderListPage() {
         </div>
       </div>
 
-      {/* Search Filter */}
-      <div className="flex items-center gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-        <div className="relative flex-1 max-w-sm">
-          <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
-          <Input 
-            placeholder="Search vendor or PO #..." 
-            className="pl-9"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-          />
+      {/* Search & Date Filters */}
+      <div className="flex flex-col md:flex-row items-center justify-between gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+        <div className="flex items-center gap-2 w-full md:w-auto">
+            <div className="flex items-center bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 focus-within:ring-2 focus-within:ring-blue-500 transition-shadow">
+                <Calendar className="w-4 h-4 text-slate-400 mr-2" />
+                <input 
+                    type="date" 
+                    className="bg-transparent text-sm outline-none text-slate-700 w-32"
+                    value={startDate}
+                    onChange={(e) => setStartDate(e.target.value)}
+                    title="Start Date"
+                />
+            </div>
+            <span className="text-slate-400 font-bold">-</span>
+            <div className="flex items-center bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 focus-within:ring-2 focus-within:ring-blue-500 transition-shadow">
+                <Calendar className="w-4 h-4 text-slate-400 mr-2" />
+                <input 
+                    type="date" 
+                    className="bg-transparent text-sm outline-none text-slate-700 w-32"
+                    value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)}
+                    title="End Date"
+                />
+            </div>
+            {(startDate || endDate) && (
+                <button 
+                    onClick={() => { setStartDate(""); setEndDate(""); }}
+                    className="p-1.5 text-slate-400 hover:bg-slate-100 rounded-md transition-colors"
+                    title="Clear Dates"
+                >
+                    <X className="w-4 h-4" />
+                </button>
+            )}
         </div>
-        {selectedIds.length > 0 && (
-            <Button variant="ghost" size="sm" onClick={() => setSelectedIds([])} className="text-slate-500">
-                <X className="w-4 h-4 mr-2" /> Clear Selection
-            </Button>
-        )}
+
+        <div className="flex items-center gap-4 w-full md:w-auto">
+            <div className="relative flex-1 md:w-72">
+              <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+              <Input 
+                placeholder="Search vendor or PO #..." 
+                className="pl-9 bg-slate-50"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+            </div>
+            {selectedIds.length > 0 && (
+                <Button variant="ghost" size="sm" onClick={() => setSelectedIds([])} className="text-slate-500 whitespace-nowrap">
+                    <X className="w-4 h-4 mr-2" /> Clear Selection
+                </Button>
+            )}
+        </div>
       </div>
 
-      {/* Table */}
-      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+      {/* Table Container */}
+      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm flex flex-col">
+        
+        {/* 🚀 [이동] 테이블 윗부분에 총 합계 영역 배치 */}
+        {!loading && (
+          <div className="bg-slate-50 border-b border-slate-200 p-4 flex items-center justify-between">
+            <div className="flex items-center gap-2 text-slate-500">
+              <Calculator className="w-5 h-5 text-blue-600" />
+              <span className="text-sm font-bold uppercase tracking-wider text-slate-600">Total for Selected Period</span>
+            </div>
+            <div className="text-2xl font-black text-blue-700">
+              ${totalAmountFiltered.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+          </div>
+        )}
+
         <table className="w-full text-sm text-left">
-          <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase text-xs">
+          <thead className="bg-white border-b border-slate-200 text-slate-500 font-bold uppercase text-xs">
             <tr>
-              {/* Checkbox Col */}
               <th className="px-4 py-4 w-10 text-center">
                 <Checkbox 
                     checked={filteredOrders.length > 0 && selectedIds.length === filteredOrders.length}
                     onCheckedChange={(checked) => handleSelectAll(!!checked)}
                 />
               </th>
-              {/* Columns Reordered */}
               <th className="px-6 py-4">PO Number</th>
               <th className="px-6 py-4">Vendor</th>
               <th className="px-6 py-4">Date</th>
               <th className="px-6 py-4">Status</th>
               <th className="px-6 py-4 text-right">Total</th>
-              {/* [NEW] View Detail Column moved here */}
               <th className="px-4 py-4 w-10 text-center">View</th> 
               <th className="px-6 py-4 text-center">Actions</th>
             </tr>
@@ -224,11 +297,10 @@ export default function PurchaseOrderListPage() {
             {loading ? (
               <tr><td colSpan={8} className="p-10 text-center text-slate-400"><div className="flex justify-center items-center gap-2"><Loader2 className="animate-spin w-4 h-4"/> Loading orders...</div></td></tr>
             ) : filteredOrders.length === 0 ? (
-              <tr><td colSpan={8} className="p-10 text-center text-slate-400">No purchase orders found.</td></tr>
+              <tr><td colSpan={8} className="p-10 text-center text-slate-400">No purchase orders found for this period.</td></tr>
             ) : (
               filteredOrders.map((po) => (
                 <Fragment key={po.id}>
-                    {/* Main Row */}
                     <tr 
                         className={`hover:bg-slate-50 transition-colors ${selectedIds.includes(po.id) ? "bg-slate-50" : ""} ${expandedOrderId === po.id ? "bg-slate-50 border-b-0" : ""}`}
                     >
@@ -248,7 +320,6 @@ export default function PurchaseOrderListPage() {
                         <Calendar className="w-3.5 h-3.5" /> {po.po_date}
                       </td>
                       <td className="px-6 py-4">
-                        {/* [UPDATE] Status with Color */}
                         <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${getStatusStyle(po.status)}`}>
                           {po.status}
                         </span>
@@ -257,7 +328,6 @@ export default function PurchaseOrderListPage() {
                         ${Number(po.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                       </td>
                       
-                      {/* [NEW] Expand Toggle Button Moved Here (Left of Action) */}
                       <td className="px-4 py-4 text-center">
                         <Button variant="ghost" size="icon" className="h-6 w-6 rounded-full hover:bg-slate-200" onClick={() => toggleRow(po.id)}>
                             {expandedOrderId === po.id ? <ChevronUp className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
@@ -295,7 +365,6 @@ export default function PurchaseOrderListPage() {
                       </td>
                     </tr>
 
-                    {/* Expanded Detail Row */}
                     {expandedOrderId === po.id && (
                         <tr className="bg-slate-50/50">
                             <td colSpan={8} className="p-0 border-t border-dashed border-slate-200">
@@ -361,6 +430,7 @@ export default function PurchaseOrderListPage() {
           </tbody>
         </table>
       </div>
+
     </div>
   );
 }

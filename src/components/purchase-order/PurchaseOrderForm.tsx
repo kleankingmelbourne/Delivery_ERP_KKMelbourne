@@ -50,7 +50,12 @@ interface SearchableSelectProps {
 function SearchableSelect({ options, value, onChange, placeholder, disabled, className, onClick, onSearch }: SearchableSelectProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
+  
+  const [highlightedIndex, setHighlightedIndex] = useState(0); 
+  
   const containerRef = useRef<HTMLDivElement>(null);
+  const itemRefs = useRef<(HTMLDivElement | null)[]>([]); 
+  const triggerRef = useRef<HTMLDivElement>(null); // 💡 [추가] 포커스를 다시 돌려주기 위한 Ref
   
   const debouncedSearchTerm = useDebounce(searchTerm, 300);
 
@@ -65,23 +70,79 @@ function SearchableSelect({ options, value, onChange, placeholder, disabled, cla
   }, [options, searchTerm]);
   
   useEffect(() => {
+    setHighlightedIndex(0);
+  }, [searchTerm, isOpen]);
+
+  useEffect(() => {
+    if (isOpen && itemRefs.current[highlightedIndex]) {
+      itemRefs.current[highlightedIndex]?.scrollIntoView({ 
+        block: "nearest",
+        behavior: "auto" 
+      });
+    }
+  }, [highlightedIndex, isOpen]);
+
+  useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) setIsOpen(false);
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  // 💡 [추가] 항목 선택 시 실행 (드롭다운 닫고 포커스 돌려주기)
+  const handleSelect = (id: string) => {
+    onChange(id);
+    setIsOpen(false);
+    setSearchTerm("");
+    setTimeout(() => triggerRef.current?.focus(), 0); // 선택 완료 후 탭(Tab) 이동이 매끄럽게 되도록 원래 박스로 포커스 복귀
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!isOpen) return;
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setHighlightedIndex(prev => Math.min(prev + 1, filteredOptions.length - 1));
+    } 
+    else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setHighlightedIndex(prev => Math.max(prev - 1, 0));
+    } 
+    else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (filteredOptions.length > 0) {
+        const opt = filteredOptions[highlightedIndex];
+        if (opt) handleSelect(opt.id);
+      }
+    } else if (e.key === 'Escape') {
+      setIsOpen(false);
+      setTimeout(() => triggerRef.current?.focus(), 0);
+    }
+  };
   
   return (
     <div className={`relative ${className}`} ref={containerRef}>
-      <div onClick={() => { if (!disabled) { setIsOpen(!isOpen); if (onClick) onClick(); } }} className={`flex items-center justify-between w-full px-3 py-2 text-sm border rounded-md cursor-pointer bg-white transition-all ${disabled ? "bg-slate-100 text-slate-400" : "hover:border-slate-400 focus:ring-2 focus:ring-slate-900"} ${isOpen ? "ring-2 ring-slate-900 border-slate-900" : "border-slate-200"}`}>
+      <div 
+        ref={triggerRef} // 포커스를 잡기 위한 ref
+        tabIndex={disabled ? -1 : 0} // 💡 [추가] 탭(Tab) 키로 이동 가능하도록 설정
+        onKeyDown={(e) => {
+          if (!disabled && (e.key === 'Enter' || e.key === ' ')) {
+            e.preventDefault();
+            setIsOpen(!isOpen);
+            if (onClick) onClick();
+          }
+        }}
+        onClick={() => { if (!disabled) { setIsOpen(!isOpen); if (onClick) onClick(); } }} 
+        className={`flex items-center justify-between outline-none w-full px-3 py-2 text-sm border rounded-md cursor-pointer bg-white transition-all ${disabled ? "bg-slate-100 text-slate-400" : "hover:border-slate-400 focus:ring-2 focus:ring-slate-900"} ${isOpen ? "ring-2 ring-slate-900 border-slate-900" : "border-slate-200"}`}
+      >
         <span className={`truncate ${!selectedOption && !value ? "text-slate-400" : "text-slate-900 font-medium"}`}>{selectedOption ? selectedOption.label : (value ? "Loading..." : placeholder)}</span>
         <ChevronDown className="w-4 h-4 text-slate-400 opacity-50 shrink-0" />
       </div>
       {isOpen && !disabled && (
         <div 
-            className="absolute left-0 top-full mt-1 z-[9999] bg-white border border-slate-200 rounded-lg shadow-2xl flex flex-col animate-in fade-in zoom-in-95 duration-100"
-            style={{ minWidth: "400px", width: "max-content", maxWidth: "600px", maxHeight: "400px" }}
+            className="absolute left-0 top-full mt-1 z-[99999] bg-white border border-slate-200 rounded-lg shadow-2xl flex flex-col animate-in fade-in zoom-in-95 duration-100"
+            style={{ minWidth: "500px", width: "max-content", maxWidth: "800px", maxHeight: "500px" }}
         >
           <div className="sticky top-0 p-2 bg-white border-b border-slate-100 shrink-0 z-10">
             <div className="relative">
@@ -92,6 +153,7 @@ function SearchableSelect({ options, value, onChange, placeholder, disabled, cla
                 placeholder="Search Product or Code..." 
                 value={searchTerm} 
                 onChange={(e) => setSearchTerm(e.target.value)} 
+                onKeyDown={handleKeyDown}
               />
             </div>
           </div>
@@ -99,15 +161,17 @@ function SearchableSelect({ options, value, onChange, placeholder, disabled, cla
             {filteredOptions.length === 0 ? (
                 <div className="p-4 text-center text-sm text-slate-400">No results found.</div>
             ) : (
-                filteredOptions.map((opt: any) => (
+                filteredOptions.map((opt: any, index) => (
                     <div 
                         key={opt.id} 
-                        onClick={() => { onChange(opt.id); setIsOpen(false); setSearchTerm(""); }} 
-                        className={`flex items-center justify-between px-3 py-3 text-sm rounded-md cursor-pointer transition-colors ${opt.id === value ? "bg-slate-100 font-bold text-slate-900" : "hover:bg-slate-50 text-slate-700"}`}
+                        ref={(el) => { itemRefs.current[index] = el; }} 
+                        onMouseEnter={() => setHighlightedIndex(index)} 
+                        onClick={() => handleSelect(opt.id)} 
+                        className={`flex items-center justify-between px-3 py-2 text-sm rounded-md cursor-pointer transition-colors ${index === highlightedIndex ? "bg-slate-100" : "bg-transparent"} ${opt.id === value ? "font-bold text-slate-900" : "text-slate-700"}`}
                     >
                         <div className="flex flex-col">
-                            <span className="text-base">{opt.label}</span>
-                            <span className="text-xs text-slate-500 mt-0.5">{opt.subLabel}</span>
+                            <span className="text-sm font-medium">{opt.label}</span>
+                            <span className="text-[11px] text-slate-500 mt-0.5">{opt.subLabel}</span>
                         </div>
                         {opt.id === value && <Check className="w-4 h-4 text-slate-900 shrink-0 ml-2" />}
                     </div>
@@ -131,7 +195,7 @@ interface Product {
   current_stock_level_pack?: number; 
   total_pack_ctn?: number; 
   vendor_product_id?: string; 
-  product_units?: any; // 🚀 타입 에러 방지: Supabase에서 객체 배열로 반환하는 경우 모두 허용
+  product_units?: any; 
   unit_name?: string;
 }
 interface POItem { 
@@ -191,7 +255,7 @@ export default function PurchaseOrderForm({ orderId }: PurchaseOrderFormProps) {
 
         if (!isMounted) return;
         if (vRes.data) setVendors(vRes.data);
-        if (pRes.data) setAllProducts(pRes.data as any[]); // 🚀 타입 에러 회피
+        if (pRes.data) setAllProducts(pRes.data as any[]); 
 
         if (orderId) {
           const { data: order, error: orderError } = await supabase
@@ -228,7 +292,6 @@ export default function PurchaseOrderForm({ orderId }: PurchaseOrderFormProps) {
             });
 
             const mappedItems = order.purchase_order_items.map((i: any) => {
-              // 🚀 배열이든 객체든 유연하게 단위(Unit) 이름을 추출하는 로직
               const pUnits = i.products?.product_units;
               const extractedUnitName = Array.isArray(pUnits) ? pUnits[0]?.unit_name : pUnits?.unit_name;
               const defUnitName = extractedUnitName || i.products?.unit_name || "CTN";
@@ -302,7 +365,6 @@ export default function PurchaseOrderForm({ orderId }: PurchaseOrderFormProps) {
     const product = allProducts.find(p => p.id === productId);
     if (!product) return;
 
-    // 🚀 배열이든 객체든 유연하게 단위(Unit) 이름을 추출하는 로직
     const pUnits = product.product_units;
     const extractedUnitName = Array.isArray(pUnits) ? pUnits[0]?.unit_name : pUnits?.unit_name;
     const defUnitName = extractedUnitName || product.unit_name || "CTN";
@@ -465,7 +527,7 @@ export default function PurchaseOrderForm({ orderId }: PurchaseOrderFormProps) {
               </div>
             </div>
             
-            <div className="border border-slate-200 rounded-lg shadow-sm overflow-hidden">
+            <div className="border border-slate-200 rounded-lg shadow-sm">
               <table className="w-full text-sm text-left table-fixed">
                 <thead className="bg-slate-50 border-b border-slate-200 text-slate-700 font-bold text-xs uppercase">
                   <tr>
@@ -498,7 +560,10 @@ export default function PurchaseOrderForm({ orderId }: PurchaseOrderFormProps) {
                               />
                           </div>
                         </td>
-                        <td className="p-2 truncate"><Input value={item.vendorProductId || ""} readOnly className="bg-transparent border-none h-9 w-full text-slate-500 shadow-none px-1" /></td>
+                        <td className="p-2 truncate">
+                          {/* 💡 [추가] tabIndex={-1}을 주어 탭 이동 시 무시하도록 설정 */}
+                          <Input value={item.vendorProductId || ""} readOnly tabIndex={-1} className="bg-transparent border-none h-9 w-full text-slate-500 shadow-none px-1" />
+                        </td>
                         <td className="p-2 truncate"><Input type="number" className="text-right h-9 w-full border-slate-200 focus:ring-slate-400" value={item.unitPrice} onChange={(e) => updateItem(idx, "unitPrice", Number(e.target.value))} /></td>
                         <td className="p-2">
                           <select 

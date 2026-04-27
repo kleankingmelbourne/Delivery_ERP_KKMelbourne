@@ -59,7 +59,6 @@ interface Invoice {
   proof_url?: string; 
   
   driver?: { display_name: string } | null; 
-  // 🚀 [추가] email_cc 타입 정의
   customers?: { email: string; email_cc?: string } | null;
 
   [key: string]: any;
@@ -79,7 +78,7 @@ interface InvoiceItem {
 }
 
 interface InvoiceTableProps {
-  filterStatus: "ALL" | "PAID" | "UNPAID";
+  filterStatus: "ALL" | "PAID" | "UNPAID" | "TODAY";
   title: string;
 }
 
@@ -108,7 +107,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     type: 'invoice';
     customerName: string;
     customerEmail: string;
-    customerEmailCc?: string; // 🚀 [추가] CC 이메일 상태
+    customerEmailCc?: string; 
     docNumber: string;
   } | null>(null);
 
@@ -124,7 +123,6 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
 
   const isInitialMount = useRef(true);
 
-  // [컬럼 리사이징] 상태 및 참조 변수 추가
   const tableRef = useRef<HTMLTableElement>(null);
   const [colWidths, setColWidths] = useState<{ [key: number]: number }>({});
   const resizingCol = useRef<{ index: number; startX: number; startWidth: number } | null>(null);
@@ -141,7 +139,13 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     const storageKey = `invoiceFilters_${filterStatus}`;
     const savedFilters = sessionStorage.getItem(storageKey);
 
-    if (savedFilters) {
+    if (filterStatus === "TODAY") {
+        setStartDate(localDate);
+        setEndDate(localDate);
+        setPageSize("all");
+        setSearchTerm("");
+        setActiveTab("ALL");
+    } else if (savedFilters) {
         try {
             const parsed = JSON.parse(savedFilters);
             setStartDate(parsed.startDate || localDate);
@@ -181,7 +185,6 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     if (isCountQuery) {
         query = query.select("id", { count: 'exact', head: true }); 
     } else {
-        // 🚀 [수정] customers 에서 email 뿐만 아니라 email_cc 도 가져옵니다.
         query = query.select(`
         id,
         invoice_to,
@@ -216,7 +219,12 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     }
 
     if (searchTerm) {
-        query = query.or(`invoice_to.ilike.%${searchTerm}%,id.ilike.%${searchTerm}%`);
+        const cleanTerm = searchTerm.replace(/[^0-9.]/g, "");
+        if (cleanTerm !== "") {
+            query = query.or(`invoice_to.ilike.%${searchTerm}%,id.ilike.%${searchTerm}%,total_amount::text.ilike.%${cleanTerm}%`);
+        } else {
+            query = query.or(`invoice_to.ilike.%${searchTerm}%,id.ilike.%${searchTerm}%`);
+        }
     }
 
     return query;
@@ -252,7 +260,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     if (!error && data) {
       setInvoices(data);
     } else {
-        console.error(error);
+        console.error("Fetch Invoices Error:", error);
     }
     setLoading(false);
   }, [buildQuery, currentPage, pageSize, startDate, endDate]);
@@ -281,11 +289,55 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     setExpandedRowIds(new Set()); 
   }, [searchTerm, startDate, endDate, activeTab]); 
 
+  // 🚀 [추가] 날짜를 변경할 때 처리하는 함수
+  const handleDateChange = (type: 'start' | 'end', val: string) => {
+    const newStart = type === 'start' ? val : startDate;
+    const newEnd = type === 'end' ? val : endDate;
+
+    // 만약 현재 메뉴가 'TODAY'인데 선택한 날짜가 오늘이 아니라면 ALL 화면으로 넘깁니다.
+    if (filterStatus === "TODAY" && (newStart !== today || newEnd !== today)) {
+        const filtersToSave = {
+            startDate: newStart,
+            endDate: newEnd,
+            searchTerm,
+            activeTab,
+            currentPage: 1,
+            pageSize: "10" // 페이지 사이즈를 10으로 초기화
+        };
+        // 1. ALL 인보이스용 세션스토리지에 날짜 저장
+        sessionStorage.setItem("invoiceFilters_ALL", JSON.stringify(filtersToSave));
+        // 2. 전체 인보이스 화면(/invoice)으로 강제 이동
+        router.push("/invoice");
+        return;
+    }
+
+    if (type === 'start') setStartDate(val);
+    else setEndDate(val);
+  };
+
+  // 🚀 [추가] 날짜 지우기(X버튼) 누를 때 처리하는 함수
+  const handleClearDates = () => { 
+    if (filterStatus === "TODAY") {
+        const filtersToSave = {
+            startDate: "",
+            endDate: "",
+            searchTerm,
+            activeTab,
+            currentPage: 1,
+            pageSize: "10"
+        };
+        sessionStorage.setItem("invoiceFilters_ALL", JSON.stringify(filtersToSave));
+        router.push("/invoice");
+        return;
+    }
+    setStartDate(""); 
+    setEndDate(""); 
+  };
+
 
   const handleEmail = (invoice: Invoice) => {
     setOpenMenuId(null); 
 
-    // 🚀 [추가] customerEmailCc 속성 전달
     setEmailTarget({
       id: invoice.id,
       type: 'invoice',
@@ -295,12 +347,11 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
       docNumber: invoice.id,
     });
 
-    // 만약 JOIN이 실패했거나 정보가 비어있을 때를 대비한 백업 데이터 Fetch
     if (!invoice.customers?.email && invoice.customer_id) {
       (async () => {
         const { data } = await supabase
             .from('customers')
-            .select('email, email_cc') // 🚀 백업 쿼리에도 email_cc 포함
+            .select('email, email_cc') 
             .eq('id', invoice.customer_id)
             .single();
         
@@ -611,11 +662,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
   };
   
   const handleEdit = (id: string) => {
-    if (id.startsWith("CR-")) {
-      router.push(`/invoice/edit/${id}`); 
-    } else {
-      router.push(`/invoice/edit/${id}`);
-    }
+    router.push(`/invoice/edit/${id}`);
   };
   
   const renderStatus = (status: string) => {
@@ -626,9 +673,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
       default: return <span className="px-2.5 py-0.5 bg-rose-100 text-rose-700 text-[11px] font-bold rounded-full border border-rose-200">UNPAID</span>;
     }
   };
-  const clearDates = () => { setStartDate(""); setEndDate(""); };
   
-  // [컬럼 리사이징] 마우스 이벤트 핸들러
   const handleMouseDown = (index: number, event: React.MouseEvent) => {
       event.preventDefault();
       const th = event.currentTarget.parentElement;
@@ -706,14 +751,15 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col lg:flex-row items-center justify-between gap-4">
         <div className="flex flex-1 flex-col sm:flex-row items-center gap-3 w-full">
           <div className="flex items-center gap-2 bg-slate-50 p-1 rounded-lg border border-slate-200">
-            <input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} className="pl-2 bg-transparent text-sm w-32"/>
+            {/* 🚀 [수정] onchange 에 커스텀 핸들러 부착 */}
+            <input type="date" value={startDate} onChange={e=>handleDateChange('start', e.target.value)} className="pl-2 bg-transparent text-sm w-32"/>
             <span className="text-slate-400">-</span>
-            <input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)} className="pl-2 bg-transparent text-sm w-32"/>
-            <button onClick={clearDates}><X className="w-4 h-4"/></button>
+            <input type="date" value={endDate} onChange={e=>handleDateChange('end', e.target.value)} className="pl-2 bg-transparent text-sm w-32"/>
+            <button onClick={handleClearDates}><X className="w-4 h-4"/></button>
           </div>
           <div className="relative flex-1 w-full max-w-sm">
             <Search className="absolute left-3 top-2 w-4 h-4 text-slate-400"/>
-            <input type="text" value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} placeholder="Search..." className="w-full pl-10 pr-4 py-2 text-sm border border-slate-200 rounded-lg"/>
+            <input type="text" value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} placeholder="Search name, ID or exact amount..." className="w-full pl-10 pr-4 py-2 text-sm border border-slate-200 rounded-lg"/>
           </div>
           <div className="flex items-center gap-2 px-3 py-2 bg-slate-900 text-white rounded-lg shadow-sm whitespace-nowrap">
             <Calculator className="w-4 h-4 opacity-70" />
@@ -973,12 +1019,12 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
                                   <p>Total GST: <span className="font-medium text-slate-700">{formatCurrency(inv.gst_total || 0)}</span></p>
                                   <p className="mt-1">Total (inc GST): <span className={`font-bold ${isCredit ? "text-blue-700" : "text-slate-800"}`}>{formatCurrency(inv.total_amount)}</span></p>
                                   {!isCredit && (
-                                     <>
-                                       <p className="text-emerald-600 font-medium">Received: - {formatCurrency(inv.paid_amount || 0)}</p>
-                                       <div className="mt-2 pt-1 border-t border-slate-200">
+                                      <>
+                                        <p className="text-emerald-600 font-medium">Received: - {formatCurrency(inv.paid_amount || 0)}</p>
+                                        <div className="mt-2 pt-1 border-t border-slate-200">
                                             <p className="text-sm font-black text-slate-900 uppercase">Balance Due: {formatCurrency(balanceDue)}</p>
-                                       </div>
-                                     </>
+                                        </div>
+                                      </>
                                   )}
                                 </div>
                               </div>
@@ -1050,14 +1096,12 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
          )}
        </div>
 
-       {/* Email Send Dialog */}
        <EmailSendDialog 
          open={!!emailTarget} 
          onOpenChange={(open) => !open && setEmailTarget(null)}
          data={emailTarget as any}
        />
 
-      {/* Proof Image Modal */}
       {viewProofUrl && (
         <div className="fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={() => setViewProofUrl(null)}>
           <div className="relative max-w-4xl w-full max-h-[90vh] flex flex-col items-center" onClick={e => e.stopPropagation()}>

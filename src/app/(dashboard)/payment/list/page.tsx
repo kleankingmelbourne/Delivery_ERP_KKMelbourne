@@ -141,69 +141,74 @@ export default function PaymentListPage() {
     }
   };
 
-  // --- [핵심] Payment 삭제 로직 (동기화 포함) ---
+  // --- [최종 수정] Payment 삭제 로직: CR-은 전체 삭제, 일반은 결제만 취소 ---
   const handleDeletePayment = async (paymentId: string) => {
-    if (!confirm("⚠️ WARNING: 정말 삭제하시겠습니까?\n\n이 결제를 삭제하면 연결된 모든 인보이스의 결제 상태가 원래대로(미납) 되돌아갑니다.")) {
-      return;
-    }
+    const isCreditMemo = paymentId.startsWith('CR-');
+    
+    const confirmMsg = isCreditMemo 
+      ? "⚠️ 이 결제를 삭제하면 연결된 [Credit Memo 인보이스]와 [아이템]이 모두 함께 삭제됩니다. 계속하시겠습니까?"
+      : "⚠️ 이 결제 내역을 삭제하시겠습니까?\n(인보이스와 아이템은 안전하게 보존되며, 결제 상태만 미납으로 변경됩니다.)";
+
+    if (!confirm(confirmMsg)) return;
 
     setLoading(true);
 
     try {
-      // 1. 할당 내역 조회 및 인보이스 상태 복구
-      const { data: allocations, error: allocError } = await supabase
-        .from('payment_allocations')
-        .select('id, invoice_id, amount')
-        .eq('payment_id', paymentId);
+      // 1. 일반 인보이스들의 결제 상태(paid_amount) 복구 로직
+      // (CR- 인보이스는 어차피 통째로 지울 것이므로 이 단계에서 복구할 필요 없음)
+      if (!isCreditMemo) {
+        const { data: allocations, error: allocError } = await supabase
+          .from('payment_allocations')
+          .select('id, invoice_id, amount')
+          .eq('payment_id', paymentId);
 
-      if (allocError) throw allocError;
+        if (allocError) throw allocError;
 
-      if (allocations && allocations.length > 0) {
-        for (const alloc of allocations) {
-          const { data: invoice } = await supabase
-            .from('invoices')
-            .select('id, total_amount, paid_amount')
-            .eq('id', alloc.invoice_id)
-            .single();
-
-          if (invoice) {
-            // 결제 취소 금액 반영
-            const newPaidAmount = roundAmount(invoice.paid_amount - alloc.amount);
-            
-            // 상태 재계산 (오차 방지)
-            const isFullyPaid = Math.abs(invoice.total_amount - newPaidAmount) < 0.01;
-            const isUnpaid = newPaidAmount < 0.01;
-
-            let newStatus = 'Unpaid';
-            if (isFullyPaid) newStatus = 'Paid';
-            else if (!isUnpaid) newStatus = 'Partial'; 
-
-            await supabase
+        if (allocations && allocations.length > 0) {
+          for (const alloc of allocations) {
+            const { data: invoice } = await supabase
               .from('invoices')
-              .update({ 
-                paid_amount: Math.max(0, newPaidAmount), 
-                status: newStatus 
-              })
-              .eq('id', invoice.id);
+              .select('id, total_amount, paid_amount')
+              .eq('id', alloc.invoice_id)
+              .single();
+
+            if (invoice) {
+              const newPaidAmount = roundAmount(invoice.paid_amount - alloc.amount);
+              const isFullyPaid = Math.abs(invoice.total_amount - newPaidAmount) < 0.01;
+              const isUnpaid = newPaidAmount < 0.01;
+
+              let newStatus = 'Unpaid';
+              if (isFullyPaid) newStatus = 'Paid';
+              else if (!isUnpaid) newStatus = 'Partial'; 
+
+              await supabase
+                .from('invoices')
+                .update({ 
+                  paid_amount: Math.max(0, newPaidAmount), 
+                  status: newStatus 
+                })
+                .eq('id', invoice.id);
+            }
           }
         }
       }
 
-      // 2. [SYNC DELETION] 만약 CR- 로 시작하는 Payment라면 Invoice 테이블에서도 삭제
-      if (paymentId.startsWith('CR-')) {
-          // Invoice 삭제
-          await supabase.from('invoices').delete().eq('id', paymentId);
-          // (옵션) Invoice Items 삭제 (CASCADE 설정이 없다면 필수)
+      // 2. [핵심] CR- 인보이스인 경우 전체 삭제 (순서가 중요: 아이템 -> 인보이스 순)
+      if (isCreditMemo) {
+          // 🚀 반드시 아이템(속)을 먼저 지워야 껍데기(인보이스)를 지울 수 있습니다!
           await supabase.from('invoice_items').delete().eq('invoice_id', paymentId);
+          const { error: invDelError } = await supabase.from('invoices').delete().eq('id', paymentId);
+          if (invDelError) throw invDelError;
       }
 
-      // 3. Payment 및 Allocation 삭제
+      // 3. 결제 내역(Payment & Allocation) 삭제
+      // 🚀 일반 결제건은 여기서 결제 기록만 날아가고 인보이스/아이템은 건드리지 않습니다.
       await supabase.from('payment_allocations').delete().eq('payment_id', paymentId);
       const { error: deleteError } = await supabase.from('payments').delete().eq('id', paymentId);
       
       if (deleteError) throw deleteError;
 
-      alert("삭제되었습니다.");
+      alert(isCreditMemo ? "Credit Memo와 결제 내역이 모두 삭제되었습니다." : "결제 내역이 성공적으로 취소되었습니다.");
       fetchPayments(); // 목록 새로고침
 
     } catch (error: any) {

@@ -665,7 +665,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
   const prevGrandTotalRef = useRef(grandTotal);
   useEffect(() => {
-      if (prevGrandTotalRef.current >= 0 && grandTotal < 0) {
+      if (prevGrandTotalRef.current > -0.01 && grandTotal <= -0.01) {
           setIsPickup(true);
       }
       prevGrandTotalRef.current = grandTotal;

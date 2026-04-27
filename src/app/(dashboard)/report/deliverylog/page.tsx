@@ -3,9 +3,8 @@
 import { useEffect, useState } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { 
-  Calendar, Search, FileText, User, Clock, Loader2, MessageSquareText, ChevronDown, ChevronUp
+  Calendar, FileText, User, Clock, Loader2, MessageSquareText, ChevronDown, ChevronUp
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
@@ -31,7 +30,7 @@ interface DeliveryMemo {
   id: string;
   memo_date: string;
   content: string;
-  created_at: string; // 🚀 updated_at 대신 created_at 사용
+  created_at: string;
   profiles: {
     display_name?: string;
   };
@@ -45,10 +44,10 @@ export default function DeliveryLogPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const fetchLogs = async (date: string) => {
+    if (!date) return;
     setLoading(true);
     setExpandedId(null);
     try {
-      // 🚀 updated_at을 빼고 created_at으로 정렬하도록 수정했습니다.
       const { data, error } = await supabase
         .from('delivery_memos')
         .select(`
@@ -79,14 +78,10 @@ export default function DeliveryLogPage() {
     }
   };
 
+  // 🚀 [수정] searchDate 값이 바뀔 때마다 자동으로 fetchLogs 함수를 실행합니다!
   useEffect(() => {
     fetchLogs(searchDate);
-  }, []);
-
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    fetchLogs(searchDate);
-  };
+  }, [searchDate]);
 
   const toggleExpand = (id: string) => {
     setExpandedId(expandedId === id ? null : id);
@@ -107,9 +102,9 @@ export default function DeliveryLogPage() {
         </p>
       </div>
 
-      {/* 검색 바 */}
+      {/* 검색 바 (버튼 삭제 및 자동 검색 UI로 변경) */}
       <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
-        <form onSubmit={handleSearch} className="flex items-center gap-3">
+        <div className="flex items-center gap-3">
           <div className="relative w-full max-w-xs">
             <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
             <Input 
@@ -120,15 +115,9 @@ export default function DeliveryLogPage() {
               required
             />
           </div>
-          <Button 
-            type="submit" 
-            disabled={loading}
-            className="h-12 px-8 rounded-xl bg-slate-900 text-white font-black hover:bg-slate-800 transition-all active:scale-95 shadow-md"
-          >
-            {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Search className="w-4 h-4 mr-2" />}
-            조회
-          </Button>
-        </form>
+          {/* 달력이 바뀔 때 바로 로딩되는 것을 알려주는 작은 인디케이터 추가 */}
+          {loading && <div className="text-xs font-bold text-blue-600 flex items-center gap-2 animate-pulse"><Loader2 className="w-3 h-3 animate-spin"/> 로딩 중...</div>}
+        </div>
       </div>
 
       {/* 로그 리스트 */}

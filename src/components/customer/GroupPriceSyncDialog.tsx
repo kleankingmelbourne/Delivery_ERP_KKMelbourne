@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/utils/supabase/client";
-import { X, Search, Save, Loader2, RefreshCw, User, AlertCircle, ChevronsUp } from "lucide-react"; // [NEW] ChevronsUp 아이콘 추가
+import { X, Search, Save, Loader2, RefreshCw, User, AlertCircle, ChevronsUp } from "lucide-react"; 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -139,12 +139,11 @@ export default function GroupPriceSyncDialog({ isOpen, onClose, groupId, groupNa
     }));
   };
 
-  // [NEW] 최대 할인율로 통일하는 함수 (Action Button)
+  // 단일 제품에 대한 Max Sync
   const handleSyncToMax = (pid: string) => {
     setItems(prev => prev.map(item => {
       if (item.product_id !== pid) return item;
 
-      // 1. 현재 그룹 내 최대 할인율 찾기
       let maxCtn = 0;
       let maxPack = 0;
 
@@ -155,26 +154,46 @@ export default function GroupPriceSyncDialog({ isOpen, onClose, groupId, groupNa
         if (pack > maxPack) maxPack = pack;
       });
 
-      // 2. 모든 유저에게 최대값 적용 (UI 상태만 변경)
       const updatedUsers = item.users.map(u => {
         const newCtn = maxCtn;
         const newPack = maxPack;
-        
-        // 변경 여부 체크
         const isModified = newCtn !== u.orig_ctn || newPack !== u.orig_pack;
 
-        return {
-          ...u,
-          rate_ctn: newCtn,
-          rate_pack: newPack,
-          is_modified: isModified
-        };
+        return { ...u, rate_ctn: newCtn, rate_pack: newPack, is_modified: isModified };
       });
 
       return {
         ...item,
         users: updatedUsers,
-        has_changes: updatedUsers.some(u => u.is_modified) // 하나라도 변경되었으면 true
+        has_changes: updatedUsers.some(u => u.is_modified) 
+      };
+    }));
+  };
+
+  // 🚀 [NEW] 모든 제품에 대해 한 번에 Max Sync를 적용하는 함수
+  const handleSyncAllToMax = () => {
+    if (!confirm("Are you sure you want to sync ALL products to their highest rates?")) return;
+
+    setItems(prev => prev.map(item => {
+      let maxCtn = 0;
+      let maxPack = 0;
+
+      item.users.forEach(u => {
+        const ctn = typeof u.rate_ctn === 'number' ? u.rate_ctn : 0;
+        const pack = typeof u.rate_pack === 'number' ? u.rate_pack : 0;
+        if (ctn > maxCtn) maxCtn = ctn;
+        if (pack > maxPack) maxPack = pack;
+      });
+
+      const updatedUsers = item.users.map(u => {
+        const isModified = maxCtn !== u.orig_ctn || maxPack !== u.orig_pack;
+        return { ...u, rate_ctn: maxCtn, rate_pack: maxPack, is_modified: isModified };
+      });
+
+      return {
+        ...item,
+        users: updatedUsers,
+        has_changes: updatedUsers.some(u => u.is_modified) 
       };
     }));
   };
@@ -275,7 +294,7 @@ export default function GroupPriceSyncDialog({ isOpen, onClose, groupId, groupNa
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X className="w-6 h-6" /></button>
         </div>
 
-        <div className="px-8 py-4 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
+        <div className="px-8 py-4 bg-slate-50 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-center gap-4">
           <div className="relative w-full max-w-sm">
             <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400"/>
             <Input 
@@ -285,8 +304,20 @@ export default function GroupPriceSyncDialog({ isOpen, onClose, groupId, groupNa
               onChange={(e) => setSearchTerm(e.target.value)}
             />
           </div>
-          <div className="text-xs text-slate-400 font-medium">
-             Modified items are highlighted. Click <strong className="text-indigo-600"><ChevronsUp className="w-3 h-3 inline"/></strong> to sync everyone to the highest rate.
+          
+          {/* 🚀 [NEW] 상단에 한 번에 모두 Sync하는 버튼 배치 */}
+          <div className="flex items-center gap-3">
+            <div className="text-xs text-slate-500 font-medium hidden md:block">
+              Sync everyone to the highest rate:
+            </div>
+            <Button 
+              size="sm"
+              onClick={handleSyncAllToMax}
+              disabled={loading || items.length === 0}
+              className="bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 hover:border-indigo-300 font-bold shadow-sm"
+            >
+              <ChevronsUp className="w-4 h-4 mr-2"/> Max Sync All
+            </Button>
           </div>
         </div>
 
@@ -372,7 +403,6 @@ export default function GroupPriceSyncDialog({ isOpen, onClose, groupId, groupNa
                        {/* Action Column */}
                        <td className="px-4 py-4 text-center align-middle">
                            <div className="flex flex-col items-center gap-2">
-                               {/* [NEW] Max Sync Button */}
                                <Button 
                                     size="sm"
                                     onClick={() => handleSyncToMax(item.product_id)}
@@ -382,7 +412,6 @@ export default function GroupPriceSyncDialog({ isOpen, onClose, groupId, groupNa
                                    <ChevronsUp className="w-4 h-4"/>
                                </Button>
 
-                               {/* Row Save Button */}
                                <Button 
                                     size="sm"
                                     onClick={() => handleSaveRow(item)}
@@ -407,7 +436,7 @@ export default function GroupPriceSyncDialog({ isOpen, onClose, groupId, groupNa
         <div className="p-5 border-t border-slate-100 bg-white flex justify-between items-center z-30">
           <div className="flex items-center gap-2 text-xs text-slate-400">
             <AlertCircle className="w-3 h-3"/>
-            <span>Use the 'Max' icon to unify rates, then 'Save' to apply.</span>
+            <span>Use 'Max Sync All' at the top to unify rates for everything, then 'Save' to apply.</span>
           </div>
           <div className="flex gap-3">
             <Button variant="ghost" onClick={onClose}>Cancel</Button>

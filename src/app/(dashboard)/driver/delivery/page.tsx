@@ -712,11 +712,35 @@ export default function DriverDashboardPage() {
   const handleSaveOrder = async () => {
     setIsSavingOrder(true);
     try {
+        // 1. DB에 보낼 새 순서 데이터 준비
         const upsertData = currentList.map((item, index) => ({ id: item.id, delivery_order: index + 1 }));
+        
+        // 2. DB에 새 순서 저장
         await supabase.from('invoices').upsert(upsertData, { onConflict: 'id' });
+        
+        // 🚀 3. [추가된 부분] DB 저장이 끝나면 화면(로컬 데이터)도 즉시 새 순번으로 덮어씌웁니다!
+        const updatedDeliveries = deliveries.map(d => {
+            // 현재 작업 중인 Run(1st or 2nd)에 속한 배송건인지 확인
+            if ((d.delivery_run === 0 ? 1 : d.delivery_run) === activeRun) {
+                const foundIndex = currentList.findIndex(cl => cl.id === d.id);
+                if (foundIndex !== -1) {
+                    // 느낌표(0번)였던 항목도 여기서 index + 1 이 되어 정상적인 숫자를 부여받습니다.
+                    return { ...d, delivery_order: foundIndex + 1 };
+                }
+            }
+            return d;
+        });
+        
+        // 4. 업데이트된 상태를 화면에 즉각 반영
+        setDeliveries(updatedDeliveries);
+        setOriginalDeliveries(updatedDeliveries);
         updateRunState(activeRun, { isEditing: false, isStarted: false }); 
-        setOriginalDeliveries(deliveries);
-    } finally { setIsSavingOrder(false); }
+        
+    } catch (error) {
+        console.error("Save Order Error:", error);
+    } finally { 
+        setIsSavingOrder(false); 
+    }
   };
 
   const executeUpload = async (file: File, targetIdToUpload: string, customerName: string) => {

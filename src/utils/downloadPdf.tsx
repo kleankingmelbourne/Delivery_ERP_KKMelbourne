@@ -34,7 +34,7 @@ export const getInvoiceData = async (invoiceId: string): Promise<any | null> => 
           name, company, address, suburb, state, postcode, mobile,
           delivery_address, delivery_suburb, delivery_state, delivery_postcode
         ),
-        invoice_items ( quantity, unit, unit_price, amount, products ( * ) )
+        invoice_items ( quantity, unit, unit_price, amount, is_gst_included, products ( * ) )
       `)
       .eq('id', invoiceId)
       .single(),
@@ -58,12 +58,13 @@ export const getInvoiceData = async (invoiceId: string): Promise<any | null> => 
         description: name,
         itemCode: formattedId,
         unitPrice: item.unit_price || 0,
-        amount: item.amount || 0
+        amount: item.amount || 0,
+        isGstIncluded: item.is_gst_included !== false // 🚀 GST 포함 여부 추가
       };
     }) || [];
 
     if (mappedItems.length === 0) {
-      mappedItems.push({ qty: 0, unit: "-", description: "[No Items Found]", itemCode: "-", unitPrice: 0, amount: 0 });
+      mappedItems.push({ qty: 0, unit: "-", description: "[No Items Found]", itemCode: "-", unitPrice: 0, amount: 0, isGstIncluded: true });
     }
 
     const formatAddress = (addr?: string, sub?: string, st?: string, post?: string) => 
@@ -72,9 +73,18 @@ export const getInvoiceData = async (invoiceId: string): Promise<any | null> => 
     const billingAddr = formatAddress(invoice.customers?.address, invoice.customers?.suburb, invoice.customers?.state, invoice.customers?.postcode);
     const finalDeliveryAddress = formatAddress(invoice.delivery_address, invoice.delivery_suburb, invoice.delivery_state, invoice.delivery_postcode) || billingAddr;
 
-    const calculatedSubtotal = mappedItems.reduce((sum: number, item: any) => sum + (Number(item.amount) || 0), 0);
-    const calculatedGST = calculatedSubtotal * 0.10;
-    const calculatedTotalAmount = calculatedSubtotal + calculatedGST;
+    // 🚀 [핵심 수정] 재계산하지 않고 DB에 저장된 값을 최우선으로 사용합니다! (1센트 오차 & GST 에러 해결)
+    const finalSubtotal = invoice.subtotal !== null && invoice.subtotal !== undefined 
+        ? Number(invoice.subtotal) 
+        : mappedItems.reduce((sum: number, item: any) => sum + (Number(item.amount) || 0), 0);
+        
+    const finalGST = invoice.gst_total !== null && invoice.gst_total !== undefined 
+        ? Number(invoice.gst_total) 
+        : finalSubtotal * 0.10;
+        
+    const finalTotalAmount = invoice.total_amount !== null && invoice.total_amount !== undefined 
+        ? Number(invoice.total_amount) 
+        : finalSubtotal + finalGST;
 
     const isCreditMemo = typeof invoice.id === 'string' && invoice.id.startsWith('CR-');
 
@@ -90,14 +100,14 @@ export const getInvoiceData = async (invoiceId: string): Promise<any | null> => 
       deliveryAddress: finalDeliveryAddress,
       memo: invoice.memo || invoice.notes || "", 
       items: mappedItems,
-      subtotal: calculatedSubtotal, 
-      gst: calculatedGST,
-      total: calculatedTotalAmount,
-      totalAmount: calculatedTotalAmount,
+      subtotal: finalSubtotal, // 🚀 DB 값 사용
+      gst: finalGST,           // 🚀 DB 값 사용
+      total: finalTotalAmount, // 🚀 DB 값 사용
+      totalAmount: finalTotalAmount,
       paidAmount: Number(invoice.paid_amount) || 0,
-      balanceDue: calculatedTotalAmount - (Number(invoice.paid_amount) || 0),
+      balanceDue: finalTotalAmount - (Number(invoice.paid_amount) || 0),
       allocatedAmount: Number(invoice.allocated_amount) || 0,
-      remainingCredit: Number(invoice.remaining_credit) || (calculatedTotalAmount - (Number(invoice.allocated_amount) || 0)),
+      remainingCredit: Number(invoice.remaining_credit) || (finalTotalAmount - (Number(invoice.allocated_amount) || 0)),
       companyName: settings.company_name || "",
       companyAbn: settings.abn || "",
       companyPhone: settings.phone || "",

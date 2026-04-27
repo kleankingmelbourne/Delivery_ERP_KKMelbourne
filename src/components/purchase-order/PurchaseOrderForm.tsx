@@ -35,7 +35,8 @@ function useDebounce<T>(value: T, delay: number): T {
 }
 
 // --- [컴포넌트] SearchableSelect ---
-interface Option { id: string; label: string; subLabel?: string; }
+// 💡 [수정] Option 인터페이스에 searchCode 추가 (아이템 코드로도 검색하기 위함)
+interface Option { id: string; label: string; subLabel?: string; searchCode?: string; }
 interface SearchableSelectProps {
   options: Option[];
   value: string;
@@ -55,7 +56,7 @@ function SearchableSelect({ options, value, onChange, placeholder, disabled, cla
   
   const containerRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]); 
-  const triggerRef = useRef<HTMLDivElement>(null); // 💡 [추가] 포커스를 다시 돌려주기 위한 Ref
+  const triggerRef = useRef<HTMLDivElement>(null);
   
   const debouncedSearchTerm = useDebounce(searchTerm, 300);
 
@@ -66,7 +67,12 @@ function SearchableSelect({ options, value, onChange, placeholder, disabled, cla
   const selectedOption = options.find((o: any) => o.id === value);
   const filteredOptions = useMemo(() => {
     if (!searchTerm) return options.slice(0, 50);
-    return options.filter(o => o.label.toLowerCase().includes(searchTerm.toLowerCase())).slice(0, 50);
+    const lowerTerm = searchTerm.toLowerCase();
+    // 💡 [수정] label(상품명) 뿐만 아니라 searchCode(아이템 코드)도 같이 검색
+    return options.filter(o => 
+      o.label.toLowerCase().includes(lowerTerm) || 
+      (o.searchCode && o.searchCode.toLowerCase().includes(lowerTerm))
+    ).slice(0, 50);
   }, [options, searchTerm]);
   
   useEffect(() => {
@@ -90,12 +96,11 @@ function SearchableSelect({ options, value, onChange, placeholder, disabled, cla
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // 💡 [추가] 항목 선택 시 실행 (드롭다운 닫고 포커스 돌려주기)
   const handleSelect = (id: string) => {
     onChange(id);
     setIsOpen(false);
     setSearchTerm("");
-    setTimeout(() => triggerRef.current?.focus(), 0); // 선택 완료 후 탭(Tab) 이동이 매끄럽게 되도록 원래 박스로 포커스 복귀
+    setTimeout(() => triggerRef.current?.focus(), 0);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -124,8 +129,8 @@ function SearchableSelect({ options, value, onChange, placeholder, disabled, cla
   return (
     <div className={`relative ${className}`} ref={containerRef}>
       <div 
-        ref={triggerRef} // 포커스를 잡기 위한 ref
-        tabIndex={disabled ? -1 : 0} // 💡 [추가] 탭(Tab) 키로 이동 가능하도록 설정
+        ref={triggerRef}
+        tabIndex={disabled ? -1 : 0} 
         onKeyDown={(e) => {
           if (!disabled && (e.key === 'Enter' || e.key === ' ')) {
             e.preventDefault();
@@ -338,7 +343,8 @@ export default function PurchaseOrderForm({ orderId }: PurchaseOrderFormProps) {
     
     let query = supabase.from("products")
       .select("id, product_name, buy_price, vendor_id, current_stock_level, current_stock_level_pack, total_pack_ctn, vendor_product_id, product_units(unit_name)")
-      .ilike("product_name", `%${term}%`)
+      // 💡 [수정] product_name 뿐만 아니라 vendor_product_id (아이템 코드) 로도 검색 가능하게 or 쿼리 사용
+      .or(`product_name.ilike.%${term}%,vendor_product_id.ilike.%${term}%`)
       .limit(30);
 
     if (selectedVendorId) {
@@ -411,7 +417,8 @@ export default function PurchaseOrderForm({ orderId }: PurchaseOrderFormProps) {
   const productOptions = useMemo(() => filteredProducts.map(p => ({
     id: p.id, 
     label: p.product_name, 
-    subLabel: `Code: ${p.vendor_product_id || '-'} | Buy: $${(Number(p.buy_price) || 0).toFixed(2)}`
+    subLabel: `Code: ${p.vendor_product_id || '-'} | Buy: $${(Number(p.buy_price) || 0).toFixed(2)}`,
+    searchCode: p.vendor_product_id || '' // 💡 [추가] 프론트엔드 필터링 시 사용할 Item Code
   })), [filteredProducts]);
 
   const vendorOptions = useMemo(() => vendors.map(v => ({ id: v.id, label: v.vendor_name })), [vendors]);
@@ -561,7 +568,6 @@ export default function PurchaseOrderForm({ orderId }: PurchaseOrderFormProps) {
                           </div>
                         </td>
                         <td className="p-2 truncate">
-                          {/* 💡 [추가] tabIndex={-1}을 주어 탭 이동 시 무시하도록 설정 */}
                           <Input value={item.vendorProductId || ""} readOnly tabIndex={-1} className="bg-transparent border-none h-9 w-full text-slate-500 shadow-none px-1" />
                         </td>
                         <td className="p-2 truncate"><Input type="number" className="text-right h-9 w-full border-slate-200 focus:ring-slate-400" value={item.unitPrice} onChange={(e) => updateItem(idx, "unitPrice", Number(e.target.value))} /></td>

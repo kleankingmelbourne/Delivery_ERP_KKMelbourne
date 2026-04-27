@@ -57,6 +57,7 @@ const menuItems = [
     icon: FileText,
     isSubmenu: true, 
     subItems: [
+      { name: "TODAY", href: "/invoice/today", icon: List },       
       { name: "INVOICE LIST", href: "/invoice", icon: List },       
       { name: "PAID", href: "/invoice/paid", icon: CheckCircle2 },  
       { name: "UNPAID", href: "/invoice/unpaid", icon: AlertCircle }, 

@@ -18,11 +18,11 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import Script from "next/script"; // ✅ [추가] Google Maps API 호출용
+import Script from "next/script";
 
-// [NEW] sendPasswordResetEmailAction 추가
 import { deleteStaffAction, saveStaffAction, sendPasswordResetEmailAction } from "./actions";
 
+// 🚀 이 배열에 포함된 레벨을 가진 사람만 데이터베이스에서 가져오도록 필터링합니다!
 const USER_LEVELS = ["ADMIN", "MANAGER", "STAFF", "DRIVER"];
 
 const INITIAL_FORM_DATA = {
@@ -35,14 +35,14 @@ const INITIAL_FORM_DATA = {
   login_permit: true,
   status: "active",
   password: "", 
-  lat: null as number | null, // ✅ [추가] 폼 데이터에 좌표 포함
-  lng: null as number | null, // ✅ [추가] 폼 데이터에 좌표 포함
+  lat: null as number | null, 
+  lng: null as number | null, 
 };
 
 export default function StaffPage() {
   const supabase = createClient();
   const { toast } = useToast();
-  const GOOGLE_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY; // ✅ [추가]
+  const GOOGLE_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY; 
 
   const [staffList, setStaffList] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -59,7 +59,6 @@ export default function StaffPage() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   
-  // 메일 발송 로딩 상태
   const [isSendingEmail, setIsSendingEmail] = useState(false);
 
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -83,13 +82,20 @@ export default function StaffPage() {
 
   const fetchStaff = async () => {
     setLoading(true);
+    
+    // 🚀 [수정됨] 데이터베이스 쿼리 레벨에서 완벽하게 차단합니다.
     const { data, error } = await supabase
       .from("profiles")
       .select("*")
+      // USER_LEVELS ("ADMIN", "MANAGER", "STAFF", "DRIVER") 중 하나에 해당하는 사람만 가져옵니다.
+      // 즉, user_level이 비어있는 Customer는 아예 다운로드되지 않습니다!
+      .in("user_level", USER_LEVELS) 
       .order("created_at", { ascending: false })
       .order("id", { ascending: false });
 
-    if (!error) setStaffList(data || []);
+    if (!error && data) {
+      setStaffList(data);
+    }
     setLoading(false);
   };
 
@@ -132,7 +138,6 @@ export default function StaffPage() {
     setIsDeleting(false);
   };
 
-  // 비밀번호 재설정 메일 발송 핸들러
   const handleSendResetEmail = async () => {
     if (!formData.email) return;
     if (!confirm(`Send password reset email to ${formData.email}?`)) return;
@@ -160,8 +165,8 @@ export default function StaffPage() {
         login_permit: staff.login_permit ?? true,
         status: staff.status || "active",
         password: "", 
-        lat: staff.lat || null, // ✅ [추가] 모달 열 때 기존 좌표 불러오기
-        lng: staff.lng || null, // ✅ [추가] 모달 열 때 기존 좌표 불러오기
+        lat: staff.lat || null, 
+        lng: staff.lng || null, 
     } : INITIAL_FORM_DATA);
     setIsModalOpen(true);
   };
@@ -180,7 +185,6 @@ export default function StaffPage() {
     setIsSaving(true);
     let finalPayload = { ...formData };
 
-    // 🚀 [추가] 주소가 있고 구글맵이 켜져있다면, 좌표(Lat, Lng) 변환을 시도합니다!
     if (finalPayload.address && window.google && window.google.maps) {
       const geocoder = new window.google.maps.Geocoder();
       await new Promise<void>((resolve) => {
@@ -190,7 +194,6 @@ export default function StaffPage() {
             finalPayload.lng = results[0].geometry.location.lng();
           } else {
             console.warn(`Geocoding failed: ${status}`);
-            // 실패해도 저장은 진행하도록 null로 세팅
             finalPayload.lat = null;
             finalPayload.lng = null; 
           }
@@ -199,7 +202,6 @@ export default function StaffPage() {
       });
     }
 
-    // 🚀 `saveStaffAction`에 좌표가 포함된 `finalPayload`를 전달합니다.
     const result = await saveStaffAction(finalPayload, !!editingId, editingId || undefined);
     if (result.success) {
       toast({ title: "Success", description: result.message, duration: 4000 });
@@ -217,7 +219,6 @@ export default function StaffPage() {
 
   return (
     <>
-    {/* ✅ [추가] Geocoding API 사용을 위한 Google Maps 스크립트 로드 */}
     <Script 
         src={`https://maps.googleapis.com/maps/api/js?key=${GOOGLE_API_KEY}&libraries=places,geometry&loading=async`}
         strategy="lazyOnload"
@@ -399,7 +400,6 @@ export default function StaffPage() {
               <Input className="col-span-3" type="date" value={formData.birth_date} onChange={(e) => setFormData({...formData, birth_date: e.target.value})} disabled={isReadOnly}/>
             </div>
 
-            {/* ✅ [수정] Address 입력 필드와 뱃지 */}
             <div className="grid grid-cols-4 items-center gap-4">
               <Label className="text-right flex flex-col items-end">
                   Address

@@ -20,6 +20,9 @@ export async function middleware(request: NextRequest) {
 
   // 2. 역할 기반 리다이렉트
   if (user) {
+    // ---------------------------------------------------------
+    // 아래는 customer가 아닌 사람(admin, driver 등)만 도달하는 영역입니다.
+    // ---------------------------------------------------------
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -42,7 +45,7 @@ export async function middleware(request: NextRequest) {
       .eq('id', user.id)
       .single()
 
-    // 📍 [수정됨] 대소문자 무시하고 소문자로 변환하여 비교 (DRIVER -> driver)
+    // 📍 대소문자 무시하고 소문자로 변환하여 비교
     const userLevel = profile?.user_level?.toLowerCase() || 'admin'
 
     // 🚚 CASE A: 드라이버인 경우

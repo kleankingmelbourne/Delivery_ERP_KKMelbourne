@@ -195,7 +195,6 @@ function SearchableSelect({
         }} 
         className={`flex items-center justify-between w-full px-3 py-2 text-sm border rounded-md cursor-pointer bg-white transition-all ${disabled ? "bg-slate-100 text-slate-400 cursor-not-allowed" : "hover:border-slate-400 focus:ring-2 focus:ring-slate-900"} ${isOpen ? "ring-2 ring-slate-900 border-slate-900" : "border-slate-200"}`}
       >
-        {/* 🚀 [수정] title 속성을 추가하여 마우스를 올리면 잘린 긴 이름이 툴팁으로 표시되도록 함 */}
         <span title={selectedOption ? selectedOption.label : placeholder} className={`block truncate ${!selectedOption ? "text-slate-400" : "text-slate-900 font-medium"}`}>
             {selectedOption ? selectedOption.label : placeholder}
         </span>
@@ -292,7 +291,6 @@ interface ProductMaster {
 } 
 interface AllowedProduct { id: string; product_id: string; discount_ctn: number; discount_pack: number; }
 
-// 🚀 [수정] InvoiceItem 인터페이스에 isGstIncluded 속성 추가
 interface InvoiceItem { 
     productId: string; 
     unit: string; 
@@ -349,7 +347,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
   const [availableCredit, setAvailableCredit] = useState(0); 
   
   const [originalItems, setOriginalItems] = useState<InvoiceItem[]>([]);
-  // 🚀 [수정] 초기 상태에 isGstIncluded: true 추가
   const [items, setItems] = useState<InvoiceItem[]>([
     { productId: "", unit: "CTN", quantity: 1, unitCost: 0, basePrice: 0, discountRate: 0, unitPrice: 0, isGstIncluded: true }
   ]);
@@ -376,13 +373,15 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
       if (isEditMode && invRes?.data) {
           const inv = invRes.data;
-          setCustomers([{ id: inv.customer_id, name: inv.invoice_to || "Unknown Customer" }]);
-          setSelectedCustomerId(inv.customer_id);
-          setInvoiceDate(inv.invoice_date);
-          setDueDate(inv.due_date);
+          
+          // 🚀 null 값이 될 수 있는 항목들에 대한 방어막(Fallback) 추가
+          setCustomers([{ id: inv.customer_id || "", name: inv.invoice_to || "Unknown Customer" }]);
+          setSelectedCustomerId(inv.customer_id || "");
+          setInvoiceDate(inv.invoice_date || today);
+          setDueDate(inv.due_date || "");
           setMemo(inv.memo || "");
           setIsPickup(inv.is_pickup || false);
-          setCurrentDriverId(inv.driver_id);
+          setCurrentDriverId(inv.driver_id || null);
 
           const initialProducts = inv.invoice_items.map((item: any) => item.products).filter(Boolean);
           const mappedProducts = initialProducts.map((p: any) => ({ ...p, unit_name: p.product_units?.unit_name || "CTN" }));
@@ -392,7 +391,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
           const loadedItems = inv.invoice_items.map((item: any) => {
             let unit = item.unit;
-            if (!unit) { const match = item.description.match(/\((CTN|PACK)\)$/); unit = match ? match[1] : "CTN"; }
+            if (!unit) { const match = item.description?.match(/\((CTN|PACK)\)$/); unit = match ? match[1] : "CTN"; }
             const prod = item.products; 
             
             let cost = prod?.buy_price || 0;
@@ -402,15 +401,15 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
             }
 
             return {
-                productId: item.product_id, 
+                productId: item.product_id || "", 
                 unit: unit, 
-                quantity: item.quantity, 
+                quantity: item.quantity || 1, // 🚀 방어막
                 unitCost: cost, 
-                basePrice: item.base_price, 
-                discountRate: item.discount, 
-                unitPrice: item.unit_price, 
+                basePrice: item.base_price || 0, // 🚀 방어막
+                discountRate: item.discount || 0, // 🚀 방어막
+                unitPrice: item.unit_price || 0, // 🚀 방어막
                 defaultUnitName: prod?.product_units?.unit_name || "CTN",
-                isGstIncluded: item.is_gst_included !== false // 🚀 기본값은 항상 true
+                isGstIncluded: item.is_gst_included !== false
             };
           });
           setItems(loadedItems);
@@ -423,7 +422,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       setLoading(false);
     };
     initData();
-  }, [invoiceId, isEditMode, router]);
+  }, [invoiceId, isEditMode, router, today, productUnits]); // 추가적인 의존성 연결
 
   // 2. Customer Change Effect 
   useEffect(() => {
@@ -446,9 +445,9 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
       const customerData = customerRes.data;
       if (customerData) {
-          setStaffNote(customerData.note || "");
+          setStaffNote(customerData.note || ""); // 🚀 방어막
           if (!isEditMode) calculateDueDate(invoiceDate, customerData.due_date);
-          if (!currentDriverId) setCurrentDriverId(customerData.in_charge_delivery); 
+          if (!currentDriverId) setCurrentDriverId(customerData.in_charge_delivery || null); 
 
           const apData = customerData.customer_products?.filter((item: any) => item.products && item.products.is_active === true) || []; 
           if (apData.length > 0) {
@@ -485,7 +484,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     };
     
     loadCustomerDetail();
-  }, [selectedCustomerId, isEditMode]); 
+  }, [selectedCustomerId, isEditMode, invoiceDate, currentDriverId, supabase]); 
 
   const handleRemoveAllowedProduct = async (productId: string) => {
       const allowedItem = allowedProducts.find(ap => ap.product_id === productId);
@@ -553,8 +552,10 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     }
   };
   const formatDateLocal = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  
   const handleInvoiceDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newDate = e.target.value; setInvoiceDate(newDate);
+    const newDate = e.target.value || ""; // 🚀 방어막
+    setInvoiceDate(newDate);
   };
 
   const productOptions = useMemo(() => {
@@ -593,7 +594,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
         unitPrice: netPrice, 
         defaultUnitName: defaultUnitName || currentItem.defaultUnitName,
         unitCost: cost !== undefined ? cost : currentItem.unitCost,
-        isGstIncluded: currentItem.isGstIncluded !== false // 기존 값 유지
+        isGstIncluded: currentItem.isGstIncluded !== false 
     };
     setItems(newItems);
   };
@@ -650,15 +651,12 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
   const updateItem = (index: number, field: keyof InvoiceItem, value: any) => { const newItems = [...items]; newItems[index] = { ...newItems[index], [field]: value }; setItems(newItems); };
   const removeItem = (index: number) => { if (items.length > 1) setItems(items.filter((_, i) => i !== index)); };
   
-  // 🚀 새 아이템 추가 시에도 GST 기본값은 true
   const addItem = () => setItems([...items, { productId: "", unit: "CTN", quantity: 1, unitCost: 0, basePrice: 0, discountRate: 0, unitPrice: 0, isGstIncluded: true }]);
   const handleProductClick = (index: number) => { if (index === items.length - 1) addItem(); };
 
-  // 🚀 [수정] 체크가 해제된 아이템은 GST 계산에서 뺌
-  const subTotal = roundAmount(items.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0));
+  const subTotal = roundAmount(items.reduce((sum, item) => sum + ((item.quantity || 0) * (item.unitPrice || 0)), 0));
   const gstTotal = roundAmount(items.reduce((sum, item) => {
-      const itemTotal = item.quantity * item.unitPrice;
-      // isGstIncluded가 false인 항목은 0원으로 계산, 아니면 10% 더함
+      const itemTotal = (item.quantity || 0) * (item.unitPrice || 0);
       return sum + ((item.isGstIncluded !== false) ? itemTotal * 0.1 : 0);
   }, 0));
   const grandTotal = roundAmount(subTotal + gstTotal);
@@ -856,8 +854,8 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                   base_price: item.basePrice, 
                   discount: item.discountRate, 
                   unit_price: item.unitPrice, 
-                  amount: roundAmount(item.quantity * item.unitPrice),
-                  is_gst_included: item.isGstIncluded !== false // 🚀 DB 전송
+                  amount: roundAmount((item.quantity || 0) * (item.unitPrice || 0)),
+                  is_gst_included: item.isGstIncluded !== false 
               };
           });
           parallelTasks.push(supabase.from("invoice_items").insert(itemsData));
@@ -963,13 +961,13 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
             invoice_id: targetId, 
             product_id: item.productId, 
             description: `${p?.product_name || 'Unknown'} (${item.unit})`, 
-            quantity: item.quantity, 
+            quantity: item.quantity || 1, 
             unit: item.unit, 
-            base_price: item.basePrice, 
-            discount: item.discountRate, 
-            unit_price: item.unitPrice, 
-            amount: roundAmount(item.quantity * item.unitPrice),
-            is_gst_included: item.isGstIncluded !== false // 🚀 DB 전송
+            base_price: item.basePrice || 0, 
+            discount: item.discountRate || 0, 
+            unit_price: item.unitPrice || 0, 
+            amount: roundAmount((item.quantity || 1) * (item.unitPrice || 0)),
+            is_gst_included: item.isGstIncluded !== false 
         };
       });
 
@@ -984,7 +982,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
         allowedProducts.forEach(ap => updatesMap.set(ap.product_id, { ctn: ap.discount_ctn, pack: ap.discount_pack }));
         validItems.forEach(item => {
           const current = updatesMap.get(item.productId) || { ctn: 0, pack: 0 };
-          if (isCtnUnit(item.unit)) current.ctn = item.discountRate; else current.pack = item.discountRate; 
+          if (isCtnUnit(item.unit)) current.ctn = item.discountRate || 0; else current.pack = item.discountRate || 0; 
           updatesMap.set(item.productId, current);
         });
         const updates = validItems.map(item => {
@@ -1060,15 +1058,23 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                 <label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2"><User className="w-3.5 h-3.5" /> Customer</label>
                 <SearchableSelect 
                   options={customerOptions} 
-                  value={selectedCustomerId} 
+                  value={selectedCustomerId || ""} 
                   onChange={setSelectedCustomerId} 
                   placeholder={loading ? "Loading list..." : "Search customer..."} 
                   disabled={isEditMode} 
                 />
               </div>
               <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2"><label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2"><Calendar className="w-3.5 h-3.5" /> Date</label><Input type="date" value={invoiceDate} onChange={handleInvoiceDateChange} /></div>
-                <div className="space-y-2"><label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2"><CreditCard className="w-3.5 h-3.5" /> Due Date</label><Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className="bg-white text-slate-900" /></div>
+                <div className="space-y-2">
+                    <label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2"><Calendar className="w-3.5 h-3.5" /> Date</label>
+                    {/* 🚀 방어막 적용 */}
+                    <Input type="date" value={invoiceDate || ""} onChange={handleInvoiceDateChange} />
+                </div>
+                <div className="space-y-2">
+                    <label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2"><CreditCard className="w-3.5 h-3.5" /> Due Date</label>
+                    {/* 🚀 방어막 적용 */}
+                    <Input type="date" value={dueDate || ""} onChange={(e) => setDueDate(e.target.value)} className="bg-white text-slate-900" />
+                </div>
               </div>
             </div>
             
@@ -1100,7 +1106,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
             <div className="border border-slate-200 rounded-lg"> 
               <table className="w-full text-sm text-left table-fixed">
                 <thead className="bg-slate-50 border-b border-slate-200 text-slate-700 font-bold text-xs uppercase">
-                  {/* 🚀 테이블 컬럼 비율(w-[%]) 재조정 */}
                   <tr>
                     <th className="px-3 py-3 w-[3%] text-center text-slate-400">#</th>
                     <th className="px-3 py-3 w-[24%]">Product</th>
@@ -1110,7 +1115,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                     <th className="px-3 py-3 w-[9%] text-right text-blue-700">Net</th>
                     <th className="px-3 py-3 w-[7%] text-right">Disc %</th>
                     <th className="px-3 py-3 w-[8%] text-center">Qty</th>
-                    {/* 🚀 새로운 GST 헤더 추가 */}
                     <th className="px-3 py-3 w-[6%] text-center">GST</th>
                     <th className="px-3 py-3 w-[12%] text-right">Total</th>
                     <th className="w-[5%]"></th>
@@ -1126,7 +1130,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                             <SearchableSelect 
                                 id={`product-search-${idx}`} 
                                 options={productOptions} 
-                                value={item.productId} 
+                                value={item.productId || ""} 
                                 onChange={(val) => handleProductChange(idx, val)} 
                                 placeholder="Search product..." 
                                 className="w-full" 
@@ -1154,7 +1158,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                               <select 
                                 id={`unit-select-${idx}`}
                                 className={`w-full p-2 border border-slate-200 rounded text-center font-medium outline-none focus:ring-2 focus:ring-slate-900 focus:border-transparent transition-all text-xs ${!isCtnOrPack && item.productId ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : 'bg-slate-50 hover:bg-white'}`} 
-                                value={item.unit} 
+                                value={item.unit || "CTN"} 
                                 onChange={(e) => handleUnitChange(idx, e.target.value as any)} 
                                 disabled={!isCtnOrPack && !!item.productId}
                                 onKeyDown={(e) => {
@@ -1164,16 +1168,20 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                                     }
                                 }}
                               >
-                                {isCtnOrPack ? (<><option value="CTN">CTN</option><option value="PACK">PK</option></>) : (<option value={item.unit}>{item.unit}</option>)}
+                                {isCtnOrPack ? (<><option value="CTN">CTN</option><option value="PACK">PK</option></>) : (<option value={item.unit || "CTN"}>{item.unit || "CTN"}</option>)}
                               </select>
                           </td>
                           <td className="p-2 text-right font-medium text-orange-600 text-xs">
-                              ${(item.unitCost || 0).toFixed(2)}
+                              ${((item.unitCost) ?? 0).toFixed(2)}
                           </td>
-                          <td className="p-2 text-right text-slate-400 text-xs line-through decoration-slate-300">${item.basePrice.toFixed(2)}</td>
-                          <td className="p-2 text-right font-bold text-blue-700 text-sm">${item.unitPrice.toFixed(2)}</td>
-                          <td className="p-2 relative"><Input id={`disc-input-${idx}`} type="number" min="0" max="100" className="text-right h-9 text-xs border-blue-100 focus:border-blue-500 font-bold pr-2 bg-blue-50/50 text-blue-700" value={item.discountRate} onChange={(e) => handleDiscountChange(idx, Number(e.target.value))} /></td>
+                          <td className="p-2 text-right text-slate-400 text-xs line-through decoration-slate-300">${((item.basePrice) ?? 0).toFixed(2)}</td>
+                          <td className="p-2 text-right font-bold text-blue-700 text-sm">${((item.unitPrice) ?? 0).toFixed(2)}</td>
+                          
+                          {/* 🚀 방어막 적용: ?? 0 */}
+                          <td className="p-2 relative"><Input id={`disc-input-${idx}`} type="number" min="0" max="100" className="text-right h-9 text-xs border-blue-100 focus:border-blue-500 font-bold pr-2 bg-blue-50/50 text-blue-700" value={item.discountRate ?? 0} onChange={(e) => handleDiscountChange(idx, Number(e.target.value))} /></td>
+                          
                           <td className="p-2">
+                              {/* 🚀 방어막 적용: ?? 1 */}
                               <Input 
                                 id={`qty-input-${idx}`} 
                                 type="number" 
@@ -1191,11 +1199,10 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                                     }
                                 }} 
                                 className="text-center h-9 focus:ring-2 focus:ring-slate-900" 
-                                value={item.quantity} 
+                                value={item.quantity ?? 1} 
                                 onChange={(e) => { const val = e.target.value; if (val === '') updateItem(idx, "quantity", ''); else updateItem(idx, "quantity", parseInt(val, 10)); }} 
                               />
                           </td>
-                          {/* 🚀 GST 체크박스 셀 추가 */}
                           <td className="p-2 text-center">
                               <div className="flex items-center justify-center w-full h-full">
                                   <Checkbox 
@@ -1204,7 +1211,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                                   />
                               </div>
                           </td>
-                          <td className="px-3 py-3 text-right font-bold text-slate-900">${(item.quantity * item.unitPrice).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                          <td className="px-3 py-3 text-right font-bold text-slate-900">${((item.quantity || 0) * (item.unitPrice || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                           <td className="p-2 text-center"><button onClick={() => removeItem(idx)} className="text-slate-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button></td>
                         </tr>
                     );
@@ -1214,8 +1221,14 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
               <div className="bg-slate-50 p-2 border-t border-slate-200"><Button variant="ghost" size="sm" onClick={addItem} className="text-blue-600 hover:text-blue-700 w-full"><Plus className="w-4 h-4 mr-2" /> Add Line Item</Button></div>
             </div>
             <div className="space-y-6">
-                <div className="space-y-2"><label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2"><FileText className="w-3.5 h-3.5" /> Invoice Memo</label><Textarea placeholder="Visible on invoice..." className="resize-none h-[80px] bg-slate-50" value={memo} onChange={(e) => setMemo(e.target.value)} /></div>
-                <div className="bg-amber-50 p-4 rounded-lg border border-amber-200 shadow-sm space-y-2"><div className="flex items-center justify-between"><h3 className="font-bold text-amber-900 text-xs uppercase flex items-center gap-2"><Lock className="w-3 h-3"/> Staff Note</h3><span className="text-[10px] text-amber-700 font-medium px-2 py-0.5 bg-amber-100 rounded-full">Auto-updates Customer Profile</span></div><Textarea className="bg-white border-amber-200 text-sm min-h-[100px] resize-y" value={staffNote} onChange={(e) => setStaffNote(e.target.value)} placeholder="Internal notes about this customer..." /></div>
+                <div className="space-y-2"><label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2"><FileText className="w-3.5 h-3.5" /> Invoice Memo</label>
+                  {/* 🚀 방어막 적용 */}
+                  <Textarea placeholder="Visible on invoice..." className="resize-none h-[80px] bg-slate-50" value={memo || ""} onChange={(e) => setMemo(e.target.value)} />
+                </div>
+                <div className="bg-amber-50 p-4 rounded-lg border border-amber-200 shadow-sm space-y-2"><div className="flex items-center justify-between"><h3 className="font-bold text-amber-900 text-xs uppercase flex items-center gap-2"><Lock className="w-3 h-3"/> Staff Note</h3><span className="text-[10px] text-amber-700 font-medium px-2 py-0.5 bg-amber-100 rounded-full">Auto-updates Customer Profile</span></div>
+                  {/* 🚀 방어막 적용 */}
+                  <Textarea className="bg-white border-amber-200 text-sm min-h-[100px] resize-y" value={staffNote || ""} onChange={(e) => setStaffNote(e.target.value)} placeholder="Internal notes about this customer..." />
+                </div>
             </div>
           </div>
         </div>

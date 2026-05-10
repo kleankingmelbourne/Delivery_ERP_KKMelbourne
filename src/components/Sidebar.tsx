@@ -1,8 +1,9 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
+import { createClient } from "@/utils/supabase/client" 
 import { 
   LayoutDashboard, 
   Users, 
@@ -23,7 +24,7 @@ import {
   Plus,
   PanelLeftClose, 
   PanelLeft,
-  Truck,           
+  Truck,          
   MapPin,         
   Navigation,     
   TrendingUp,     
@@ -31,7 +32,10 @@ import {
   Receipt,
   RefreshCw, 
   LogsIcon,
-  UserX
+  UserX,
+  FileClock,
+  Megaphone,
+  MessageCircle
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import Image from "next/image"
@@ -51,13 +55,16 @@ const menuItems = [
     ]
   },
 
+  // ORDERS
+  { name: "ORDERS", href: "/orders", icon: ClipboardList },
+
   // INVOICE
   { 
     name: "INVOICE", 
     icon: FileText,
     isSubmenu: true, 
     subItems: [
-      { name: "TODAY", href: "/invoice/today", icon: List },       
+      { name: "TODAY", href: "/invoice/today", icon: FileClock },       
       { name: "INVOICE LIST", href: "/invoice", icon: List },       
       { name: "PAID", href: "/invoice/paid", icon: CheckCircle2 },  
       { name: "UNPAID", href: "/invoice/unpaid", icon: AlertCircle }, 
@@ -128,8 +135,9 @@ const menuItems = [
     ]
   },
 
+  { name: "MESSAGES", href: "/messages", icon: MessageCircle },
+  { name: "POSTS", href: "/posts", icon: Megaphone },
   { name: "STAFF", href: "/staff", icon: UserCircle },
-  { name: "POST", href: "/post", icon: ClipboardList },
   
   // SETTING
   { 
@@ -146,23 +154,80 @@ const menuItems = [
 
 export default function Sidebar() {
   const pathname = usePathname()
+  const supabase = createClient() 
   
   // 상태 관리
   const [isCollapsed, setIsCollapsed] = useState(false)
   const [openMenus, setOpenMenus] = useState<Record<string, boolean>>({})
+  
+  // 🚀 카운트 배지 상태들
+  const [unreadMsgCount, setUnreadMsgCount] = useState(0)
+  const [pendingOrderCount, setPendingOrderCount] = useState(0) // 🚀 새 오더(Pending) 카운트
+
+  useEffect(() => {
+    // 1. 메시지 카운트 가져오기
+    const fetchUnreadCount = async () => {
+      const { count, error } = await supabase
+        .from("messages")
+        .select("*", { count: "exact", head: true }) 
+        .eq("sender_type", "customer")
+        .eq("is_read", false)
+
+      if (!error && count !== null) {
+        setUnreadMsgCount(count)
+      }
+    }
+
+    // 🚀 2. 새 주문(Pending) 카운트 가져오기
+    const fetchPendingOrdersCount = async () => {
+      const { count, error } = await supabase
+        .from("orders")
+        .select("*", { count: "exact", head: true }) 
+        .eq("status", "pending")
+
+      if (!error && count !== null) {
+        setPendingOrderCount(count)
+      }
+    }
+
+    fetchUnreadCount()
+    fetchPendingOrdersCount()
+
+    // 3. 실시간 감시 채널 (메시지)
+    const msgChannel = supabase
+      .channel('admin-sidebar-messages')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'messages' },
+        () => fetchUnreadCount() 
+      )
+      .subscribe()
+
+    // 🚀 4. 실시간 감시 채널 (오더)
+    const orderChannel = supabase
+      .channel('admin-sidebar-orders')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'orders' },
+        () => fetchPendingOrdersCount() // 새 주문이 들어오거나 처리되면 바로 갱신!
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(msgChannel)
+      supabase.removeChannel(orderChannel)
+    }
+  }, [supabase])
 
   // 사이드바 접기/펴기
   const toggleSidebar = () => setIsCollapsed(prev => !prev)
 
-  // 메뉴 펼치기/접기 (수정된 로직)
+  // 메뉴 펼치기/접기
   const toggleMenu = (name: string) => {
     if (isCollapsed) {
       setIsCollapsed(false)
-      // 사이드바가 접혀있다가 펴질 때는 해당 메뉴만 엽니다.
       setOpenMenus({ [name]: true })
     } else {
-      // 기존 상태(...prev)를 복사하지 않고, 클릭한 메뉴의 상태만 새로 설정합니다.
-      // 이렇게 하면 클릭한 메뉴 외의 다른 메뉴들은 모두 닫히게 됩니다(undefined/false).
       setOpenMenus(prev => ({ [name]: !prev[name] }))
     }
   }
@@ -179,8 +244,6 @@ export default function Sidebar() {
         "flex flex-col border-b border-slate-100 transition-all bg-slate-50/50",
         isCollapsed ? "items-center py-4 gap-4" : "items-center py-6 px-4 relative"
       )}>
-        
-        {/* 접기/펴기 버튼 */}
         <button 
           onClick={toggleSidebar}
           className={cn(
@@ -192,7 +255,6 @@ export default function Sidebar() {
           {isCollapsed ? <PanelLeft className="w-5 h-5" /> : <PanelLeftClose className="w-5 h-5" />}
         </button>
 
-        {/* 로고 이미지 */}
         <div className={cn("transition-all duration-300", isCollapsed ? "w-10 h-10" : "w-40 h-auto")}>
             <Image
                 src="/images/logo.png"
@@ -251,7 +313,6 @@ export default function Sidebar() {
                     )}
                 </button>
 
-                {/* 서브메뉴 */}
                 {!isCollapsed && isSubmenuOpen && (
                   <div className="ml-4 space-y-1 animate-in fade-in slide-in-from-top-1 border-l border-slate-200 pl-3 my-1">
                     {item.subItems?.map((sub) => (
@@ -290,17 +351,58 @@ export default function Sidebar() {
               title={isCollapsed ? item.name : undefined}
             >
               <div className="flex items-center gap-3">
-                <item.icon className={cn(
-                  "h-5 w-5 shrink-0 transition-colors",
-                  isActive ? "text-white" : "text-slate-400 group-hover:text-slate-900"
-                )} />
+                
+                {/* 아이콘 & 접혔을 때의 뱃지 영역 */}
+                <div className="relative">
+                  <item.icon className={cn(
+                    "h-5 w-5 shrink-0 transition-colors",
+                    isActive ? "text-white" : "text-slate-400 group-hover:text-slate-900"
+                  )} />
+                  
+                  {/* 사이드바가 접혀있을 때 아이콘 모서리에 띄우는 뱃지 (메시지) */}
+                  {isCollapsed && item.name === "MESSAGES" && unreadMsgCount > 0 && (
+                    <span className="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center bg-rose-500 text-white text-[9px] font-black rounded-full border border-white shadow-sm animate-in zoom-in">
+                      {unreadMsgCount > 99 ? '99+' : unreadMsgCount}
+                    </span>
+                  )}
+
+                  {/* 🚀 사이드바가 접혀있을 때 아이콘 모서리에 띄우는 뱃지 (오더) */}
+                  {isCollapsed && item.name === "ORDERS" && pendingOrderCount > 0 && (
+                    <span className="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center bg-amber-500 text-white text-[9px] font-black rounded-full border border-white shadow-sm animate-in zoom-in">
+                      {pendingOrderCount > 99 ? '99+' : pendingOrderCount}
+                    </span>
+                  )}
+                </div>
+
                 {!isCollapsed && (
                   <span className="text-xs font-bold tracking-wide whitespace-nowrap animate-in fade-in slide-in-from-left-2 duration-200">
                     {item.name}
                   </span>
                 )}
               </div>
-              {!isCollapsed && isActive && <ChevronRight className="h-3 w-3 text-slate-400" />}
+              
+              {/* 🚀 사이드바가 펼쳐져 있을 때 우측 끝에 띄우는 뱃지 모음 */}
+              <div className="flex items-center">
+                {!isCollapsed && item.name === "MESSAGES" && unreadMsgCount > 0 && (
+                  <span className="flex h-5 min-w-[20px] px-1.5 items-center justify-center bg-rose-500 text-white text-[10px] font-black rounded-full shadow-sm ml-auto animate-in zoom-in">
+                    {unreadMsgCount > 99 ? '99+' : unreadMsgCount}
+                  </span>
+                )}
+
+                {/* 🚀 Orders 메뉴 전용 알람 뱃지 (Amber 컬러) */}
+                {!isCollapsed && item.name === "ORDERS" && pendingOrderCount > 0 && (
+                  <span className="flex h-5 min-w-[20px] px-1.5 items-center justify-center bg-amber-500 text-white text-[10px] font-black rounded-full shadow-sm ml-auto animate-in zoom-in">
+                    {pendingOrderCount > 99 ? '99+' : pendingOrderCount}
+                  </span>
+                )}
+
+                {/* 선택된 화살표 표시 (알람이 없는 메뉴이면서 Active 상태일 때만) */}
+                {!isCollapsed && isActive && 
+                 !(item.name === "MESSAGES" && unreadMsgCount > 0) && 
+                 !(item.name === "ORDERS" && pendingOrderCount > 0) && (
+                  <ChevronRight className="h-3 w-3 text-white opacity-80" />
+                )}
+              </div>
             </Link>
           )
         })}

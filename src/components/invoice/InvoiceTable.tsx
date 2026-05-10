@@ -92,6 +92,9 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
   const [loading, setLoading] = useState(true);
   
   const [searchTerm, setSearchTerm] = useState("");
+  // 🚀 [최적화 1] 타이핑 폭주를 막아줄 디바운스 검색어 상태 추가
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+
   const [today, setToday] = useState(""); 
   const [startDate, setStartDate] = useState(""); 
   const [endDate, setEndDate] = useState("");
@@ -127,6 +130,14 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
   const [colWidths, setColWidths] = useState<{ [key: number]: number }>({});
   const resizingCol = useRef<{ index: number; startX: number; startWidth: number } | null>(null);
 
+  // 🚀 [최적화 2] 사용자가 타이핑을 멈추고 0.5초 뒤에만 검색어를 적용합니다.
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearch(searchTerm);
+    }, 500);
+    return () => clearTimeout(handler);
+  }, [searchTerm]);
+
   useEffect(() => {
     const now = new Date();
     const year = now.getFullYear();
@@ -144,6 +155,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
         setEndDate(localDate);
         setPageSize("all");
         setSearchTerm("");
+        setDebouncedSearch("");
         setActiveTab("ALL");
     } else if (savedFilters) {
         try {
@@ -151,6 +163,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
             setStartDate(parsed.startDate || localDate);
             setEndDate(parsed.endDate || localDate);
             setSearchTerm(parsed.searchTerm || "");
+            setDebouncedSearch(parsed.searchTerm || "");
             setActiveTab(parsed.activeTab || 'ALL');
             setCurrentPage(parsed.currentPage || 1);
             setPageSize(parsed.pageSize || "10");
@@ -170,13 +183,13 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     const filtersToSave = {
         startDate,
         endDate,
-        searchTerm,
+        searchTerm: debouncedSearch, // 🚀 세션 저장도 디바운스된 값으로 안전하게!
         activeTab,
         currentPage,
         pageSize
     };
     sessionStorage.setItem(`invoiceFilters_${filterStatus}`, JSON.stringify(filtersToSave));
-  }, [startDate, endDate, searchTerm, activeTab, currentPage, pageSize, filterStatus]);
+  }, [startDate, endDate, debouncedSearch, activeTab, currentPage, pageSize, filterStatus]);
 
 
   const buildQuery = useCallback((isCountQuery: boolean = false) => {
@@ -218,17 +231,20 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
         query = query.or('status.eq.Credit,id.ilike.CR-%');
     }
 
-    if (searchTerm) {
-        const cleanTerm = searchTerm.replace(/[^0-9.]/g, "");
-        if (cleanTerm !== "") {
-            query = query.or(`invoice_to.ilike.%${searchTerm}%,id.ilike.%${searchTerm}%,total_amount::text.ilike.%${cleanTerm}%`);
+    // 🚀 [최적화 3] 실제 DB 검색은 `debouncedSearch` 값으로 수행합니다.
+    if (debouncedSearch) {
+        const safeTerm = debouncedSearch.replace(/"/g, '""'); 
+        const isNumeric = !isNaN(Number(debouncedSearch)) && debouncedSearch.trim() !== "";
+
+        if (isNumeric) {
+            query = query.or(`invoice_to.ilike."%${safeTerm}%",id.ilike."%${safeTerm}%",total_amount.eq.${Number(debouncedSearch)}`);
         } else {
-            query = query.or(`invoice_to.ilike.%${searchTerm}%,id.ilike.%${searchTerm}%`);
+            query = query.or(`invoice_to.ilike."%${safeTerm}%",id.ilike."%${safeTerm}%"`);
         }
     }
 
     return query;
-  }, [supabase, filterStatus, startDate, endDate, activeTab, searchTerm]);
+  }, [supabase, filterStatus, startDate, endDate, activeTab, debouncedSearch]); // 🚀 의존성 변경
 
   useEffect(() => {
     const fetchCount = async () => {
@@ -287,26 +303,22 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     setCurrentPage(1);
     setSelectedIds(new Set()); 
     setExpandedRowIds(new Set()); 
-  }, [searchTerm, startDate, endDate, activeTab]); 
+  }, [debouncedSearch, startDate, endDate, activeTab]); // 🚀 searchTerm 대신 debouncedSearch 사용
 
-  // 🚀 [추가] 날짜를 변경할 때 처리하는 함수
   const handleDateChange = (type: 'start' | 'end', val: string) => {
     const newStart = type === 'start' ? val : startDate;
     const newEnd = type === 'end' ? val : endDate;
 
-    // 만약 현재 메뉴가 'TODAY'인데 선택한 날짜가 오늘이 아니라면 ALL 화면으로 넘깁니다.
     if (filterStatus === "TODAY" && (newStart !== today || newEnd !== today)) {
         const filtersToSave = {
             startDate: newStart,
             endDate: newEnd,
-            searchTerm,
+            searchTerm: debouncedSearch,
             activeTab,
             currentPage: 1,
-            pageSize: "10" // 페이지 사이즈를 10으로 초기화
+            pageSize: "10" 
         };
-        // 1. ALL 인보이스용 세션스토리지에 날짜 저장
         sessionStorage.setItem("invoiceFilters_ALL", JSON.stringify(filtersToSave));
-        // 2. 전체 인보이스 화면(/invoice)으로 강제 이동
         router.push("/invoice");
         return;
     }
@@ -315,13 +327,12 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     else setEndDate(val);
   };
 
-  // 🚀 [추가] 날짜 지우기(X버튼) 누를 때 처리하는 함수
   const handleClearDates = () => { 
     if (filterStatus === "TODAY") {
         const filtersToSave = {
             startDate: "",
             endDate: "",
-            searchTerm,
+            searchTerm: debouncedSearch,
             activeTab,
             currentPage: 1,
             pageSize: "10"
@@ -751,7 +762,6 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col lg:flex-row items-center justify-between gap-4">
         <div className="flex flex-1 flex-col sm:flex-row items-center gap-3 w-full">
           <div className="flex items-center gap-2 bg-slate-50 p-1 rounded-lg border border-slate-200">
-            {/* 🚀 [수정] onchange 에 커스텀 핸들러 부착 */}
             <input type="date" value={startDate} onChange={e=>handleDateChange('start', e.target.value)} className="pl-2 bg-transparent text-sm w-32"/>
             <span className="text-slate-400">-</span>
             <input type="date" value={endDate} onChange={e=>handleDateChange('end', e.target.value)} className="pl-2 bg-transparent text-sm w-32"/>

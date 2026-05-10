@@ -43,6 +43,7 @@
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-google-autocomplete": "^2.7.5",
+    "react-quill-new": "^3.8.3",
     "recharts": "^3.7.0",
     "resend": "^6.8.0",
     "tailwind-merge": "^3.4.0",

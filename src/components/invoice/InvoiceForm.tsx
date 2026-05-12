@@ -203,7 +203,7 @@ function SearchableSelect({
       
       {isOpen && !disabled && (
         <div className="absolute z-50 mt-1 bg-white border border-slate-200 rounded-lg shadow-xl flex flex-col animate-in fade-in zoom-in-95 duration-100"
-             style={{ minWidth: "100%", width: "max-content", maxWidth: "500px", maxHeight: "400px" }}
+              style={{ minWidth: "100%", width: "max-content", maxWidth: "500px", maxHeight: "400px" }}
         >
           <div className="sticky top-0 p-2 bg-white border-b border-slate-100 shrink-0 z-10">
             <div className="relative">
@@ -374,7 +374,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       if (isEditMode && invRes?.data) {
           const inv = invRes.data;
           
-          // 🚀 null 값이 될 수 있는 항목들에 대한 방어막(Fallback) 추가
           setCustomers([{ id: inv.customer_id || "", name: inv.invoice_to || "Unknown Customer" }]);
           setSelectedCustomerId(inv.customer_id || "");
           setInvoiceDate(inv.invoice_date || today);
@@ -403,11 +402,11 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
             return {
                 productId: item.product_id || "", 
                 unit: unit, 
-                quantity: item.quantity || 1, // 🚀 방어막
+                quantity: item.quantity || 1, 
                 unitCost: cost, 
-                basePrice: item.base_price || 0, // 🚀 방어막
-                discountRate: item.discount || 0, // 🚀 방어막
-                unitPrice: item.unit_price || 0, // 🚀 방어막
+                basePrice: item.base_price || 0, 
+                discountRate: item.discount || 0, 
+                unitPrice: item.unit_price || 0, 
                 defaultUnitName: prod?.product_units?.unit_name || "CTN",
                 isGstIncluded: item.is_gst_included !== false
             };
@@ -422,7 +421,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       setLoading(false);
     };
     initData();
-  }, [invoiceId, isEditMode, router, today, productUnits]); // 추가적인 의존성 연결
+  }, [invoiceId, isEditMode, router, today, productUnits]);
 
   // 2. Customer Change Effect 
   useEffect(() => {
@@ -445,7 +444,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
       const customerData = customerRes.data;
       if (customerData) {
-          setStaffNote(customerData.note || ""); // 🚀 방어막
+          setStaffNote(customerData.note || ""); 
           if (!isEditMode) calculateDueDate(invoiceDate, customerData.due_date);
           if (!currentDriverId) setCurrentDriverId(customerData.in_charge_delivery || null); 
 
@@ -554,7 +553,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
   const formatDateLocal = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   
   const handleInvoiceDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newDate = e.target.value || ""; // 🚀 방어막
+    const newDate = e.target.value || ""; 
     setInvoiceDate(newDate);
   };
 
@@ -834,8 +833,23 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
         if (lastCr?.id) { const match = lastCr.id.match(/CR-(\d+)/); if (match && match[1]) nextId = `CR-${String(parseInt(match[1]) + 1).padStart(5, '0')}`; }
         
         const customerName = customers.find(c => c.id === selectedCustomerId)?.name || "Unknown Customer";
+        
+        // 🚀 [수정] 새 크레딧 메모 생성 시 due_date를 null로 저장합니다!
         const { error: invError } = await supabase.from("invoices").insert({
-          id: nextId, customer_id: selectedCustomerId, invoice_to: customerName, invoice_date: invoiceDate, due_date: invoiceDate, total_amount: grandTotal, subtotal: subTotal, gst_total: gstTotal, paid_amount: grandTotal, status: "Credit", created_who: currentUserName, updated_who: currentUserName, memo: memo, is_pickup: isPickup
+          id: nextId, 
+          customer_id: selectedCustomerId, 
+          invoice_to: customerName, 
+          invoice_date: invoiceDate, 
+          due_date: null, // <-- 수정됨
+          total_amount: grandTotal, 
+          subtotal: subTotal, 
+          gst_total: gstTotal, 
+          paid_amount: grandTotal, 
+          status: "Credit", 
+          created_who: currentUserName, 
+          updated_who: currentUserName, 
+          memo: memo, 
+          is_pickup: isPickup
         });
         if (invError) throw invError;
 
@@ -902,11 +916,12 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       if (isEditMode && targetId) {
           const isCreditMemo = targetId.startsWith("CR-");
 
+          // 🚀 [수정] 수정 시에도 해당 아이디가 크레딧 메모라면 due_date를 null로 덮어씌웁니다!
           const updatePayload: any = { 
               customer_id: selectedCustomerId, 
               invoice_to: customerName, 
               invoice_date: invoiceDate, 
-              due_date: dueDate, 
+              due_date: isCreditMemo ? null : dueDate, // <-- 수정됨
               total_amount: grandTotal, 
               subtotal: subTotal, 
               gst_total: gstTotal, 
@@ -1067,12 +1082,10 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                     <label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2"><Calendar className="w-3.5 h-3.5" /> Date</label>
-                    {/* 🚀 방어막 적용 */}
                     <Input type="date" value={invoiceDate || ""} onChange={handleInvoiceDateChange} />
                 </div>
                 <div className="space-y-2">
                     <label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2"><CreditCard className="w-3.5 h-3.5" /> Due Date</label>
-                    {/* 🚀 방어막 적용 */}
                     <Input type="date" value={dueDate || ""} onChange={(e) => setDueDate(e.target.value)} className="bg-white text-slate-900" />
                 </div>
               </div>
@@ -1176,12 +1189,8 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                           </td>
                           <td className="p-2 text-right text-slate-400 text-xs line-through decoration-slate-300">${((item.basePrice) ?? 0).toFixed(2)}</td>
                           <td className="p-2 text-right font-bold text-blue-700 text-sm">${((item.unitPrice) ?? 0).toFixed(2)}</td>
-                          
-                          {/* 🚀 방어막 적용: ?? 0 */}
                           <td className="p-2 relative"><Input id={`disc-input-${idx}`} type="number" min="0" max="100" className="text-right h-9 text-xs border-blue-100 focus:border-blue-500 font-bold pr-2 bg-blue-50/50 text-blue-700" value={item.discountRate ?? 0} onChange={(e) => handleDiscountChange(idx, Number(e.target.value))} /></td>
-                          
                           <td className="p-2">
-                              {/* 🚀 방어막 적용: ?? 1 */}
                               <Input 
                                 id={`qty-input-${idx}`} 
                                 type="number" 
@@ -1222,11 +1231,9 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
             </div>
             <div className="space-y-6">
                 <div className="space-y-2"><label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2"><FileText className="w-3.5 h-3.5" /> Invoice Memo</label>
-                  {/* 🚀 방어막 적용 */}
                   <Textarea placeholder="Visible on invoice..." className="resize-none h-[80px] bg-slate-50" value={memo || ""} onChange={(e) => setMemo(e.target.value)} />
                 </div>
                 <div className="bg-amber-50 p-4 rounded-lg border border-amber-200 shadow-sm space-y-2"><div className="flex items-center justify-between"><h3 className="font-bold text-amber-900 text-xs uppercase flex items-center gap-2"><Lock className="w-3 h-3"/> Staff Note</h3><span className="text-[10px] text-amber-700 font-medium px-2 py-0.5 bg-amber-100 rounded-full">Auto-updates Customer Profile</span></div>
-                  {/* 🚀 방어막 적용 */}
                   <Textarea className="bg-white border-amber-200 text-sm min-h-[100px] resize-y" value={staffNote || ""} onChange={(e) => setStaffNote(e.target.value)} placeholder="Internal notes about this customer..." />
                 </div>
             </div>

@@ -78,7 +78,6 @@ export default function AdminOrderTable() {
     return () => clearTimeout(handler);
   }, [searchTerm]);
 
-  // 초기 날짜 설정: Requested Date 기준 (한달 전 ~ 한달 후)
   useEffect(() => {
     const now = new Date();
     const past = new Date(now);
@@ -111,7 +110,6 @@ export default function AdminOrderTable() {
     else if (activeTab === "INVOICED") query = query.eq("status", "invoiced");
     else if (activeTab === "CANCELLED") query = query.eq("status", "cancelled");
     
-    // 🚀 필터 기준: Requested Date
     if (startDate) query = query.gte("requested_date", startDate);
     if (endDate) query = query.lte("requested_date", endDate);
     
@@ -138,7 +136,6 @@ export default function AdminOrderTable() {
     const from = (currentPage - 1) * limit;
     const to = from + limit - 1;
     
-    // 🚀 정렬 기준: Requested Date
     query = query.order("requested_date", { ascending: false }).order("id", { ascending: false }).range(from, to);
     
     const { data, count, error } = await query;
@@ -151,6 +148,7 @@ export default function AdminOrderTable() {
 
   useEffect(() => { fetchOrders(); }, [fetchOrders]); 
 
+  // 🚀 인보이스 변환 시 GST 계산 로직 수정 완료
   const handleConvertToInvoice = async (order: Order) => {
     if (!confirm(`Create an invoice for Order #${order.id}?`)) return;
     setLoading(true);
@@ -169,22 +167,24 @@ export default function AdminOrderTable() {
             if (!isNaN(lastNum)) newInvId = `IV-${lastNum + 1}`; 
         }
 
-        const total = order.total_amount;
-        const gst = roundAmount(total * 0.1); 
-        const subtotal = roundAmount(total - gst);
+        // 🚀 수식 수정 포인트
+        const orderSubtotal = order.total_amount; // 넘어온 가격을 100%(Subtotal)로 설정
+        const gstTotal = roundAmount(orderSubtotal * 0.1); // 10% 플러스
+        const finalInvoiceTotal = roundAmount(orderSubtotal + gstTotal); // 최종 합계는 110%
+
         const dueDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
         const currentAdminName = user?.user_metadata?.full_name || user?.email || "Admin";
 
         const invoiceData = {
             id: newInvId,
             customer_id: order.customer_id,
-            invoice_to: order.customers?.name || 'Unknown', // 🚀 담당자 이름 우선
+            invoice_to: order.customers?.name || 'Unknown', 
             invoice_date: order.requested_date,
             due_date: dueDate,
-            total_amount: total,
+            total_amount: finalInvoiceTotal, // 수정된 최종 합계 (110%)
             paid_amount: 0,
-            subtotal: subtotal, 
-            gst_total: gst,
+            subtotal: orderSubtotal,         // 오더 가격 그대로 Subtotal (100%)
+            gst_total: gstTotal,             // 10% 가산된 세금
             status: 'Unpaid',
             created_who: 'customer',
             updated_who: currentAdminName,
@@ -211,7 +211,7 @@ export default function AdminOrderTable() {
         await supabase.from("invoice_items").insert(invItemsData);
         await supabase.from("orders").update({ status: 'invoiced', invoice_id: newInvId }).eq('id', order.id);
 
-        alert(`✅ Invoice ${newInvId} created!`);
+        alert(`✅ Invoice ${newInvId} created (Subtotal: ${formatCurrency(orderSubtotal)} + GST: ${formatCurrency(gstTotal)})`);
         fetchOrders(); 
     } catch (error: any) {
         alert(`Failed: ${error.message}`);
@@ -336,14 +336,9 @@ export default function AdminOrderTable() {
                       ) : <span className="text-slate-300 text-xs">-</span>}
                     </td>
 
-                    {/* 🚀 담당자 이름(name)으로 변경 */}
                     <td className="px-4 py-4 font-bold text-slate-900">{order.customers?.name || "Unknown"}</td>
-                    
-                    {/* 🚀 주문 생성일 추가 */}
                     <td className="px-4 py-4 text-slate-500 text-xs">{order.order_date}</td>
-                    
                     <td className="px-4 py-4 text-indigo-700 font-black">{order.requested_date}</td>
-                    
                     <td className="px-4 py-4 text-right font-black text-slate-900">{formatCurrency(order.total_amount)}</td>
                     <td className="px-4 py-4">{renderStatus(order.status)}</td>
                     <td className="px-6 py-4 text-center">

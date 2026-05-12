@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { 
   X, Save, Eye, EyeOff, CheckCircle2, XCircle, 
-  Ban, ShieldCheck, Loader2, ChevronDown, MapPin, Users, Key
+  Ban, ShieldCheck, Loader2, ChevronDown, MapPin, Users, Key, MailPlus
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,8 +13,8 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 
-// 📍 Server Action 임포트
 import { getPlaceSuggestions, getPlaceDetails } from "@/app/actions/google-maps";
+import { issueCustomerLoginAccount } from "@/app/actions/user-actions"; 
 
 interface CustomerDialogProps {
   isOpen: boolean;
@@ -29,6 +29,8 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
   const supabase = createClient();
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  
+  const [isIssuing, setIsIssuing] = useState(false);
   
   const [isSameAddress, setIsSameAddress] = useState(false);
   const [groupOptions, setGroupOptions] = useState<{id: number, name: string}[]>([]);
@@ -46,7 +48,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
   const searchCache = useRef<Record<string, any[]>>({});
 
   const initialData = {
-    name: "", company: "", email: "", email_cc: "", password: "", contact_name: "", mobile: "", tel: "", abn: "",
+    name: "", company: "", email: "", email_cc: "", contact_name: "", mobile: "", tel: "", abn: "",
     group_id: "", 
     in_charge_sale: "",     
     in_charge_delivery: "", 
@@ -56,7 +58,9 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
     customer_pw: "", 
     address: "", suburb: "", state: "", postcode: "", lat: null as number | null, lng: null as number | null,
     delivery_address: "", delivery_suburb: "", delivery_state: "", delivery_postcode: "", delivery_lat: null as number | null, delivery_lng: null as number | null,
-    note: ""
+    note: "",
+    login_email: "", 
+    password: "", // DB에 있는 password 컬럼과 매칭
   };
 
   const [formData, setFormData] = useState(initialData);
@@ -127,7 +131,8 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
           group_id: cleanData.group_id || "", 
           in_charge_sale: cleanData.in_charge_sale || "",        
           in_charge_delivery: cleanData.in_charge_delivery || "", 
-          password: "", 
+          login_email: cleanData.login_email || "", 
+          password: cleanData.password || "", // 🚀 DB에서 패스워드 불러오기
         });
 
         const isSame = cleanData.address === cleanData.delivery_address && cleanData.suburb === cleanData.delivery_suburb;
@@ -147,6 +152,32 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
 
   const handleChange = (field: string, value: any) => {
     setFormData(prev => ({ ...prev, [field]: value }));
+  };
+
+  // 계정 발급 핸들러
+  const handleIssueAccount = async () => {
+    if (!customerData?.id) {
+      return alert("Please save the new customer first before issuing an account.");
+    }
+    if (!formData.login_email || !formData.password) {
+      return alert("Please enter both Login Email and Password to issue an account.");
+    }
+
+    setIsIssuing(true);
+    const result = await issueCustomerLoginAccount(
+      customerData.id, 
+      formData.name, 
+      formData.login_email, 
+      formData.password
+    );
+    setIsIssuing(false);
+
+    if (result.success) {
+      alert("✅ Login account has been successfully issued & linked!");
+      onSuccess(); // 목록 새로고침 (입력창은 초기화하지 않고 그대로 보여줍니다)
+    } else {
+      alert("❌ Failed to issue account: " + result.message);
+    }
   };
 
   useEffect(() => {
@@ -276,10 +307,6 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
   const handleSubmit = async () => {
     if (!formData.name) return alert("Customer Name is required.");
 
-    if (!customerData?.id && (!formData.password || formData.password.trim() === "")) {
-        return alert("Password is required for new customers.");
-    }
-
     setLoading(true);
     
     try {
@@ -304,7 +331,8 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
         delivery_lng: finalDeliveryLng
       };
 
-      const { id, password, customer_groups, profiles, created_at, lat, lng, delivery_lat, delivery_lng, ...restData } = formData as any;
+      // password와 login_email은 데이터베이스 업데이트 명단에서 "제외(무시)" 해버리는 마법입니다.
+      const { id, password, login_email, customer_groups, profiles, created_at, lat, lng, delivery_lat, delivery_lng, ...restData } = formData as any;
       
       const payload: any = {
         ...restData, 
@@ -337,10 +365,6 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
       if (customerData && !isSameAddress && !isDeliveryAddressChanged) {
           delete payload.delivery_lat;
           delete payload.delivery_lng;
-      }
-
-      if (formData.password && formData.password.trim() !== "") {
-          payload.password = formData.password; 
       }
 
       let error;
@@ -393,25 +417,57 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
           </div>
 
           <div className="flex-1 overflow-y-auto p-6 space-y-8">
-            <section className="space-y-4">
-              <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider border-b pb-2">Account Settings</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                <div className="space-y-2"><Label className="text-xs text-slate-500">Customer ID</Label><div className="h-10 px-3 flex items-center bg-slate-100 border border-slate-200 rounded-md text-sm text-slate-400 font-mono select-none">{customerData ? customerData.id.slice(0, 8) + "..." : "Auto-generated"}</div></div>
+            
+            {/* App Login Account (발급 기능) 섹션 */}
+            <section className="space-y-4 bg-indigo-50/50 p-5 rounded-xl border border-indigo-100">
+              <h3 className="text-sm font-bold text-indigo-900 uppercase tracking-wider flex items-center gap-2 border-b border-indigo-200 pb-2">
+                <Key className="w-4 h-4" /> App Login Account
+              </h3>
+              
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div className="space-y-2">
-                    <Label className="text-xs font-bold text-slate-700">App Login Password {!customerData && <span className="text-red-500">*</span>}</Label>
+                  <Label className="text-xs font-bold text-indigo-900">App Login Email</Label>
+                  <Input 
+                    type="email"
+                    value={formData.login_email} 
+                    onChange={(e) => handleChange("login_email", e.target.value)} 
+                    placeholder="customer@example.com" 
+                    className="border-indigo-200 focus-visible:ring-indigo-500"
+                  />
+                </div>
+                <div className="space-y-2">
+                    <Label className="text-xs font-bold text-indigo-900">App Password (For Issue/Reset)</Label>
                     <div className="relative">
                         <Input 
                             type={showPassword ? "text" : "password"} 
                             value={formData.password} 
                             onChange={(e) => handleChange("password", e.target.value)} 
-                            className="pr-10" 
-                            placeholder={customerData ? "(Keep current)" : "Enter password"} 
+                            className="pr-10 border-indigo-200 focus-visible:ring-indigo-500" 
+                            placeholder="Enter temporary password" 
                         />
                         <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
                             {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                         </button>
                     </div>
                 </div>
+                <div className="space-y-2 flex flex-col justify-end">
+                  <Button 
+                    type="button" 
+                    onClick={handleIssueAccount} 
+                    disabled={isIssuing || !customerData?.id} 
+                    className="w-full bg-indigo-600 hover:bg-indigo-700 text-white shadow-md shadow-indigo-200 h-10"
+                  >
+                    {isIssuing ? <Loader2 className="w-4 h-4 animate-spin" /> : <><MailPlus className="w-4 h-4 mr-2"/> Issue / Update</>}
+                  </Button>
+                  {!customerData?.id && <span className="text-[10px] text-indigo-400 text-center font-semibold">Please save customer first</span>}
+                </div>
+              </div>
+            </section>
+
+            <section className="space-y-4">
+              <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider border-b pb-2">Status & Limits</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div className="space-y-2"><Label className="text-xs text-slate-500">Customer ID</Label><div className="h-10 px-3 flex items-center bg-slate-100 border border-slate-200 rounded-md text-sm text-slate-400 font-mono select-none">{customerData ? customerData.id.slice(0, 8) + "..." : "Auto-generated"}</div></div>
                 <div className="space-y-2 flex flex-col"><Label className="text-xs font-bold text-slate-700 mb-1">Login Permission</Label><Button type="button" variant="outline" onClick={() => handleChange("login_permit", !formData.login_permit)} className={`justify-start gap-2 h-10 border ${formData.login_permit ? "bg-green-50 border-green-200 text-green-700" : "bg-slate-50 border-slate-200 text-slate-500"}`}>{formData.login_permit ? <><CheckCircle2 className="w-4 h-4" /> Allowed</> : <><XCircle className="w-4 h-4" /> Denied</>}</Button></div>
                 <div className="space-y-2 flex flex-col"><Label className="text-xs font-bold text-slate-700 mb-1">Order Status</Label><Button type="button" variant="outline" onClick={() => handleChange("disable_order", !formData.disable_order)} className={`justify-start gap-2 h-10 border ${formData.disable_order ? "bg-red-50 border-red-200 text-red-700" : "bg-blue-50 border-blue-200 text-blue-700"}`}>{formData.disable_order ? <><Ban className="w-4 h-4" /> Order Blocked</> : <><ShieldCheck className="w-4 h-4" /> Order Active</>}</Button></div>
               </div>
@@ -423,7 +479,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
                 <div className="space-y-2"><Label>Customer Name <span className="text-red-500">*</span></Label><Input value={formData.name} onChange={(e) => handleChange("name", e.target.value)} placeholder="Full Name" /></div>
                 <div className="space-y-2"><Label>Company Name</Label><Input value={formData.company} onChange={(e) => handleChange("company", e.target.value)} placeholder="Company Pty Ltd" /></div>
                 
-                <div className="space-y-2"><Label>Email</Label><Input type="email" value={formData.email} onChange={(e) => handleChange("email", e.target.value)} placeholder="name@example.com" /></div>
+                <div className="space-y-2"><Label>General Email</Label><Input type="email" value={formData.email} onChange={(e) => handleChange("email", e.target.value)} placeholder="name@example.com" /></div>
                 
                 <div className="space-y-2">
                   <Label>Email CC</Label>
@@ -440,12 +496,10 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
                 
                 <div className="col-span-1 md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50/50 p-4 rounded-xl border border-slate-100 items-end">
                     <div className="space-y-2">
-                        {/* 🚀 [수정] Delivery Access PW 라벨 텍스트 변경 (Max 50) */}
                         <Label className="text-blue-700 font-bold block">Delivery Access PW (Max 50)</Label>
                         <Input 
                             value={formData.customer_pw} 
                             onChange={(e) => handleChange("customer_pw", e.target.value)} 
-                            /* 🚀 [수정] 최대 입력 길이 제한 50으로 연장 */
                             maxLength={50} 
                             placeholder="e.g. 1234 or *9999" 
                             className="bg-white border-blue-200 focus-visible:ring-blue-500 h-11"

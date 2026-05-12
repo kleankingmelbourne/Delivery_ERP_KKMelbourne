@@ -35,12 +35,15 @@ export async function saveStaffAction(data: any, isEdit: boolean, targetId?: str
         email: data.email,
         password: data.password,
         email_confirm: true,
-        user_metadata: { display_name: data.display_name }
+        // 🚀 [핵심 수정] 새 유저를 만들 때 메타데이터에 role(소문자)을 콱 박아줍니다!
+        user_metadata: { 
+          display_name: data.display_name,
+          role: data.user_level?.toLowerCase() || 'staff' 
+        }
       });
 
       if (authError) throw authError;
 
-      // [UPDATE] 신규 생성 시에도 로그인 허용 여부에 따라 상태 결정
       const initialStatus = data.login_permit ? 'active' : 'inactive';
 
       const { error: profileError } = await supabaseAdmin
@@ -53,9 +56,9 @@ export async function saveStaffAction(data: any, isEdit: boolean, targetId?: str
           birth_date: data.birth_date,
           user_level: data.user_level,
           login_permit: data.login_permit,
-          status: initialStatus, // 상태 자동 설정
-          lat: data.lat, // ✅ [추가] 위도 저장
-          lng: data.lng  // ✅ [추가] 경도 저장
+          status: initialStatus, 
+          lat: data.lat, 
+          lng: data.lng  
         })
         .eq("id", newUser.user.id);
 
@@ -69,8 +72,6 @@ export async function saveStaffAction(data: any, isEdit: boolean, targetId?: str
 
   // --- 수정 (Update) ---
   if (isEdit && targetId) {
-    // 본인 수정인 경우에도 ADMIN이 아니면 권한 없음 (단, 본인 정보 수정은 허용)
-    // 여기서는 로직상 ADMIN이거나 본인이면 통과, 하지만 아래에서 ADMIN만 수정 가능한 필드를 구분함
     if (!isAdmin && !isSelf) {
       return { success: false, error: "You can only edit your own profile." };
     }
@@ -82,27 +83,35 @@ export async function saveStaffAction(data: any, isEdit: boolean, targetId?: str
         address: data.address,
         birth_date: data.birth_date,
         updated_at: new Date().toISOString(),
-        lat: data.lat, // ✅ [추가] 위도 업데이트
-        lng: data.lng  // ✅ [추가] 경도 업데이트
+        lat: data.lat, 
+        lng: data.lng  
       };
 
       // ADMIN 전용 수정 항목
       if (isAdmin) {
         updates.user_level = data.user_level;
         updates.login_permit = data.login_permit;
-        
-        // [NEW] login_permit 변경 시 status 자동 동기화
-        // true -> 'active', false -> 'inactive'
         updates.status = data.login_permit ? 'active' : 'inactive';
 
+        // 🚀 [핵심 수정] 기존에는 이메일만 업데이트했지만, 이제 메타데이터(role)도 무조건 같이 덮어씌웁니다!
+        const authUpdates: any = {
+          user_metadata: { 
+            role: data.user_level?.toLowerCase() || 'staff' 
+          }
+        };
+
         if (data.email) {
-            const { error: authEmailError } = await supabaseAdmin.auth.admin.updateUserById(
-                targetId, 
-                { email: data.email }
-            );
-            if (authEmailError) throw authEmailError;
-            updates.email = data.email;
+          authUpdates.email = data.email;
+          updates.email = data.email;
         }
+
+        // Auth 정보(이메일 & 메타데이터) 한 번에 업데이트!
+        const { error: authUpdateError } = await supabaseAdmin.auth.admin.updateUserById(
+          targetId, 
+          authUpdates
+        );
+        
+        if (authUpdateError) throw authUpdateError;
       }
 
       const { error: profileError } = await supabaseAdmin

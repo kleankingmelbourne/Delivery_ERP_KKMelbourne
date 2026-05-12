@@ -303,7 +303,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     setCurrentPage(1);
     setSelectedIds(new Set()); 
     setExpandedRowIds(new Set()); 
-  }, [debouncedSearch, startDate, endDate, activeTab]); // 🚀 searchTerm 대신 debouncedSearch 사용
+  }, [debouncedSearch, startDate, endDate, activeTab]); 
 
   const handleDateChange = (type: 'start' | 'end', val: string) => {
     const newStart = type === 'start' ? val : startDate;
@@ -520,10 +520,14 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     setLoading(false); 
   };
   
+  // 🚀 단일 삭제 로직 수정 (에러 방지 & 커스터머 오더 처리)
   const handleDelete = async (id: string) => { 
     if(!confirm("Are you sure you want to delete this? This will restore stock.")) return; 
     setLoading(true); 
     try { 
+      // 1. 삭제할 인보이스의 created_who 정보를 조회해옵니다.
+      const { data: invData } = await supabase.from("invoices").select("created_who").eq("id", id).single();
+
       if (id.startsWith("CR-")) {
           const { data: allocations } = await supabase.from("payment_allocations").select("invoice_id, amount").eq("payment_id", id);
           if (allocations && allocations.length > 0) {
@@ -578,8 +582,30 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
           }
       }
 
-      await supabase.from("invoice_items").delete().eq("invoice_id", id); 
-      await supabase.from("invoices").delete().eq("id", id); 
+      // 2. 인보이스 아이템 삭제 (에러 발생 시 중단되도록 throw)
+      const { error: itemError } = await supabase.from("invoice_items").delete().eq("invoice_id", id); 
+      if (itemError) throw itemError;
+
+      // 3. 커스터머 앱에서 생성된 주문(created_who === 'customer')인 경우
+      //    주문 내역(order_items)은 건드리지 않고, 상태(status)만 'canceled'로 변경
+      // 3. Orders 테이블과의 링크(외래키) 끊기 + 커스터머 주문 취소 처리
+      if (invData?.created_who === 'customer') {
+          // 커스터머 주문: 상태는 'canceled'로 바꾸고, 멱살 잡은 링크(invoice_id)는 놓아줍니다(null).
+          const { error: orderError } = await supabase.from("orders")
+              .update({ status: 'canceled', invoice_id: null }) 
+              .eq("invoice_id", id); // 💡 여기서 id는 삭제할 인보이스의 id입니다.
+          if (orderError) console.error("Order update failed:", orderError);
+      } else {
+          // 일반 주문: 삭제를 위해 링크(invoice_id)만 조용히 끊어줍니다.
+          const { error: orderError } = await supabase.from("orders")
+              .update({ invoice_id: null }) 
+              .eq("invoice_id", id);
+          if (orderError) console.error("Order unlink failed:", orderError);
+      }
+
+      // 4. 인보이스 본체 삭제 (에러 발생 시 캐치되도록 보완)
+      const { error: invError } = await supabase.from("invoices").delete().eq("id", id); 
+      if (invError) throw invError;
       
       fetchInvoices(); 
       setTotalCount(prev => Math.max(0, prev - 1));
@@ -587,6 +613,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
       alert("Deleted successfully and stock/status restored.");
     } catch (e: any) { 
       console.error(e);
+      // 만약 데이터베이스 참조 오류(Foreign Key 등)로 실패한다면 이 얼럿이 뜹니다.
       alert("Error: " + e.message); 
     } finally { 
       setLoading(false); 
@@ -594,11 +621,16 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     } 
   };
 
+  // 🚀 다중 삭제 로직 수정 (에러 방지 & 커스터머 오더 처리)
   const handleBulkDelete = async () => { 
     if (!confirm(`Delete ${selectedIds.size} invoices? This will restore stock.`)) return; 
     setLoading(true);
     try {
         const ids = Array.from(selectedIds);
+
+        // 1. 삭제할 인보이스들의 created_who 정보 묶어서 조회
+        const { data: invsData } = await supabase.from("invoices").select("id, created_who").in("id", ids);
+
         const creditIds = ids.filter(id => id.startsWith("CR-"));
         
         if (creditIds.length > 0) {
@@ -655,10 +687,28 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
             }
         }
 
-        await supabase.from("invoice_items").delete().in("invoice_id", ids);
-        const { error } = await supabase.from("invoices").delete().in("id", ids); 
+        // 2. 인보이스 아이템 일괄 삭제
+        const { error: itemError } = await supabase.from("invoice_items").delete().in("invoice_id", ids);
+        if (itemError) throw itemError;
+
+        // 3. Orders 테이블과의 링크 일괄 끊기 + 커스터머 주문 취소 처리
+        const customerOrderIds = invsData?.filter(inv => inv.created_who === "customer").map(inv => inv.id) || [];
         
-        if (error) throw error;
+        // 3-1. 커스터머 주문이면 취소 상태로 만들고 링크 끊기
+        if (customerOrderIds.length > 0) {
+            await supabase.from("orders")
+                .update({ status: 'canceled', invoice_id: null })
+                .in("invoice_id", customerOrderIds);
+        }
+
+        // 3-2. 나머지 일반 주문들도 인보이스 삭제를 위해 일괄적으로 링크 끊기
+        await supabase.from("orders")
+            .update({ invoice_id: null })
+            .in("invoice_id", ids);
+
+        // 4. 인보이스 본체 일괄 삭제 (에러 명시적 확인)
+        const { error: invError } = await supabase.from("invoices").delete().in("id", ids); 
+        if (invError) throw invError;
         
         alert("Deleted and stock/status restored."); 
         setSelectedIds(new Set()); 

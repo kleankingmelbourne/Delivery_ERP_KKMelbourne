@@ -29,6 +29,7 @@ const roundAmount = (num: number) => {
 interface Order {
   id: string;
   customer_id: string;
+  created_at?: string; 
   order_date: string;
   requested_date: string;
   total_amount: number;
@@ -73,6 +74,12 @@ export default function AdminOrderTable() {
   const [detailsCache, setDetailsCache] = useState<Record<string, OrderItem[]>>({});
   const [loadingRows, setLoadingRows] = useState<Set<string>>(new Set());
 
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [activeTab, debouncedSearch, startDate, endDate]);
+
   useEffect(() => {
     const handler = setTimeout(() => setDebouncedSearch(searchTerm), 500);
     return () => clearTimeout(handler);
@@ -102,9 +109,10 @@ export default function AdminOrderTable() {
 
   const buildQuery = useCallback((customerIds: string[]) => {
     let query = supabase.from("orders").select(`
-      id, customer_id, order_date, requested_date, total_amount, status, order_memo, invoice_id, is_pickup,
+      id, customer_id, created_at, order_date, requested_date, total_amount, status, order_memo, invoice_id, is_pickup,
       customers ( company, name, in_charge_delivery )
-    `, { count: 'exact' });
+    `, { count: 'exact' })
+    .neq("status", "draft"); // 🚀 여기서 draft 상태인 오더를 원천 차단합니다!
 
     if (activeTab === "PENDING") query = query.eq("status", "pending");
     else if (activeTab === "INVOICED") query = query.eq("status", "invoiced");
@@ -148,7 +156,6 @@ export default function AdminOrderTable() {
 
   useEffect(() => { fetchOrders(); }, [fetchOrders]); 
 
-  // 🚀 인보이스 변환 시 GST 계산 로직 수정 완료
   const handleConvertToInvoice = async (order: Order) => {
     if (!confirm(`Create an invoice for Order #${order.id}?`)) return;
     setLoading(true);
@@ -167,10 +174,9 @@ export default function AdminOrderTable() {
             if (!isNaN(lastNum)) newInvId = `IV-${lastNum + 1}`; 
         }
 
-        // 🚀 수식 수정 포인트
-        const orderSubtotal = order.total_amount; // 넘어온 가격을 100%(Subtotal)로 설정
-        const gstTotal = roundAmount(orderSubtotal * 0.1); // 10% 플러스
-        const finalInvoiceTotal = roundAmount(orderSubtotal + gstTotal); // 최종 합계는 110%
+        const orderSubtotal = order.total_amount; 
+        const gstTotal = roundAmount(orderSubtotal * 0.1); 
+        const finalInvoiceTotal = roundAmount(orderSubtotal + gstTotal); 
 
         const dueDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
         const currentAdminName = user?.user_metadata?.full_name || user?.email || "Admin";
@@ -181,10 +187,10 @@ export default function AdminOrderTable() {
             invoice_to: order.customers?.name || 'Unknown', 
             invoice_date: order.requested_date,
             due_date: dueDate,
-            total_amount: finalInvoiceTotal, // 수정된 최종 합계 (110%)
+            total_amount: finalInvoiceTotal, 
             paid_amount: 0,
-            subtotal: orderSubtotal,         // 오더 가격 그대로 Subtotal (100%)
-            gst_total: gstTotal,             // 10% 가산된 세금
+            subtotal: orderSubtotal,         
+            gst_total: gstTotal,             
             status: 'Unpaid',
             created_who: 'customer',
             updated_who: currentAdminName,
@@ -220,6 +226,97 @@ export default function AdminOrderTable() {
     }
   };
 
+  const handleBulkConvertToInvoice = async () => {
+    if (selectedIds.size === 0) return;
+    if (!confirm(`Convert ${selectedIds.size} selected pending orders to invoices?`)) return;
+    setLoading(true);
+
+    try {
+      const idsArray = Array.from(selectedIds);
+      const targetOrders = orders.filter(o => idsArray.includes(o.id));
+
+      const { data: allItems } = await supabase.from("order_items").select("*").in("order_id", idsArray);
+      if (!allItems || allItems.length === 0) throw new Error("No items found for selected orders.");
+
+      const { data: lastInv } = await supabase.from("invoices").select("id").order("id", { ascending: false }).limit(1);
+      let startNum = 1001;
+      if (lastInv && lastInv.length > 0) {
+          const lastNum = parseInt(lastInv[0].id.replace(/[^0-9]/g, ""));
+          if (!isNaN(lastNum)) startNum = lastNum + 1;
+      }
+
+      const newInvoices: any[] = [];
+      const newInvoiceItems: any[] = [];
+      const orderUpdates: any[] = [];
+
+      const currentAdminName = user?.user_metadata?.full_name || user?.email || "Admin";
+
+      targetOrders.forEach((order, index) => {
+          const orderItems = allItems.filter((item: any) => item.order_id === order.id);
+          if(orderItems.length === 0) return; 
+
+          const newInvId = `IV-${startNum + index}`;
+          const orderSubtotal = order.total_amount;
+          const gstTotal = roundAmount(orderSubtotal * 0.1);
+          const finalInvoiceTotal = roundAmount(orderSubtotal + gstTotal);
+          const dueDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+          newInvoices.push({
+              id: newInvId,
+              customer_id: order.customer_id,
+              invoice_to: order.customers?.name || 'Unknown',
+              invoice_date: order.requested_date,
+              due_date: dueDate,
+              total_amount: finalInvoiceTotal,
+              paid_amount: 0,
+              subtotal: orderSubtotal,
+              gst_total: gstTotal,
+              status: 'Unpaid',
+              created_who: 'customer',
+              updated_who: currentAdminName,
+              driver_id: order.customers?.in_charge_delivery || null,
+              memo: order.order_memo || "",
+              is_pickup: order.is_pickup || false
+          });
+
+          orderItems.forEach((item: any) => {
+              newInvoiceItems.push({
+                  invoice_id: newInvId,
+                  product_id: item.product_id,
+                  description: item.description,
+                  quantity: item.quantity,
+                  unit: item.unit,
+                  unit_price: item.unit_price,
+                  base_price: item.base_price,
+                  discount: item.discount,
+                  amount: roundAmount(item.quantity * item.unit_price)
+              });
+          });
+
+          orderUpdates.push(
+              supabase.from("orders").update({ status: 'invoiced', invoice_id: newInvId }).eq('id', order.id)
+          );
+      });
+
+      const { error: invError } = await supabase.from("invoices").insert(newInvoices);
+      if (invError) throw invError;
+
+      const { error: itemError } = await supabase.from("invoice_items").insert(newInvoiceItems);
+      if (itemError) throw itemError;
+
+      await Promise.all(orderUpdates);
+
+      alert(`✅ Successfully converted ${newInvoices.length} orders to invoices.`);
+      setSelectedIds(new Set());
+      fetchOrders();
+
+    } catch (error: any) {
+      alert(`Failed to convert: ${error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleUpdateStatus = async (id: string, newStatus: string) => {
     if (newStatus === 'cancelled' && !confirm("Cancel this order?")) return;
     setLoading(true);
@@ -244,6 +341,26 @@ export default function AdminOrderTable() {
     setExpandedRowIds(newExpanded);
   };
 
+  const selectableOrders = orders.filter(o => o.status === 'pending');
+  const isAllSelected = selectableOrders.length > 0 && selectableOrders.every(o => selectedIds.has(o.id));
+
+  const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newSelected = new Set(selectedIds);
+    if (e.target.checked) {
+      selectableOrders.forEach(o => newSelected.add(o.id));
+    } else {
+      selectableOrders.forEach(o => newSelected.delete(o.id));
+    }
+    setSelectedIds(newSelected);
+  };
+
+  const handleSelectOne = (id: string) => {
+    const newSelected = new Set(selectedIds);
+    if (newSelected.has(id)) newSelected.delete(id);
+    else newSelected.add(id);
+    setSelectedIds(newSelected);
+  };
+
   const renderStatus = (status: string) => {
     switch (status.toLowerCase()) {
       case "pending": return <span className="px-3 py-1 bg-amber-100 text-amber-700 text-xs font-black rounded-full border border-amber-200 flex items-center gap-1 w-fit"><Clock className="w-3 h-3"/> Pending</span>;
@@ -261,6 +378,21 @@ export default function AdminOrderTable() {
           <p className="text-slate-500 text-sm mt-1 font-medium italic">Filter & Sort by Requested Date</p>
         </div>
       </div>
+
+      {selectedIds.size > 0 && (
+        <div className="bg-emerald-50 border border-emerald-100 p-3 rounded-xl flex flex-wrap items-center justify-between gap-4 shadow-sm animate-in fade-in slide-in-from-top-2">
+          <div className="flex items-center gap-2 px-2">
+            <CheckSquare className="w-5 h-5 text-emerald-600" />
+            <span className="text-sm font-bold text-emerald-800">{selectedIds.size} Selected</span>
+          </div>
+          <button 
+            onClick={handleBulkConvertToInvoice} 
+            className="px-5 py-2 bg-emerald-600 text-white text-xs font-bold rounded-lg border border-emerald-700 hover:bg-emerald-700 flex items-center gap-2 transition-colors shadow-sm"
+          >
+            <ArrowRightCircle className="w-4 h-4" /> Convert to Invoices
+          </button>
+        </div>
+      )}
 
       <div className="flex items-center gap-1 bg-slate-100/80 p-1 rounded-xl w-fit border border-slate-200">
           {['ALL', 'PENDING', 'INVOICED', 'CANCELLED'].map((tab) => (
@@ -289,7 +421,16 @@ export default function AdminOrderTable() {
         <table className="w-full text-left border-collapse whitespace-nowrap">
           <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-500 text-[11px] uppercase font-black tracking-wider">
             <tr>
-              <th className="px-6 py-4">Order Info</th>
+              <th className="px-4 py-4 w-10 text-center">
+                <input 
+                  type="checkbox" 
+                  checked={isAllSelected} 
+                  onChange={handleSelectAll} 
+                  disabled={selectableOrders.length === 0}
+                  className="w-4 h-4 rounded border-slate-300 cursor-pointer disabled:opacity-50"
+                />
+              </th>
+              <th className="px-2 py-4">Order Info</th>
               <th className="px-4 py-4 text-emerald-700 bg-emerald-50/50">Linked IV #</th>
               <th className="px-4 py-4">Customer Name</th>
               <th className="px-4 py-4">Order Date</th>
@@ -301,21 +442,33 @@ export default function AdminOrderTable() {
           </thead>
           <tbody className="text-sm font-medium">
             {loading ? (
-              <tr><td colSpan={8} className="py-20 text-center font-bold text-slate-400">Loading orders...</td></tr>
+              <tr><td colSpan={9} className="py-20 text-center font-bold text-slate-400">Loading orders...</td></tr>
             ) : orders.length === 0 ? (
               <tr>
-                <td colSpan={8} className="py-24 text-center">
+                <td colSpan={9} className="py-24 text-center">
                   <Package className="w-12 h-12 text-slate-300 mx-auto mb-3" />
                   <h3 className="text-lg font-black text-slate-700">No orders found</h3>
                 </td>
               </tr>
             ) : orders.map(order => {
               const isExpanded = expandedRowIds.has(order.id);
+              const isSelectable = order.status === 'pending'; 
+              
               return (
                 <React.Fragment key={order.id}>
-                  <tr className={`border-b border-slate-100 transition-colors ${isExpanded ? "bg-indigo-50/30" : "hover:bg-slate-50"}`}>
+                  <tr className={`border-b border-slate-100 transition-colors ${selectedIds.has(order.id) ? "bg-emerald-50/50" : isExpanded ? "bg-indigo-50/30" : "hover:bg-slate-50"}`}>
                     
-                    <td className="px-6 py-4">
+                    <td className="px-4 py-4 text-center">
+                      <input 
+                        type="checkbox" 
+                        checked={selectedIds.has(order.id)} 
+                        onChange={() => handleSelectOne(order.id)}
+                        disabled={!isSelectable}
+                        className="w-4 h-4 rounded border-slate-300 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                      />
+                    </td>
+
+                    <td className="px-2 py-4">
                       <div className="flex flex-col gap-1">
                         <span className="font-black text-slate-700">#{order.id}</span>
                         {order.is_pickup && (
@@ -337,7 +490,18 @@ export default function AdminOrderTable() {
                     </td>
 
                     <td className="px-4 py-4 font-bold text-slate-900">{order.customers?.name || "Unknown"}</td>
-                    <td className="px-4 py-4 text-slate-500 text-xs">{order.order_date}</td>
+                    
+                    <td className="px-4 py-4 text-slate-500 text-xs">
+                      <div className="flex flex-col">
+                        <span className="font-bold text-slate-700">{order.order_date}</span>
+                        {order.created_at && (
+                          <span className="text-[10px] text-slate-400 font-medium">
+                            {new Date(order.created_at).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+
                     <td className="px-4 py-4 text-indigo-700 font-black">{order.requested_date}</td>
                     <td className="px-4 py-4 text-right font-black text-slate-900">{formatCurrency(order.total_amount)}</td>
                     <td className="px-4 py-4">{renderStatus(order.status)}</td>
@@ -369,7 +533,7 @@ export default function AdminOrderTable() {
                   </tr>
                   {isExpanded && (
                     <tr className="bg-slate-50/50">
-                      <td colSpan={8} className="px-14 py-4">
+                      <td colSpan={9} className="px-14 py-4">
                         <div className="bg-white border rounded-xl p-4 shadow-sm">
                           <h4 className="text-xs font-black uppercase text-slate-400 mb-3">Item Details</h4>
                           <table className="w-full text-xs text-left">

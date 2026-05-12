@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Admin Dashboard",
-  description: "Next.js + Supabase Admin Panel",
+  description: "Klean King Admin Portal",
 }
 
 export default function RootLayout({ children }: {

@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useMemo, useRef } from "react";
 import { createClient } from "@/utils/supabase/client";
-import { Search, Send, User, MessageSquare, Loader2, CheckCheck, Plus, X, Building2 } from "lucide-react";
+import { Search, Send, User, MessageSquare, Loader2, CheckCheck, Plus, X, Building2, Paperclip, Image as ImageIcon } from "lucide-react";
 
 type Message = {
   id: string;
@@ -11,6 +11,7 @@ type Message = {
   content: string;
   is_read: boolean;
   created_at: string;
+  image_url?: string; // 🚀 이미지 URL 타입 추가
   customers?: {
     name: string;
     company: string;
@@ -21,6 +22,43 @@ type SearchedCustomer = {
   id: string;
   name: string;
   company: string;
+};
+
+// 🚀 [추가됨] 브라우저에서 이미지를 압축/리사이징 하는 함수 (가로 최대 1000px)
+const resizeImage = (file: File, maxWidth = 1000): Promise<File> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target?.result as string;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let scaleSize = maxWidth / img.width;
+        
+        if (scaleSize >= 1) return resolve(file);
+
+        canvas.width = maxWidth;
+        canvas.height = img.height * scaleSize;
+
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        canvas.toBlob((blob) => {
+          if (blob) {
+            const newFile = new File([blob], file.name.replace(/\.[^/.]+$/, ".jpg"), {
+              type: 'image/jpeg',
+              lastModified: Date.now(),
+            });
+            resolve(newFile);
+          } else {
+            resolve(file);
+          }
+        }, 'image/jpeg', 0.8);
+      };
+    };
+    reader.onerror = error => reject(error);
+  });
 };
 
 export default function AdminInboxPage() {
@@ -36,6 +74,12 @@ export default function AdminInboxPage() {
   const [newChatSearch, setNewChatSearch] = useState("");
   const [searchedCustomers, setSearchedCustomers] = useState<SearchedCustomer[]>([]);
   const [tempCustomer, setTempCustomer] = useState<SearchedCustomer | null>(null);
+
+  // 🚀 드래그 앤 드롭 및 업로드 상태 추가
+  const [isDragging, setIsDragging] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const dragCounter = useRef(0);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -143,7 +187,6 @@ export default function AdminInboxPage() {
     }
   }, [selectedCustomerId, currentChat.length]);
 
-  // 5. 관리자 메시지 전송
   const handleSendReply = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!replyText.trim() || !selectedCustomerId) return;
@@ -152,29 +195,111 @@ export default function AdminInboxPage() {
     setReplyText("");
 
     try {
-      const { data, error } = await supabase.from("messages").insert([
+      const { error } = await supabase.from("messages").insert([
         {
           customer_id: selectedCustomerId,
           sender_type: "admin",
           content: content,
           is_read: false,
-          created_at: new Date().toISOString() // 🚀 원인 1 차단: 시간 강제 주입
+          created_at: new Date().toISOString()
         },
-      ]).select(); // 🚀 핵심: select()를 붙여야 Supabase가 에러를 정확하게 뱉어냅니다.
+      ]).select(); 
 
       if (error) {
-        // 에러 상세 내용을 콘솔에 강제로 예쁘게 출력
         console.error("Supabase Error Details:", JSON.stringify(error, null, 2));
-        
-        // 사장님이 보실 수 있게 화면에 팝업 띄우기
         alert(`❌ 메시지 전송 실패!\n사유: ${error.message || '데이터베이스 권한/설정 오류입니다. 콘솔창을 확인해주세요.'}`);
       } else {
-        // 성공 시 리스트 새로고침
         fetchMessages();
       }
     } catch (err: any) {
       console.error("Catch Error:", err);
       alert(`시스템 에러: ${err.message}`);
+    }
+  };
+
+  // 🚀 이미지 업로드 함수
+  const uploadImage = async (file: File) => {
+    if (!selectedCustomerId) return;
+    
+    if (!file.type.startsWith('image/')) {
+      alert("이미지 파일만 업로드할 수 있습니다.");
+      return;
+    }
+
+    setIsUploading(true);
+    try {
+      const resizedFile = await resizeImage(file, 1000);
+
+      const fileExt = resizedFile.name.split('.').pop();
+      const fileName = `admin_${selectedCustomerId}_${Date.now()}.${fileExt}`;
+      const filePath = `${selectedCustomerId}/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('chat_images')
+        .upload(filePath, resizedFile); 
+
+      if (uploadError) throw uploadError;
+
+      const { data: publicUrlData } = supabase.storage
+        .from('chat_images')
+        .getPublicUrl(filePath);
+
+      const imageUrl = publicUrlData.publicUrl;
+
+      const { error: msgError } = await supabase.from("messages").insert([
+        {
+          customer_id: selectedCustomerId,
+          sender_type: "admin",
+          content: "📷 Image uploaded",
+          image_url: imageUrl,
+          is_read: false,
+          created_at: new Date().toISOString()
+        },
+      ]);
+
+      if (msgError) throw msgError;
+
+    } catch (error: any) {
+      console.error("Upload error:", error);
+      alert(`이미지 업로드 실패: ${error.message}`);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  // 🚀 드래그 앤 드롭 핸들러
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current += 1;
+    if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+      setIsDragging(true);
+    }
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current -= 1;
+    if (dragCounter.current === 0) {
+      setIsDragging(false);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current = 0;
+    setIsDragging(false);
+    
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const file = e.dataTransfer.files[0];
+      await uploadImage(file);
     }
   };
 
@@ -261,7 +386,7 @@ export default function AdminInboxPage() {
                       </div>
                       <p className={`text-xs truncate ${room.unreadCount > 0 ? "text-slate-800 font-bold" : "text-slate-500 font-medium"}`}>
                         {room.lastMessage.sender_type === "admin" ? "You: " : ""}
-                        {room.lastMessage.content}
+                        {room.lastMessage.image_url ? "📷 Image attached" : room.lastMessage.content}
                       </p>
                     </div>
                     {room.unreadCount > 0 && (
@@ -277,7 +402,23 @@ export default function AdminInboxPage() {
         </div>
 
         {/* 오른쪽 대화창 패널 */}
-        <div className="hidden md:flex flex-1 flex-col bg-white z-0">
+        <div 
+          className="hidden md:flex flex-1 flex-col bg-white z-0 relative"
+          // 🚀 대화창 영역에 드래그 앤 드롭 이벤트 연결
+          onDragEnter={selectedCustomerId ? handleDragEnter : undefined}
+          onDragLeave={selectedCustomerId ? handleDragLeave : undefined}
+          onDragOver={selectedCustomerId ? handleDragOver : undefined}
+          onDrop={selectedCustomerId ? handleDrop : undefined}
+        >
+          {/* 🚀 드래그 오버레이 */}
+          {isDragging && (
+            <div className="absolute inset-0 z-50 bg-indigo-600/90 backdrop-blur-sm flex flex-col items-center justify-center text-white border-4 border-dashed border-indigo-300 m-4 rounded-3xl pointer-events-none">
+              <ImageIcon className="w-16 h-16 mb-4 animate-bounce" />
+              <p className="font-black text-xl tracking-tight">Drop image here</p>
+              <p className="text-sm font-medium text-indigo-200 mt-2">Release to send to {displayTitle}</p>
+            </div>
+          )}
+
           {!selectedCustomerId ? (
             <div className="flex-1 flex flex-col items-center justify-center text-slate-400 space-y-3">
               <MessageSquare className="w-12 h-12 text-slate-200" />
@@ -291,8 +432,8 @@ export default function AdminInboxPage() {
             </div>
           ) : (
             <>
-              {/* 🚀 채팅방 헤더 영역 (닫기 버튼 추가) */}
-              <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+              {/* 채팅방 헤더 영역 */}
+              <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between z-10 bg-white">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center">
                     {(currentRoom?.customer?.company || tempCustomer?.company) ? <Building2 className="w-4 h-4"/> : <User className="w-5 h-5" />}
@@ -309,7 +450,6 @@ export default function AdminInboxPage() {
                   </div>
                 </div>
                 
-                {/* 🚀 닫기 버튼 */}
                 <button 
                   onClick={() => {
                     setSelectedCustomerId(null);
@@ -335,13 +475,24 @@ export default function AdminInboxPage() {
                       <div key={msg.id} className={`flex ${isAdmin ? "justify-end" : "justify-start"}`}>
                         <div className="flex flex-col gap-1 max-w-[70%]">
                           <div 
-                            className={`px-4 py-2.5 text-sm shadow-sm ${
+                            className={`px-4 py-2.5 text-sm shadow-sm flex flex-col gap-2 ${
                               isAdmin 
                               ? "bg-slate-900 text-white rounded-2xl rounded-tr-sm" 
                               : "bg-white border border-slate-200 text-slate-800 rounded-2xl rounded-tl-sm"
                             }`}
                           >
-                            {msg.content}
+                            {/* 🚀 이미지 렌더링 */}
+                            {msg.image_url && (
+                              <img 
+                                src={msg.image_url} 
+                                alt="Attachment" 
+                                className="w-full max-w-[300px] h-auto rounded-xl object-cover cursor-pointer hover:opacity-90 transition-opacity mb-1"
+                                onClick={() => window.open(msg.image_url, '_blank')}
+                              />
+                            )}
+                            {(!msg.image_url || msg.content !== "📷 Image uploaded") && (
+                              <span>{msg.content}</span>
+                            )}
                           </div>
                           <div className={`flex items-center gap-1 text-[10px] font-bold text-slate-400 ${isAdmin ? "justify-end pr-1" : "justify-start pl-1"}`}>
                             {formatTime(msg.created_at)}
@@ -354,22 +505,56 @@ export default function AdminInboxPage() {
                     );
                   })
                 )}
+                
+                {/* 🚀 업로드 인디케이터 */}
+                {isUploading && (
+                  <div className="flex justify-end">
+                    <div className="px-4 py-2.5 bg-slate-900/80 rounded-2xl rounded-tr-sm flex items-center gap-2 shadow-sm">
+                      <Loader2 className="w-4 h-4 animate-spin text-white" />
+                      <span className="text-xs text-white font-bold">Uploading...</span>
+                    </div>
+                  </div>
+                )}
                 <div ref={messagesEndRef} />
               </div>
 
-              <div className="p-4 bg-white border-t border-slate-200">
-                <form onSubmit={handleSendReply} className="flex gap-2">
+              <div className="p-4 bg-white border-t border-slate-200 z-10">
+                <form onSubmit={handleSendReply} className="flex gap-2 items-center">
+                  
+                  {/* 🚀 파일 첨부 버튼 추가 */}
+                  <input 
+                    type="file" 
+                    accept="image/*" 
+                    className="hidden" 
+                    ref={fileInputRef} 
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files.length > 0) {
+                        uploadImage(e.target.files[0]);
+                      }
+                    }} 
+                  />
+                  <button 
+                    type="button" 
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex-shrink-0 w-11 h-11 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full flex items-center justify-center transition-colors outline-none"
+                    title="Attach an image"
+                    disabled={isUploading}
+                  >
+                    <Paperclip className="w-5 h-5" />
+                  </button>
+
                   <input 
                     type="text" 
                     value={replyText}
                     onChange={(e) => setReplyText(e.target.value)}
                     placeholder="Type your reply to the customer..." 
+                    disabled={isUploading}
                     className="flex-1 bg-slate-100 border-transparent text-sm px-4 py-3 rounded-xl focus:bg-white focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100 transition-all outline-none"
                   />
                   <button 
                     type="submit" 
-                    disabled={!replyText.trim()}
-                    className="px-5 bg-indigo-600 disabled:bg-slate-300 text-white font-bold rounded-xl flex items-center justify-center hover:bg-indigo-700 transition-all shadow-sm"
+                    disabled={!replyText.trim() || isUploading}
+                    className="px-5 py-3 h-full bg-indigo-600 disabled:bg-slate-300 text-white font-bold rounded-xl flex items-center justify-center hover:bg-indigo-700 transition-all shadow-sm"
                   >
                     <Send className="w-4 h-4 mr-2" /> Send
                   </button>

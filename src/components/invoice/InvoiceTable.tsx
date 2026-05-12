@@ -587,12 +587,12 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
       if (itemError) throw itemError;
 
       // 3. 커스터머 앱에서 생성된 주문(created_who === 'customer')인 경우
-      //    주문 내역(order_items)은 건드리지 않고, 상태(status)만 'canceled'로 변경
+      //    주문 내역(order_items)은 건드리지 않고, 상태(status)만 'cancelled'로 변경
       // 3. Orders 테이블과의 링크(외래키) 끊기 + 커스터머 주문 취소 처리
       if (invData?.created_who === 'customer') {
-          // 커스터머 주문: 상태는 'canceled'로 바꾸고, 멱살 잡은 링크(invoice_id)는 놓아줍니다(null).
+          // 커스터머 주문: 상태는 'cancelled'로 바꾸고, 멱살 잡은 링크(invoice_id)는 놓아줍니다(null).
           const { error: orderError } = await supabase.from("orders")
-              .update({ status: 'canceled', invoice_id: null }) 
+              .update({ status: 'cancelled', invoice_id: null }) 
               .eq("invoice_id", id); // 💡 여기서 id는 삭제할 인보이스의 id입니다.
           if (orderError) console.error("Order update failed:", orderError);
       } else {
@@ -697,7 +697,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
         // 3-1. 커스터머 주문이면 취소 상태로 만들고 링크 끊기
         if (customerOrderIds.length > 0) {
             await supabase.from("orders")
-                .update({ status: 'canceled', invoice_id: null })
+                .update({ status: 'cancelled', invoice_id: null })
                 .in("invoice_id", customerOrderIds);
         }
 

@@ -46,7 +46,9 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [isIssuing, setIsIssuing] = useState(false);
-  const [isSameAddress, setIsSameAddress] = useState(false);
+  
+  // 기본값을 true로 유지
+  const [isSameAddress, setIsSameAddress] = useState(true);
   
   const [groupOptions, setGroupOptions] = useState<{id: number, name: string}[]>([]);
   const [staffOptions, setStaffOptions] = useState<{id: string, name: string}[]>([]);
@@ -85,11 +87,12 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
     return () => { isMounted = false; };
   }, [supabase]);
 
-  // 🚀 에러 해결: DB의 null 값을 모두 ""(빈 글자)로 꼼꼼하게 필터링
+  // DB의 null 값을 모두 ""(빈 글자)로 필터링 & 초기 세팅
   useEffect(() => {
     if (!isOpen) return;
 
     if (customerData) {
+      // 수정 모드: 기존 데이터가 있으면 주소가 같은지 비교해서 체크박스 상태 결정
       const isSame = customerData.address === customerData.delivery_address && 
                      customerData.suburb === customerData.delivery_suburb;
       
@@ -128,8 +131,9 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
       });
       setIsSameAddress(isSame);
     } else {
+      // 신규 등록 모드: 초기 폼 데이터 세팅 및 배송지 동일 체크박스를 기본 true로 설정!
       setFormData(initialData);
-      setIsSameAddress(false);
+      setIsSameAddress(true); 
     }
     
     setShowPassword(false);
@@ -289,8 +293,14 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
         payload.delivery_suburb = formData.suburb;
         payload.delivery_state = formData.state;
         payload.delivery_postcode = formData.postcode;
-        payload.delivery_lat = formData.lat;
-        payload.delivery_lng = formData.lng;
+        
+        // 🚀 요청하신 핵심 방어 로직: 
+        // 배송지 좌표가 '비어있을 때'만 결제지 좌표를 복사합니다.
+        // 이미 값이 들어가 있다면 그 값(기존 값)을 덮어씌우지 않고 유지합니다.
+        if (!payload.delivery_lat || !payload.delivery_lng) {
+          payload.delivery_lat = formData.lat;
+          payload.delivery_lng = formData.lng;
+        }
       }
 
       if (customerData) {
@@ -300,6 +310,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
         const isBillingChanged = customerData.address !== formData.address || customerData.suburb !== formData.suburb || customerData.postcode !== formData.postcode;
         const isDeliveryChanged = customerData.delivery_address !== formData.delivery_address || customerData.delivery_suburb !== formData.delivery_suburb || customerData.delivery_postcode !== formData.delivery_postcode;
 
+        // 수정사항이 없으면 기존 좌표 보호를 위해 payload에서 제거
         if (!isBillingChanged) { delete payload.lat; delete payload.lng; }
         if (!isSameAddress && !isDeliveryChanged) { delete payload.delivery_lat; delete payload.delivery_lng; }
       }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { 
   X, Save, Eye, EyeOff, CheckCircle2, XCircle, 
@@ -25,14 +25,29 @@ interface CustomerDialogProps {
 
 const PAYMENT_TERMS = ["C.O.D", "+7 Days", "+14 Days", "+30 Days", "EOM+30 Days"];
 
+const initialData = {
+  name: "", company: "", email: "", email_cc: "", contact_name: "", mobile: "", tel: "", abn: "",
+  group_id: "", 
+  in_charge_sale: "",     
+  in_charge_delivery: "", 
+  login_permit: true, disable_order: false,
+  use_key: false,
+  credit_limit: "", due_date: "C.O.D",
+  customer_pw: "", 
+  address: "", suburb: "", state: "", postcode: "", lat: null as number | null, lng: null as number | null,
+  delivery_address: "", delivery_suburb: "", delivery_state: "", delivery_postcode: "", delivery_lat: null as number | null, delivery_lng: null as number | null,
+  note: "",
+  login_email: "", 
+  password: "", 
+};
+
 export default function CustomerDialog({ isOpen, onClose, onSuccess, customerData }: CustomerDialogProps) {
   const supabase = createClient();
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
-  
   const [isIssuing, setIsIssuing] = useState(false);
-  
   const [isSameAddress, setIsSameAddress] = useState(false);
+  
   const [groupOptions, setGroupOptions] = useState<{id: number, name: string}[]>([]);
   const [staffOptions, setStaffOptions] = useState<{id: string, name: string}[]>([]);
 
@@ -44,131 +59,112 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
 
   const billingRef = useRef<HTMLDivElement>(null);
   const deliveryRef = useRef<HTMLDivElement>(null);
-
   const searchCache = useRef<Record<string, any[]>>({});
-
-  const initialData = {
-    name: "", company: "", email: "", email_cc: "", contact_name: "", mobile: "", tel: "", abn: "",
-    group_id: "", 
-    in_charge_sale: "",     
-    in_charge_delivery: "", 
-    login_permit: true, disable_order: false,
-    use_key: false,
-    credit_limit: "", due_date: "C.O.D",
-    customer_pw: "", 
-    address: "", suburb: "", state: "", postcode: "", lat: null as number | null, lng: null as number | null,
-    delivery_address: "", delivery_suburb: "", delivery_state: "", delivery_postcode: "", delivery_lat: null as number | null, delivery_lng: null as number | null,
-    note: "",
-    login_email: "", 
-    password: "", 
-  };
 
   const [formData, setFormData] = useState(initialData);
 
+  // 옵션 데이터 로드
   useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
+    let isMounted = true;
+    const fetchOptions = async () => {
+      try {
+        const [groupRes, staffRes] = await Promise.all([
+          supabase.from('customer_groups').select('id, name').order('name'),
+          supabase.from('profiles').select('id, display_name').eq('status', 'active').order('display_name')
+        ]);
+        
+        if (isMounted) {
+          if (groupRes.data) setGroupOptions(groupRes.data);
+          if (staffRes.data) setStaffOptions(staffRes.data.map((s: any) => ({ id: s.id, name: s.display_name || "Unknown" })));
+        }
+      } catch (err) {
+        console.error("Fetch Options Error:", err);
+      }
+    };
+    fetchOptions();
+    return () => { isMounted = false; };
+  }, [supabase]);
+
+  // 🚀 에러 해결: DB의 null 값을 모두 ""(빈 글자)로 꼼꼼하게 필터링
+  useEffect(() => {
+    if (!isOpen) return;
+
+    if (customerData) {
+      const isSame = customerData.address === customerData.delivery_address && 
+                     customerData.suburb === customerData.delivery_suburb;
+      
+      setFormData({
+        ...initialData,
+        ...customerData,
+        name: customerData.name || "",
+        company: customerData.company || "",
+        email: customerData.email || "",
+        email_cc: customerData.email_cc || "",
+        contact_name: customerData.contact_name || "",
+        mobile: customerData.mobile || "",
+        tel: customerData.tel || "",
+        abn: customerData.abn || "",
+        customer_pw: customerData.customer_pw || "",
+        address: customerData.address || "",
+        suburb: customerData.suburb || "",
+        state: customerData.state || "",
+        postcode: customerData.postcode || "",
+        delivery_address: customerData.delivery_address || "",
+        delivery_suburb: customerData.delivery_suburb || "",
+        delivery_state: customerData.delivery_state || "",
+        delivery_postcode: customerData.delivery_postcode || "",
+        note: customerData.note || "",
+        credit_limit: customerData.credit_limit || "",
+        group_id: customerData.group_id || "", 
+        in_charge_sale: customerData.in_charge_sale || "",     
+        in_charge_delivery: customerData.in_charge_delivery || "",
+        due_date: customerData.due_date || "C.O.D",
+        login_email: customerData.login_email || "",
+        password: customerData.password || "",
+        lat: customerData.lat || null, 
+        lng: customerData.lng || null,
+        delivery_lat: customerData.delivery_lat || null, 
+        delivery_lng: customerData.delivery_lng || null,
+      });
+      setIsSameAddress(isSame);
+    } else {
+      setFormData(initialData);
+      setIsSameAddress(false);
+    }
+    
+    setShowPassword(false);
+    setSuggestions([]); 
+    setActiveSearchField(null);
+    setAddressHighlightedIndex(0);
+  }, [isOpen, customerData]);
+
+  // 외부 클릭 시 검색어 추천창 닫기
+  useEffect(() => {
+    if (!activeSearchField) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
       if (activeSearchField === 'billing' && billingRef.current && !billingRef.current.contains(event.target as Node)) {
         setActiveSearchField(null);
         setSuggestions([]);
-      }
-      if (activeSearchField === 'delivery' && deliveryRef.current && !deliveryRef.current.contains(event.target as Node)) {
+      } else if (activeSearchField === 'delivery' && deliveryRef.current && !deliveryRef.current.contains(event.target as Node)) {
         setActiveSearchField(null);
         setSuggestions([]);
       }
-    }
+    };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [activeSearchField]);
 
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const { data: groupData } = await supabase.from('customer_groups').select('id, name').order('name');
-        if (groupData) setGroupOptions(groupData);
-        
-        const { data: staffData } = await supabase.from('profiles').select('id, display_name').eq('status', 'active').order('display_name', { ascending: true });
-        if (staffData) {
-          setStaffOptions(staffData.map((s: any) => ({ id: s.id, name: s.display_name || "Unknown Staff" })));
-        }
-      } catch (err) {
-        console.error("Fetch Error:", err);
-      }
-    };
-    fetchData();
-  }, [supabase]);
-
-  useEffect(() => {
-    if (isOpen) {
-      if (customerData) {
-        const { customer_groups, ...cleanData } = customerData;
-        setFormData({
-          ...initialData,
-          ...cleanData,
-          name: cleanData.name || "",
-          company: cleanData.company || "",
-          email: cleanData.email || "",
-          email_cc: cleanData.email_cc || "", 
-          contact_name: cleanData.contact_name || "", 
-          mobile: cleanData.mobile || "",
-          tel: cleanData.tel || "",
-          abn: cleanData.abn || "",
-          customer_pw: cleanData.customer_pw || "", 
-          use_key: cleanData.use_key || false,
-          address: cleanData.address || "",
-          suburb: cleanData.suburb || "",
-          state: cleanData.state || "",
-          postcode: cleanData.postcode || "",
-          lat: cleanData.lat || null, 
-          lng: cleanData.lng || null, 
-          delivery_address: cleanData.delivery_address || "",
-          delivery_suburb: cleanData.delivery_suburb || "",
-          delivery_state: cleanData.delivery_state || "",
-          delivery_postcode: cleanData.delivery_postcode || "",
-          delivery_lat: cleanData.delivery_lat || null, 
-          delivery_lng: cleanData.delivery_lng || null, 
-          note: cleanData.note || "",
-          credit_limit: cleanData.credit_limit || "",
-          group_id: cleanData.group_id || "", 
-          in_charge_sale: cleanData.in_charge_sale || "",        
-          in_charge_delivery: cleanData.in_charge_delivery || "", 
-          login_email: cleanData.login_email || "", 
-          password: cleanData.password || "", 
-        });
-
-        const isSame = cleanData.address === cleanData.delivery_address && cleanData.suburb === cleanData.delivery_suburb;
-        setIsSameAddress(isSame);
-
-      } else {
-        setFormData(initialData);
-        setIsSameAddress(false);
-      }
-      
-      setShowPassword(false);
-      setSuggestions([]); 
-      setActiveSearchField(null);
-      setAddressHighlightedIndex(0);
-    }
-  }, [isOpen, customerData]);
-
-  const handleChange = (field: string, value: any) => {
+  const handleChange = useCallback((field: string, value: any) => {
     setFormData(prev => ({ ...prev, [field]: value }));
-  };
+  }, []);
 
   const handleIssueAccount = async () => {
-    if (!customerData?.id) {
-      return alert("Please save the new customer first before issuing an account.");
-    }
-    if (!formData.login_email || !formData.password) {
-      return alert("Please enter both Login Email and Password to issue an account.");
-    }
+    if (!customerData?.id) return alert("Please save the new customer first before issuing an account.");
+    if (!formData.login_email || !formData.password) return alert("Please enter both Login Email and Password to issue an account.");
 
     setIsIssuing(true);
-    const result = await issueCustomerLoginAccount(
-      customerData.id, 
-      formData.name, 
-      formData.login_email, 
-      formData.password
-    );
+    const result = await issueCustomerLoginAccount(customerData.id, formData.name, formData.login_email, formData.password);
     setIsIssuing(false);
 
     if (result.success) {
@@ -180,123 +176,93 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
   };
 
   useEffect(() => {
-    let isActive = true;
     const targetAddress = activeSearchField === 'billing' ? formData.address : formData.delivery_address;
-
+    
     if (!activeSearchField || !targetAddress || targetAddress.length < 3) {
       setSuggestions([]);
+      setIsSearching(false);
       return;
     }
 
     if (searchCache.current[targetAddress]) {
-        setSuggestions(searchCache.current[targetAddress]);
-        setAddressHighlightedIndex(0);
-        return;
+      setSuggestions(searchCache.current[targetAddress]);
+      setAddressHighlightedIndex(0);
+      setIsSearching(false);
+      return;
     }
 
+    setIsSearching(true);
     const timer = setTimeout(async () => {
-      setIsSearching(true);
       try {
         const results = await getPlaceSuggestions(targetAddress);
-        if (isActive) {
-            searchCache.current[targetAddress] = results; 
-            setSuggestions(results);
-            setAddressHighlightedIndex(0); 
-        }
+        searchCache.current[targetAddress] = results; 
+        setSuggestions(results);
+        setAddressHighlightedIndex(0); 
       } catch (err) {
-        console.error(err);
+        console.error("Map suggestion error", err);
       } finally {
-        if (isActive) setIsSearching(false);
+        setIsSearching(false);
       }
-    }, 200);
+    }, 300); 
 
-    return () => {
-      isActive = false;
-      clearTimeout(timer);
-    };
+    return () => clearTimeout(timer);
   }, [formData.address, formData.delivery_address, activeSearchField]);
 
   const handleAddressInput = (field: 'billing' | 'delivery', value: string) => {
     setActiveSearchField(field);
-    if (field === 'billing') {
-        setFormData(prev => ({ ...prev, address: value }));
-    } else {
-        setFormData(prev => ({ ...prev, delivery_address: value }));
-    }
+    handleChange(field === 'billing' ? 'address' : 'delivery_address', value);
   };
 
   const handleAddressKeyDown = (e: React.KeyboardEvent<HTMLInputElement>, field: 'billing' | 'delivery') => {
-      if (suggestions.length > 0) {
-          if (e.key === 'ArrowDown') {
-              e.preventDefault();
-              setAddressHighlightedIndex(prev => (prev < suggestions.length - 1 ? prev + 1 : prev));
-          } else if (e.key === 'ArrowUp') {
-              e.preventDefault();
-              setAddressHighlightedIndex(prev => (prev > 0 ? prev - 1 : 0));
-          } else if (e.key === 'Enter') {
-              e.preventDefault();
-              const selected = suggestions[addressHighlightedIndex];
-              if (selected) {
-                  handleSelectPlace(selected.place_id, selected.description, field);
-              }
-          } else if (e.key === 'Escape') {
-              setActiveSearchField(null);
-              setSuggestions([]);
-          }
+      if (suggestions.length === 0) return;
+
+      if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          setAddressHighlightedIndex(prev => Math.min(prev + 1, suggestions.length - 1));
+      } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          setAddressHighlightedIndex(prev => Math.max(prev - 1, 0));
+      } else if (e.key === 'Enter') {
+          e.preventDefault();
+          const selected = suggestions[addressHighlightedIndex];
+          if (selected) handleSelectPlace(selected.place_id, selected.description, field);
+      } else if (e.key === 'Escape') {
+          setActiveSearchField(null);
+          setSuggestions([]);
       }
   };
 
   const handleSelectPlace = async (placeId: string, description: string, field: 'billing' | 'delivery') => {
     setActiveSearchField(null);
     setSuggestions([]);
-
-    if (field === 'billing') {
-        setFormData(prev => ({ ...prev, address: description }));
-    } else {
-        setFormData(prev => ({ ...prev, delivery_address: description }));
-    }
+    handleChange(field === 'billing' ? 'address' : 'delivery_address', description);
 
     try {
         const details = await getPlaceDetails(placeId);
-        
-        if (details) {
-            let refinedAddress = description;
-            
-            if (details.address && description.includes(details.address)) {
-                const endIndex = description.indexOf(details.address) + details.address.length;
-                refinedAddress = description.substring(0, endIndex);
-            } else {
-                const parts = description.split(',').map(s => s.trim());
-                if (parts.length > 0 && parts[parts.length - 1] === 'Australia') {
-                    parts.pop();
-                }
-                if (parts.length > 0 && details.suburb && parts[parts.length - 1].includes(details.suburb)) {
-                    parts.pop();
-                }
-                refinedAddress = parts.join(', ').trim();
-            }
+        if (!details) return;
 
-            if (field === 'billing') {
-                setFormData(prev => ({
-                    ...prev,
-                    address: refinedAddress, 
-                    suburb: details.suburb || prev.suburb,
-                    state: details.state || prev.state,
-                    postcode: details.postcode || prev.postcode,
-                    lat: details.lat, 
-                    lng: details.lng  
-                }));
-            } else {
-                setFormData(prev => ({
-                    ...prev,
-                    delivery_address: refinedAddress,
-                    delivery_suburb: details.suburb || prev.delivery_suburb,
-                    delivery_state: details.state || prev.delivery_state,
-                    delivery_postcode: details.postcode || prev.delivery_postcode,
-                    delivery_lat: details.lat, 
-                    delivery_lng: details.lng  
-                }));
-            }
+        let refinedAddress = description;
+        if (details.address && description.includes(details.address)) {
+            refinedAddress = description.substring(0, description.indexOf(details.address) + details.address.length);
+        } else {
+            const parts = description.split(',').map(s => s.trim());
+            if (parts[parts.length - 1] === 'Australia') parts.pop();
+            if (details.suburb && parts[parts.length - 1].includes(details.suburb)) parts.pop();
+            refinedAddress = parts.join(', ').trim();
+        }
+
+        if (field === 'billing') {
+            setFormData(prev => ({
+                ...prev, address: refinedAddress, suburb: details.suburb || prev.suburb,
+                state: details.state || prev.state, postcode: details.postcode || prev.postcode,
+                lat: details.lat, lng: details.lng  
+            }));
+        } else {
+            setFormData(prev => ({
+                ...prev, delivery_address: refinedAddress, delivery_suburb: details.suburb || prev.delivery_suburb,
+                delivery_state: details.state || prev.delivery_state, delivery_postcode: details.postcode || prev.delivery_postcode,
+                delivery_lat: details.lat, delivery_lng: details.lng  
+            }));
         }
     } catch (e) {
         console.error("Map Details Error:", e);
@@ -305,85 +271,42 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
 
   const handleSubmit = async () => {
     if (!formData.name) return alert("Customer Name is required.");
-
     setLoading(true);
     
     try {
-      let finalLat = formData.lat;
-      let finalLng = formData.lng;
-      let finalDeliveryLat = formData.delivery_lat;
-      let finalDeliveryLng = formData.delivery_lng;
-
-      const finalDeliveryFields = isSameAddress ? {
-        delivery_address: formData.address,
-        delivery_suburb: formData.suburb,
-        delivery_state: formData.state,
-        delivery_postcode: formData.postcode,
-        delivery_lat: finalLat, 
-        delivery_lng: finalLng  
-      } : {
-        delivery_address: formData.delivery_address,
-        delivery_suburb: formData.delivery_suburb,
-        delivery_state: formData.delivery_state,
-        delivery_postcode: formData.delivery_postcode,
-        delivery_lat: finalDeliveryLat,
-        delivery_lng: finalDeliveryLng
-      };
-
-      const { id, customer_groups, profiles, created_at, lat, lng, delivery_lat, delivery_lng, ...restData } = formData as any;
+      const { id, customer_groups, profiles, created_at, ...cleanData } = formData as any;
       
       const payload: any = {
-        ...restData, 
-        lat: finalLat, 
-        lng: finalLng, 
-        ...finalDeliveryFields,
+        ...cleanData,
         credit_limit: formData.credit_limit ? Number(formData.credit_limit) : null,
         group_id: formData.group_id ? Number(formData.group_id) : null,
         in_charge_sale: formData.in_charge_sale || null,
         in_charge_delivery: formData.in_charge_delivery || null,
       };
 
-      // 🚀 방어 로직 추가: customerData가 있을 때(Edit)만 작동
+      if (isSameAddress) {
+        payload.delivery_address = formData.address;
+        payload.delivery_suburb = formData.suburb;
+        payload.delivery_state = formData.state;
+        payload.delivery_postcode = formData.postcode;
+        payload.delivery_lat = formData.lat;
+        payload.delivery_lng = formData.lng;
+      }
+
       if (customerData) {
-        // 1. 기존 고객을 업데이트할 때는 프로필만 저장하고, 로그인 정보는 절대 덮어씌우지 않음!
-        // (로그인 정보는 'Issue / Update' 버튼이 따로 전담해서 관리함)
         delete payload.login_email;
         delete payload.password;
 
-        // 2. 주소 변경 여부 파악
-        const isBillingAddressChanged = customerData.address !== formData.address || 
-                                        customerData.suburb !== formData.suburb || 
-                                        customerData.postcode !== formData.postcode;
+        const isBillingChanged = customerData.address !== formData.address || customerData.suburb !== formData.suburb || customerData.postcode !== formData.postcode;
+        const isDeliveryChanged = customerData.delivery_address !== formData.delivery_address || customerData.delivery_suburb !== formData.delivery_suburb || customerData.delivery_postcode !== formData.delivery_postcode;
 
-        const isDeliveryAddressChanged = customerData.delivery_address !== formData.delivery_address || 
-                                         customerData.delivery_suburb !== formData.delivery_suburb || 
-                                         customerData.delivery_postcode !== formData.delivery_postcode;
-
-        if (!isBillingAddressChanged) {
-            delete payload.lat;
-            delete payload.lng;
-        }
-        
-        if (!isSameAddress && !isDeliveryAddressChanged) {
-            delete payload.delivery_lat;
-            delete payload.delivery_lng;
-        }
+        if (!isBillingChanged) { delete payload.lat; delete payload.lng; }
+        if (!isSameAddress && !isDeliveryChanged) { delete payload.delivery_lat; delete payload.delivery_lng; }
       }
 
-      let error;
-      
-      if (customerData?.id) {
-        const { error: updateError } = await supabase
-            .from("customers")
-            .update(payload)
-            .eq("id", customerData.id);
-        error = updateError;
-      } else {
-        const { error: insertError } = await supabase
-            .from("customers")
-            .insert({ ...payload, created_at: new Date().toISOString() });
-        error = insertError;
-      }
+      const { error } = customerData?.id 
+        ? await supabase.from("customers").update(payload).eq("id", customerData.id)
+        : await supabase.from("customers").insert({ ...payload, created_at: new Date().toISOString() });
 
       if (error) throw error;
 
@@ -393,15 +316,10 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
 
     } catch (e: any) {
       console.error("🔥 Submission Failed:", e);
-      let errorMessage = e.message || e.details || JSON.stringify(e);
-      
-      if (errorMessage.includes("customers_pkey")) {
-          errorMessage = "System ID Error: Database sequence is out of sync. Please contact admin.";
-      } else if (errorMessage.includes("customers_email_key")) {
-          errorMessage = "This email is already registered.";
-      }
-
-      alert("Failed to save: " + errorMessage);
+      let msg = e.message || e.details || JSON.stringify(e);
+      if (msg.includes("customers_pkey")) msg = "System ID Error. Please contact admin.";
+      else if (msg.includes("customers_email_key")) msg = "This email is already registered.";
+      alert("Failed to save: " + msg);
     } finally {
       setLoading(false);
     }
@@ -431,7 +349,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
                   <Label className="text-xs font-bold text-indigo-900">App Login Email</Label>
                   <Input 
                     type="email"
-                    value={formData.login_email} 
+                    value={formData.login_email || ""} 
                     onChange={(e) => handleChange("login_email", e.target.value)} 
                     placeholder="customer@example.com" 
                     className="border-indigo-200 focus-visible:ring-indigo-500"
@@ -442,7 +360,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
                     <div className="relative">
                         <Input 
                             type={showPassword ? "text" : "password"} 
-                            value={formData.password} 
+                            value={formData.password || ""} 
                             onChange={(e) => handleChange("password", e.target.value)} 
                             className="pr-10 border-indigo-200 focus-visible:ring-indigo-500" 
                             placeholder="Enter temporary password" 
@@ -478,29 +396,29 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
             <section className="space-y-4">
               <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider border-b pb-2">Basic Info</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="space-y-2"><Label>Customer Name <span className="text-red-500">*</span></Label><Input value={formData.name} onChange={(e) => handleChange("name", e.target.value)} placeholder="Full Name" /></div>
-                <div className="space-y-2"><Label>Company Name</Label><Input value={formData.company} onChange={(e) => handleChange("company", e.target.value)} placeholder="Company Pty Ltd" /></div>
+                <div className="space-y-2"><Label>Customer Name <span className="text-red-500">*</span></Label><Input value={formData.name || ""} onChange={(e) => handleChange("name", e.target.value)} placeholder="Full Name" /></div>
+                <div className="space-y-2"><Label>Company Name</Label><Input value={formData.company || ""} onChange={(e) => handleChange("company", e.target.value)} placeholder="Company Pty Ltd" /></div>
                 
-                <div className="space-y-2"><Label>General Email</Label><Input type="email" value={formData.email} onChange={(e) => handleChange("email", e.target.value)} placeholder="name@example.com" /></div>
+                <div className="space-y-2"><Label>General Email</Label><Input type="email" value={formData.email || ""} onChange={(e) => handleChange("email", e.target.value)} placeholder="name@example.com" /></div>
                 
                 <div className="space-y-2">
                   <Label>Email CC</Label>
                   <Input 
                     type="text" 
-                    value={formData.email_cc} 
+                    value={formData.email_cc || ""} 
                     onChange={(e) => handleChange("email_cc", e.target.value)} 
                     placeholder="cc1@example.com, cc2@example.com" 
                   />
                 </div>
 
-                <div className="space-y-2"><Label>Customer Group</Label><div className="relative"><select value={formData.group_id} onChange={(e) => handleChange("group_id", e.target.value)} className="flex h-10 w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-slate-900 appearance-none"><option value="">No Group</option>{groupOptions.map((g) => (<option key={g.id} value={g.id}>{g.name}</option>))}</select><ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" /></div></div>
-                <div className="space-y-2"><Label>ABN</Label><Input value={formData.abn} onChange={(e) => handleChange("abn", e.target.value)} placeholder="XX XXX XXX XXX" /></div>
+                <div className="space-y-2"><Label>Customer Group</Label><div className="relative"><select value={formData.group_id || ""} onChange={(e) => handleChange("group_id", e.target.value)} className="flex h-10 w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-slate-900 appearance-none"><option value="">No Group</option>{groupOptions.map((g) => (<option key={g.id} value={g.id}>{g.name}</option>))}</select><ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" /></div></div>
+                <div className="space-y-2"><Label>ABN</Label><Input value={formData.abn || ""} onChange={(e) => handleChange("abn", e.target.value)} placeholder="XX XXX XXX XXX" /></div>
                 
                 <div className="col-span-1 md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50/50 p-4 rounded-xl border border-slate-100 items-end">
                     <div className="space-y-2">
                         <Label className="text-blue-700 font-bold block">Delivery Access PW (Max 50)</Label>
                         <Input 
-                            value={formData.customer_pw} 
+                            value={formData.customer_pw || ""} 
                             onChange={(e) => handleChange("customer_pw", e.target.value)} 
                             maxLength={50} 
                             placeholder="e.g. 1234 or *9999" 
@@ -532,25 +450,25 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
                     </div>
                 </div>
 
-                <div className="space-y-2"><Label>Contact Name</Label><Input value={formData.contact_name} onChange={(e) => handleChange("contact_name", e.target.value)} placeholder="Manager or Contact Person" /></div>
-                <div className="space-y-2"><Label>Mobile</Label><Input value={formData.mobile} onChange={(e) => handleChange("mobile", e.target.value)} placeholder="0400 000 000" /></div>
-                <div className="space-y-2"><Label>Tel</Label><Input value={formData.tel} onChange={(e) => handleChange("tel", e.target.value)} placeholder="03 0000 0000" /></div>
+                <div className="space-y-2"><Label>Contact Name</Label><Input value={formData.contact_name || ""} onChange={(e) => handleChange("contact_name", e.target.value)} placeholder="Manager or Contact Person" /></div>
+                <div className="space-y-2"><Label>Mobile</Label><Input value={formData.mobile || ""} onChange={(e) => handleChange("mobile", e.target.value)} placeholder="0400 000 000" /></div>
+                <div className="space-y-2"><Label>Tel</Label><Input value={formData.tel || ""} onChange={(e) => handleChange("tel", e.target.value)} placeholder="03 0000 0000" /></div>
               </div>
             </section>
 
             <section className="space-y-4">
               <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider border-b pb-2 flex items-center gap-2"><Users className="w-4 h-4"/> Staff Assignment</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="space-y-2"><Label className="text-blue-700 font-semibold">Sales Representative</Label><div className="relative"><select value={formData.in_charge_sale} onChange={(e) => handleChange("in_charge_sale", e.target.value)} className="flex h-10 w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 appearance-none"><option value="">Select Sales Person...</option>{staffOptions.map((staff) => (<option key={staff.id} value={staff.id}>{staff.name}</option>))}</select><ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" /></div></div>
-                <div className="space-y-2"><Label className="text-emerald-700 font-semibold">Delivery Driver</Label><div className="relative"><select value={formData.in_charge_delivery} onChange={(e) => handleChange("in_charge_delivery", e.target.value)} className="flex h-10 w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 appearance-none"><option value="">Select Driver...</option>{staffOptions.map((staff) => (<option key={staff.id} value={staff.id}>{staff.name}</option>))}</select><ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" /></div></div>
+                <div className="space-y-2"><Label className="text-blue-700 font-semibold">Sales Representative</Label><div className="relative"><select value={formData.in_charge_sale || ""} onChange={(e) => handleChange("in_charge_sale", e.target.value)} className="flex h-10 w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 appearance-none"><option value="">Select Sales Person...</option>{staffOptions.map((staff) => (<option key={staff.id} value={staff.id}>{staff.name}</option>))}</select><ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" /></div></div>
+                <div className="space-y-2"><Label className="text-emerald-700 font-semibold">Delivery Driver</Label><div className="relative"><select value={formData.in_charge_delivery || ""} onChange={(e) => handleChange("in_charge_delivery", e.target.value)} className="flex h-10 w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 appearance-none"><option value="">Select Driver...</option>{staffOptions.map((staff) => (<option key={staff.id} value={staff.id}>{staff.name}</option>))}</select><ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" /></div></div>
               </div>
             </section>
 
             <section className="space-y-4">
               <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider border-b pb-2">Financial</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="space-y-2"><Label>Credit Limit ($)</Label><Input type="number" value={formData.credit_limit} onChange={(e) => handleChange("credit_limit", e.target.value)} placeholder="0.00" /></div>
-                <div className="space-y-2"><Label>Payment Terms (Due Date)</Label><div className="relative"><select value={formData.due_date} onChange={(e) => handleChange("due_date", e.target.value)} className="flex h-10 w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-slate-900 appearance-none">{PAYMENT_TERMS.map((term) => (<option key={term} value={term}>{term}</option>))}</select><ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" /></div></div>
+                <div className="space-y-2"><Label>Credit Limit ($)</Label><Input type="number" value={formData.credit_limit || ""} onChange={(e) => handleChange("credit_limit", e.target.value)} placeholder="0.00" /></div>
+                <div className="space-y-2"><Label>Payment Terms (Due Date)</Label><div className="relative"><select value={formData.due_date || "C.O.D"} onChange={(e) => handleChange("due_date", e.target.value)} className="flex h-10 w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-slate-900 appearance-none">{PAYMENT_TERMS.map((term) => (<option key={term} value={term}>{term}</option>))}</select><ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" /></div></div>
               </div>
             </section>
 
@@ -572,7 +490,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
                     <div className="col-span-12 relative">
                         <Label className="text-xs text-slate-500">Street Address</Label>
                         <Input 
-                            value={formData.address}
+                            value={formData.address || ""}
                             onChange={(e) => handleAddressInput('billing', e.target.value)}
                             onFocus={() => setActiveSearchField('billing')}
                             onKeyDown={(e) => handleAddressKeyDown(e, 'billing')}
@@ -595,9 +513,9 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
                         )}
                     </div>
                     
-                    <div className="col-span-5"><Label className="text-xs text-slate-500">Suburb</Label><Input value={formData.suburb} onChange={(e) => handleChange("suburb", e.target.value)} /></div>
-                    <div className="col-span-4"><Label className="text-xs text-slate-500">State</Label><Input value={formData.state} onChange={(e) => handleChange("state", e.target.value)} /></div>
-                    <div className="col-span-3"><Label className="text-xs text-slate-500">Postcode</Label><Input value={formData.postcode} onChange={(e) => handleChange("postcode", e.target.value)} /></div>
+                    <div className="col-span-5"><Label className="text-xs text-slate-500">Suburb</Label><Input value={formData.suburb || ""} onChange={(e) => handleChange("suburb", e.target.value)} /></div>
+                    <div className="col-span-4"><Label className="text-xs text-slate-500">State</Label><Input value={formData.state || ""} onChange={(e) => handleChange("state", e.target.value)} /></div>
+                    <div className="col-span-3"><Label className="text-xs text-slate-500">Postcode</Label><Input value={formData.postcode || ""} onChange={(e) => handleChange("postcode", e.target.value)} /></div>
                   </div>
                 </div>
               </div>
@@ -614,7 +532,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
                       <div className="col-span-12 relative">
                           <Label className="text-xs text-slate-500">Street Address</Label>
                           <Input
-                            value={formData.delivery_address}
+                            value={formData.delivery_address || ""}
                             onChange={(e) => handleAddressInput('delivery', e.target.value)}
                             onFocus={() => setActiveSearchField('delivery')}
                             onKeyDown={(e) => handleAddressKeyDown(e, 'delivery')}
@@ -637,9 +555,9 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
                           )}
                       </div>
 
-                      <div className="col-span-5"><Label className="text-xs text-slate-500">Suburb</Label><Input value={formData.delivery_suburb} onChange={(e) => handleChange("delivery_suburb", e.target.value)} /></div>
-                      <div className="col-span-4"><Label className="text-xs text-slate-500">State</Label><Input value={formData.delivery_state} onChange={(e) => handleChange("delivery_state", e.target.value)} /></div>
-                      <div className="col-span-3"><Label className="text-xs text-slate-500">Postcode</Label><Input value={formData.delivery_postcode} onChange={(e) => handleChange("delivery_postcode", e.target.value)} /></div>
+                      <div className="col-span-5"><Label className="text-xs text-slate-500">Suburb</Label><Input value={formData.delivery_suburb || ""} onChange={(e) => handleChange("delivery_suburb", e.target.value)} /></div>
+                      <div className="col-span-4"><Label className="text-xs text-slate-500">State</Label><Input value={formData.delivery_state || ""} onChange={(e) => handleChange("delivery_state", e.target.value)} /></div>
+                      <div className="col-span-3"><Label className="text-xs text-slate-500">Postcode</Label><Input value={formData.delivery_postcode || ""} onChange={(e) => handleChange("delivery_postcode", e.target.value)} /></div>
                     </div>
                   </div>
                 </div>
@@ -648,7 +566,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
 
             <section className="space-y-4">
               <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider border-b pb-2">Staff Note</h3>
-              <Textarea value={formData.note} onChange={(e) => handleChange("note", e.target.value)} placeholder="Internal notes..." className="h-24" />
+              <Textarea value={formData.note || ""} onChange={(e) => handleChange("note", e.target.value)} placeholder="Internal notes..." className="h-24" />
             </section>
 
           </div>

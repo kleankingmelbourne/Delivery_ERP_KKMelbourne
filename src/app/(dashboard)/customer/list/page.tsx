@@ -67,7 +67,6 @@ const formatDate = (dateStr: string) => {
 export default function CustomerListPage() {
   const supabase = createClient();
 
-  // ✅ 데이터 및 페이지네이션 상태
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [totalCount, setTotalCount] = useState(0); 
   const [loading, setLoading] = useState(true);
@@ -81,20 +80,33 @@ export default function CustomerListPage() {
   const [selectedProductCustomer, setSelectedProductCustomer] = useState<{id: string, name: string} | null>(null);
 
   const [searchTerm, setSearchTerm] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState(""); // 🚀 검색 최적화 상태 추가
+  
   const [pageSize, setPageSize] = useState("10");
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [sortConfig, setSortConfig] = useState<SortConfig>({ key: 'id', direction: 'desc' });
   
-  // 💡 [수정됨] 픽셀(px) 대신 비율(%)로 변경합니다. 합쳐서 100%가 되도록 분배했습니다.
   const [columnWidths, setColumnWidths] = useState({
     checkbox: 3, id: 7, name: 15, company: 15, group: 10, 
     mobile: 12, login: 9, order: 9, created: 10, action: 10
   });
 
+  // 🚀 타이핑 렌더링 폭주를 막는 디바운스(Debounce) 로직
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      if (debouncedSearch !== searchTerm) {
+        setDebouncedSearch(searchTerm);
+        setCurrentPage(1); // 검색어가 확정되면 1페이지로 리셋
+      }
+    }, 300);
+    return () => clearTimeout(handler);
+  }, [searchTerm, debouncedSearch]);
+
+  // 🚀 searchTerm 대신 debouncedSearch에 반응하도록 변경
   useEffect(() => {
     fetchCustomers();
-  }, [currentPage, pageSize, searchTerm, sortConfig]);
+  }, [currentPage, pageSize, debouncedSearch, sortConfig]);
 
   // --- Logic: Server-side Fetching ---
   const fetchCustomers = async () => {
@@ -103,15 +115,16 @@ export default function CustomerListPage() {
       .from("customers")
       .select(`*, customer_groups (name, color)`, { count: "exact" });
 
-    if (searchTerm) {
-      const lowerTerm = searchTerm.toLowerCase();
+    // 🚀 최적화된 검색어 사용
+    if (debouncedSearch) {
+      const lowerTerm = debouncedSearch.toLowerCase();
       query = query.or(`name.ilike.%${lowerTerm}%,company.ilike.%${lowerTerm}%,mobile.ilike.%${lowerTerm}%`);
     }
 
     if (sortConfig.key) {
       query = query.order(sortConfig.key as string, { ascending: sortConfig.direction === 'asc' });
     } else {
-      query = query.order("id", { ascending: false }); // 💡 기본 정렬을 id 내림차순으로 변경!
+      query = query.order("id", { ascending: false }); 
     }
 
     if (pageSize !== "all") {
@@ -179,14 +192,14 @@ export default function CustomerListPage() {
   const handleExport = async () => {
     let query = supabase.from("customers").select(`*, customer_groups (name, color)`);
     
-    if (searchTerm) {
-      const lowerTerm = searchTerm.toLowerCase();
+    if (debouncedSearch) {
+      const lowerTerm = debouncedSearch.toLowerCase();
       query = query.or(`name.ilike.%${lowerTerm}%,company.ilike.%${lowerTerm}%,mobile.ilike.%${lowerTerm}%`);
     }
     if (sortConfig.key) {
       query = query.order(sortConfig.key as string, { ascending: sortConfig.direction === 'asc' });
     } else {
-      query = query.order("id", { ascending: false }); // 💡 엑셀도 기본 정렬을 id 내림차순으로!
+      query = query.order("id", { ascending: false }); 
     }
 
     const { data: exportDataDB, error } = await query;
@@ -314,21 +327,17 @@ export default function CustomerListPage() {
     reader.readAsBinaryString(file);
   };
 
-  // 💡 [수정됨] 마우스로 이동한 픽셀 거리를 전체 테이블 너비 기반의 퍼센트(%)로 변환합니다.
   const handleMouseDown = (e: React.MouseEvent, key: string) => {
     e.preventDefault();
     const startX = e.pageX;
     const startWidthPct = columnWidths[key as keyof typeof columnWidths];
     
-    // 현재 테이블 요소의 전체 가로 픽셀을 구해옵니다.
     const tableElement = (e.target as HTMLElement).closest('table');
     const tableWidth = tableElement ? tableElement.clientWidth : 1200;
 
     const onMouseMove = (moveEvent: MouseEvent) => {
       const diffX = moveEvent.pageX - startX;
-      // 픽셀 변화량을 화면 대비 퍼센트로 변환합니다.
       const diffPct = (diffX / tableWidth) * 100;
-      // 최소 넓이를 3%로 제한하여 컬럼이 완전히 사라지는 것을 방지합니다.
       const newWidth = Math.max(3, startWidthPct + diffPct); 
       setColumnWidths(prev => ({ ...prev, [key]: newWidth }));
     };
@@ -341,7 +350,6 @@ export default function CustomerListPage() {
   };
 
   const handleDoubleClick = (key: string) => {
-      // 더블클릭 시 퍼센트를 초기화/토글합니다.
       setColumnWidths(prev => ({ ...prev, [key]: prev[key as keyof typeof columnWidths] > 20 ? 10 : 25 })); 
   };
 
@@ -383,7 +391,8 @@ export default function CustomerListPage() {
         </div>
         <div className="relative w-full lg:w-80">
           <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400"/>
-          <input type="text" placeholder="Search name, company, mobile..." className="w-full pl-10 pr-4 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-slate-400 transition-all focus:ring-2 focus:ring-slate-100" value={searchTerm} onChange={(e) => { setSearchTerm(e.target.value); setCurrentPage(1); }}/>
+          {/* 🚀 onChange 이벤트 간소화 (페이지 초기화는 이제 위 useEffect에서 똑똑하게 알아서 처리합니다) */}
+          <input type="text" placeholder="Search name, company, mobile..." className="w-full pl-10 pr-4 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-slate-400 transition-all focus:ring-2 focus:ring-slate-100" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)}/>
         </div>
       </div>
 
@@ -392,7 +401,6 @@ export default function CustomerListPage() {
           <table className="w-full text-left text-sm table-fixed"> 
             <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase text-xs tracking-wider">
               <tr>
-                {/* 💡 [수정됨] style 속성에서 컬럼의 너비를 % 단위로 부여합니다. */}
                 <th className="relative px-4 py-4" style={{ width: `${columnWidths.checkbox}%` }}>
                   <Checkbox checked={isAllSelected} onCheckedChange={(c) => handleSelectAll(!!c)} className="border-slate-400" />
                   <div className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-blue-400 z-10" onMouseDown={(e) => handleMouseDown(e, 'checkbox')} />

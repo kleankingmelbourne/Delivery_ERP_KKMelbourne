@@ -67,6 +67,7 @@ export default function ProductPage() {
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [searchTerm, setSearchTerm] = useState("")
+  const [debouncedSearch, setDebouncedSearch] = useState("") // 🚀 검색 최적화 상태 추가
   
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [selectedVendor, setSelectedVendor] = useState<string>("all");
@@ -119,6 +120,17 @@ export default function ProductPage() {
     product_image: "",
   };
   const [formData, setFormData] = useState<any>(initialFormState);
+
+  // 🚀 타이핑 렌더링 폭주를 막는 디바운스(Debounce) 로직
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      if (debouncedSearch !== searchTerm) {
+        setDebouncedSearch(searchTerm);
+        setCurrentPage(1); // 검색어가 확정되면 1페이지로 리셋
+      }
+    }, 300);
+    return () => clearTimeout(handler);
+  }, [searchTerm, debouncedSearch]);
 
   const fetchAllData = async () => {
     setLoading(true);
@@ -277,7 +289,6 @@ export default function ProductPage() {
             }
 
             try {
-                // ✅ [수정] 엑셀 올릴 때도 기존 가장 큰 P번호 찾아서 이어가기
                 const { data: lastProd } = await supabase
                     .from('products')
                     .select('id')
@@ -292,7 +303,6 @@ export default function ProductPage() {
                     if (match) currentMaxIdNumber = parseInt(match[1], 10);
                 }
 
-                // 엑셀 파일 내부에 이미 P번호가 있다면 비교해서 제일 높은 번호 갱신
                 rows.forEach((row: any) => {
                     const id = row.id?.trim();
                     if (id) {
@@ -529,7 +539,6 @@ export default function ProductPage() {
           .eq("id", editingProduct.id);
         if (error) throw error;
       } else {
-        // ✅ [수정] 새 상품 생성 시 P00000 포맷으로 ID 자동 생성
         const { data: lastProd } = await supabase
             .from('products')
             .select('id')
@@ -684,6 +693,7 @@ export default function ProductPage() {
     setSortConfig({ key, direction });
   };
 
+  // 🚀 렌더링 최적화: debouncedSearch를 사용하여 필터링 수행
   const processedProducts = useMemo(() => {
     let result = products;
     
@@ -693,10 +703,10 @@ export default function ProductPage() {
         result = result.filter(p => !p.is_active);
     }
 
-    if (searchTerm) {
-        const lowerTerm = searchTerm.toLowerCase();
+    if (debouncedSearch) {
+        const lowerTerm = debouncedSearch.toLowerCase();
         result = result.filter(p => 
-            p.id?.toLowerCase().includes(lowerTerm) || // ✅ 검색 시 ID도 포함
+            p.id?.toLowerCase().includes(lowerTerm) || 
             p.product_name?.toLowerCase().includes(lowerTerm) ||
             p.product_barcode?.toLowerCase().includes(lowerTerm) ||
             p.vendor_product_id?.toLowerCase().includes(lowerTerm)
@@ -710,7 +720,6 @@ export default function ProductPage() {
     }
     if (sortConfig) {
       result.sort((a, b) => {
-        // ID 정렬도 지원하기 위해 문자열 비교 허용
         const valA = a[sortConfig.key] || "";
         const valB = b[sortConfig.key] || "";
         if (valA < valB) return sortConfig.direction === 'asc' ? -1 : 1;
@@ -719,7 +728,7 @@ export default function ProductPage() {
       });
     }
     return result;
-  }, [products, searchTerm, selectedCategory, selectedVendor, sortConfig, statusFilter]);
+  }, [products, debouncedSearch, selectedCategory, selectedVendor, sortConfig, statusFilter]);
 
   const itemsPerPageToUse = itemsPerPage; 
   const totalPages = Math.ceil(processedProducts.length / itemsPerPageToUse);
@@ -991,6 +1000,7 @@ export default function ProductPage() {
                 </div>
                 <div className="relative w-full md:w-[300px]">
                     <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+                    {/* 🚀 최적화: onChange 이벤트를 가볍게 변경 */}
                     <Input 
                         placeholder="Search products..." 
                         className="pl-9 bg-white" 
@@ -1014,7 +1024,6 @@ export default function ProductPage() {
                                 onCheckedChange={(c) => handleSelectAll(!!c)}
                             />
                         </th>
-                        {/* ✅ [추가] Product ID 컬럼을 Table 헤더에 추가 */}
                         <th className="px-4 py-3 w-[10%] truncate cursor-pointer hover:bg-slate-100" onClick={() => handleSort('id')}>
                             <div className="flex items-center gap-1">ID <ArrowUpDown className="w-3 h-3"/></div>
                         </th>
@@ -1060,7 +1069,6 @@ export default function ProductPage() {
                                             onCheckedChange={() => handleSelectOne(product.id)}
                                         />
                                     </td>
-                                    {/* ✅ [추가] Product ID 컬럼 데이터를 화면에 출력 */}
                                     <td className="px-4 py-3 font-mono text-xs text-slate-500 truncate" title={product.id}>
                                         {product.id}
                                     </td>

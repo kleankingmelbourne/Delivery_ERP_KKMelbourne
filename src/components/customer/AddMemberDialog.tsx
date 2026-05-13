@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/utils/supabase/client";
-import { X, Search, UserPlus, Loader2, Check } from "lucide-react"; // ✅ Check 아이콘 추가
+import { X, Search, UserPlus, Loader2, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -20,19 +20,17 @@ export default function AddMemberDialog({ isOpen, onClose, onSuccess, groupId, g
   const [searchTerm, setSearchTerm] = useState("");
   const [customers, setCustomers] = useState<any[]>([]);
   const [addingId, setAddingId] = useState<string | null>(null);
-  
-  // ✅ [추가] 성공 메시지 상태 관리
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
+  // 모달 열릴 때 초기화
   useEffect(() => {
     if (isOpen) {
-      fetchAvailableCustomers();
       setSearchTerm("");
-      setSuccessMsg(null); // 다이얼로그 열 때 메시지 초기화
+      setSuccessMsg(null);
     }
   }, [isOpen]);
 
-  // 메시지가 있으면 3초 뒤에 자동으로 사라지게 함
+  // 성공 메시지 3초 후 자동 삭제
   useEffect(() => {
     if (successMsg) {
       const timer = setTimeout(() => setSuccessMsg(null), 3000);
@@ -40,38 +38,45 @@ export default function AddMemberDialog({ isOpen, onClose, onSuccess, groupId, g
     }
   }, [successMsg]);
 
-  const fetchAvailableCustomers = async () => {
-    setLoading(true);
-    const { data, error } = await supabase
-      .from("customers")
-      .select("id, name, email, company, group_id")
-      .is("group_id", null) 
-      .order("name")
-      .limit(50);
+  // 🚀 최적화: 타이핑 시 DB 요청을 0.3초 모아서 한 번만 보내는 디바운스 로직 통합
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const timer = setTimeout(async () => {
+      const term = searchTerm.trim();
+      setLoading(true);
+
+      if (term.length < 2) {
+        // 검색어가 없거나 1글자면 기본 50명 목록 불러오기 (백스페이스 대응)
+        const { data, error } = await supabase
+          .from("customers")
+          .select("id, name, email, company, group_id")
+          .is("group_id", null) 
+          .order("name")
+          .limit(50);
+          
+        if (error) console.error("Error fetching customers:", error);
+        if (data) setCustomers(data);
+      } else {
+        // 2글자 이상이면 검색 진행
+        const { data, error } = await supabase
+          .from("customers")
+          .select("id, name, email, company, group_id")
+          .is("group_id", null) 
+          .or(`name.ilike.%${term}%,email.ilike.%${term}%,company.ilike.%${term}%`) 
+          .limit(20);
+
+        if (error) console.error("Search Error:", error);
+        if (data) setCustomers(data);
+      }
       
-    if (error) {
-        console.error("Error fetching customers:", error);
-    }
+      setLoading(false);
+    }, 300); // 0.3초 대기
 
-    if (data) setCustomers(data);
-    setLoading(false);
-  };
+    return () => clearTimeout(timer);
+  }, [searchTerm, isOpen, supabase]);
 
-  const handleSearch = async (term: string) => {
-    setSearchTerm(term);
-    if (term.length < 2) return;
-
-    const { data } = await supabase
-      .from("customers")
-      .select("id, name, email, company, group_id")
-      .is("group_id", null) 
-      .or(`name.ilike.%${term}%,email.ilike.%${term}%,company.ilike.%${term}%`) 
-      .limit(20);
-
-    if (data) setCustomers(data);
-  };
-
-  const addMember = async (customer: any) => { // ✅ ID 대신 객체를 받도록 수정 (이름 표시 위해)
+  const addMember = async (customer: any) => { 
     setAddingId(customer.id);
     
     const { error } = await supabase
@@ -82,7 +87,6 @@ export default function AddMemberDialog({ isOpen, onClose, onSuccess, groupId, g
     if (error) {
       alert("Failed to add member: " + error.message);
     } else {
-      // ✅ [수정] 성공 메시지 표시
       setSuccessMsg(`${customer.name} has been added to the group.`);
       
       // 리스트에서 제거 (즉각 반응)
@@ -115,12 +119,12 @@ export default function AddMemberDialog({ isOpen, onClose, onSuccess, groupId, g
               placeholder="Search by name, company or email..." 
               className="pl-9 bg-white"
               value={searchTerm}
-              onChange={(e) => handleSearch(e.target.value)}
+              onChange={(e) => setSearchTerm(e.target.value)}
             />
           </div>
         </div>
 
-        {/* ✅ [추가] 성공 메시지 알림 (애니메이션 효과) */}
+        {/* 성공 메시지 알림 */}
         {successMsg && (
           <div className="bg-emerald-50 border-b border-emerald-100 px-6 py-2 flex items-center gap-2 animate-in slide-in-from-top-2 duration-300">
             <div className="bg-emerald-100 p-1 rounded-full">
@@ -150,7 +154,6 @@ export default function AddMemberDialog({ isOpen, onClose, onSuccess, groupId, g
                     size="sm" 
                     variant="ghost"
                     disabled={addingId === customer.id}
-                    // ✅ [수정] customer 객체 전체를 넘김
                     onClick={() => addMember(customer)}
                     className="text-blue-600 hover:text-blue-700 hover:bg-blue-50 h-8 px-3"
                   >

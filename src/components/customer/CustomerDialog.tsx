@@ -60,7 +60,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
     delivery_address: "", delivery_suburb: "", delivery_state: "", delivery_postcode: "", delivery_lat: null as number | null, delivery_lng: null as number | null,
     note: "",
     login_email: "", 
-    password: "", // DB에 있는 password 컬럼과 매칭
+    password: "", 
   };
 
   const [formData, setFormData] = useState(initialData);
@@ -132,7 +132,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
           in_charge_sale: cleanData.in_charge_sale || "",        
           in_charge_delivery: cleanData.in_charge_delivery || "", 
           login_email: cleanData.login_email || "", 
-          password: cleanData.password || "", // 🚀 DB에서 패스워드 불러오기
+          password: cleanData.password || "", 
         });
 
         const isSame = cleanData.address === cleanData.delivery_address && cleanData.suburb === cleanData.delivery_suburb;
@@ -154,7 +154,6 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
     setFormData(prev => ({ ...prev, [field]: value }));
   };
 
-  // 계정 발급 핸들러
   const handleIssueAccount = async () => {
     if (!customerData?.id) {
       return alert("Please save the new customer first before issuing an account.");
@@ -174,7 +173,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
 
     if (result.success) {
       alert("✅ Login account has been successfully issued & linked!");
-      onSuccess(); // 목록 새로고침 (입력창은 초기화하지 않고 그대로 보여줍니다)
+      onSuccess(); 
     } else {
       alert("❌ Failed to issue account: " + result.message);
     }
@@ -331,8 +330,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
         delivery_lng: finalDeliveryLng
       };
 
-      // password와 login_email은 데이터베이스 업데이트 명단에서 "제외(무시)" 해버리는 마법입니다.
-      const { id, password, login_email, customer_groups, profiles, created_at, lat, lng, delivery_lat, delivery_lng, ...restData } = formData as any;
+      const { id, customer_groups, profiles, created_at, lat, lng, delivery_lat, delivery_lng, ...restData } = formData as any;
       
       const payload: any = {
         ...restData, 
@@ -345,26 +343,31 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
         in_charge_delivery: formData.in_charge_delivery || null,
       };
 
-      const isBillingAddressChanged = customerData ? (
-          customerData.address !== formData.address || 
-          customerData.suburb !== formData.suburb || 
-          customerData.postcode !== formData.postcode
-      ) : true;
+      // 🚀 방어 로직 추가: customerData가 있을 때(Edit)만 작동
+      if (customerData) {
+        // 1. 기존 고객을 업데이트할 때는 프로필만 저장하고, 로그인 정보는 절대 덮어씌우지 않음!
+        // (로그인 정보는 'Issue / Update' 버튼이 따로 전담해서 관리함)
+        delete payload.login_email;
+        delete payload.password;
 
-      const isDeliveryAddressChanged = customerData ? (
-          customerData.delivery_address !== formData.delivery_address || 
-          customerData.delivery_suburb !== formData.delivery_suburb || 
-          customerData.delivery_postcode !== formData.delivery_postcode
-      ) : true;
+        // 2. 주소 변경 여부 파악
+        const isBillingAddressChanged = customerData.address !== formData.address || 
+                                        customerData.suburb !== formData.suburb || 
+                                        customerData.postcode !== formData.postcode;
 
-      if (customerData && !isBillingAddressChanged) {
-          delete payload.lat;
-          delete payload.lng;
-      }
-      
-      if (customerData && !isSameAddress && !isDeliveryAddressChanged) {
-          delete payload.delivery_lat;
-          delete payload.delivery_lng;
+        const isDeliveryAddressChanged = customerData.delivery_address !== formData.delivery_address || 
+                                         customerData.delivery_suburb !== formData.delivery_suburb || 
+                                         customerData.delivery_postcode !== formData.delivery_postcode;
+
+        if (!isBillingAddressChanged) {
+            delete payload.lat;
+            delete payload.lng;
+        }
+        
+        if (!isSameAddress && !isDeliveryAddressChanged) {
+            delete payload.delivery_lat;
+            delete payload.delivery_lng;
+        }
       }
 
       let error;
@@ -418,7 +421,6 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
 
           <div className="flex-1 overflow-y-auto p-6 space-y-8">
             
-            {/* App Login Account (발급 기능) 섹션 */}
             <section className="space-y-4 bg-indigo-50/50 p-5 rounded-xl border border-indigo-100">
               <h3 className="text-sm font-bold text-indigo-900 uppercase tracking-wider flex items-center gap-2 border-b border-indigo-200 pb-2">
                 <Key className="w-4 h-4" /> App Login Account

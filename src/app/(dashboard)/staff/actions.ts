@@ -35,7 +35,6 @@ export async function saveStaffAction(data: any, isEdit: boolean, targetId?: str
         email: data.email,
         password: data.password,
         email_confirm: true,
-        // 🚀 [핵심 수정] 새 유저를 만들 때 메타데이터에 role(소문자)을 콱 박아줍니다!
         user_metadata: { 
           display_name: data.display_name,
           role: data.user_level?.toLowerCase() || 'staff' 
@@ -48,21 +47,26 @@ export async function saveStaffAction(data: any, isEdit: boolean, targetId?: str
 
       const { error: profileError } = await supabaseAdmin
         .from("profiles")
-        .update({
+        .upsert({
+          id: newUser.user.id, 
           display_name: data.display_name,
           email: data.email,
           phone_number: data.phone_number,
           address: data.address,
-          birth_date: data.birth_date,
+          // 🚀 [에러 해결] 빈 문자열("")이면 null을 넣어 DB 날짜 타입 충돌 방지!
+          birth_date: data.birth_date ? data.birth_date : null, 
           user_level: data.user_level,
           login_permit: data.login_permit,
           status: initialStatus, 
           lat: data.lat, 
           lng: data.lng  
-        })
-        .eq("id", newUser.user.id);
+        }, { onConflict: "id" });
 
-      if (profileError) throw profileError;
+      // 프로필 저장 실패 시 롤백
+      if (profileError) {
+        await supabaseAdmin.auth.admin.deleteUser(newUser.user.id);
+        throw profileError;
+      }
 
       return { success: true, message: "Staff created successfully." };
     } catch (e: any) {
@@ -81,7 +85,8 @@ export async function saveStaffAction(data: any, isEdit: boolean, targetId?: str
         display_name: data.display_name,
         phone_number: data.phone_number,
         address: data.address,
-        birth_date: data.birth_date,
+        // 🚀 [에러 해결] 수정할 때도 빈 문자열("")이면 null 처리
+        birth_date: data.birth_date ? data.birth_date : null, 
         updated_at: new Date().toISOString(),
         lat: data.lat, 
         lng: data.lng  
@@ -93,7 +98,6 @@ export async function saveStaffAction(data: any, isEdit: boolean, targetId?: str
         updates.login_permit = data.login_permit;
         updates.status = data.login_permit ? 'active' : 'inactive';
 
-        // 🚀 [핵심 수정] 기존에는 이메일만 업데이트했지만, 이제 메타데이터(role)도 무조건 같이 덮어씌웁니다!
         const authUpdates: any = {
           user_metadata: { 
             role: data.user_level?.toLowerCase() || 'staff' 
@@ -105,7 +109,6 @@ export async function saveStaffAction(data: any, isEdit: boolean, targetId?: str
           updates.email = data.email;
         }
 
-        // Auth 정보(이메일 & 메타데이터) 한 번에 업데이트!
         const { error: authUpdateError } = await supabaseAdmin.auth.admin.updateUserById(
           targetId, 
           authUpdates
@@ -168,15 +171,13 @@ export async function deleteStaffAction(ids: string[]) {
     }
 }
 
-// [NEW] 비밀번호 재설정 메일 발송 액션
+// 비밀번호 재설정 메일 발송 액션
 export async function sendPasswordResetEmailAction(email: string) {
   const supabase = await createServerClient();
   
-  // 1. 요청자 확인 (로그인 여부)
   const { data: { user: requester } } = await supabase.auth.getUser();
   if (!requester) return { success: false, error: "Unauthorized" };
 
-  // 2. 요청자 권한 확인 (ADMIN만 발송 가능)
   const { data: requesterProfile } = await supabase
     .from("profiles")
     .select("user_level")
@@ -188,7 +189,6 @@ export async function sendPasswordResetEmailAction(email: string) {
   }
 
   try {
-    // 3. 재설정 메일 발송
     const { error } = await supabaseAdmin.auth.resetPasswordForEmail(email, {
       redirectTo: `${process.env.NEXT_PUBLIC_BASE_URL}/auth/callback?next=/update-password`,
     });

@@ -178,7 +178,7 @@ export default function SetDeliveryPage() {
   const fetchData = async () => {
     setLoading(true); setHasChanges(false); setNewArrivalCount(0); 
     try {
-      const { data: allProfileData } = await supabase.from("profiles").select("id, display_name").eq("status", "active").order("display_name");
+      const { data: allProfileData } = await supabase.from("profiles").select("id, display_name").eq("status", "active").eq("user_level", "DRIVER").order("display_name");
       if (allProfileData) setAllStaff(allProfileData);
 
       // 🚀 [수정] .neq("status", "Paid") 조건을 삭제하여 Paid(결제완료) 상태여도 불러오도록 수정함!

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useRef, useCallback } from "react";
+import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { createClient } from "@/utils/supabase/client";
 import Script from "next/script"; 
 import { 
@@ -8,7 +8,7 @@ import {
   MapPin, CheckCircle2, User, Loader2, MapPin as WarehouseIcon, Radio,
   Box, X, Circle, FileText, Sparkles, Building2, Home, MousePointerClick, 
   Save, RotateCcw, Edit2, Check, GripVertical, Printer, ChevronLeft, ChevronRight, ChevronDown,
-  Key 
+  Key, Package
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -117,7 +117,6 @@ interface DriverColumnState {
     columnId: string;
 }
 
-// 🚀 심플하게 이름과 ID만 유지
 interface KeyInvoiceInfo {
   id: string;
   name: string;
@@ -198,9 +197,14 @@ export default function DeliveryRoutePage() {
   
   const [checkedItems, setCheckedItems] = useState<Set<string>>(new Set());
 
-  // 🚀 열쇠 모달 상태
+  // 열쇠 모달 상태
   const [isKeyDialogOpen, setIsKeyDialogOpen] = useState(false);
   const [keyDialogData, setKeyDialogData] = useState<{driverName: string, invoices: KeyInvoiceInfo[]} | null>(null);
+
+  // 🚀 PRODUCTS 모달 상태
+  const [showProductSummary, setShowProductSummary] = useState(false);
+  const [productSummaryData, setProductSummaryData] = useState<{ summaryList: any[], activeDrivers: string[] }>({ summaryList: [], activeDrivers: [] });
+  const [productSummaryLoading, setProductSummaryLoading] = useState(false);
 
   const [touchStartX, setTouchStartX] = useState<number | null>(null);
   const [touchStartY, setTouchStartY] = useState<number | null>(null);
@@ -337,6 +341,102 @@ export default function DeliveryRoutePage() {
           setOriginalInvoices(filtered); 
       }
       setLoading(false);
+  };
+
+  // 🚀 PRODUCTS 모달용 데이터 Fetching 로직 (1st Run / 2nd Run 완벽 분리)
+  useEffect(() => {
+    if (!showProductSummary) return;
+
+    const fetchProductSummary = async () => {
+      setProductSummaryLoading(true);
+      try {
+        const { data, error } = await supabase
+          .from("invoices")
+          .select(`
+            id, driver_id, delivery_run,
+            profiles:driver_id ( display_name ),
+            invoice_items ( quantity, unit, products ( product_name ) )
+          `)
+          .eq("invoice_date", selectedDate)
+          .neq("status", "Paid")
+          .is("is_pickup", false);
+
+        if (error) throw error;
+
+        const summary: Record<string, any> = {};
+        const driverSet = new Set<string>();
+
+        data?.forEach((inv: any) => {
+          const profile = Array.isArray(inv.profiles) ? inv.profiles[0] : inv.profiles;
+          
+          // 🚀 1. 배송 차수(Run) 가져오기
+          const rawRun = inv.delivery_run ?? 0;
+          const run = rawRun === 0 ? 1 : rawRun;
+          
+          const driverName = profile?.display_name || "Unassigned";
+          
+          // 🚀 2. 기사님 이름과 차수를 결합하여 고유 키 생성 (예: John_1, Unassigned)
+          const driverKey = driverName === "Unassigned" ? "Unassigned" : `${driverName}_${run}`;
+          driverSet.add(driverKey);
+
+          inv.invoice_items?.forEach((item: any) => {
+            const qty = Number(item.quantity) || 0;
+            if (qty <= 0) return;
+
+            const prod = Array.isArray(item.products) ? item.products[0] : item.products;
+            const name = prod?.product_name || "Unknown Item";
+            
+            let rawUnit = item.unit || "Pack";
+            if (rawUnit.toLowerCase().includes('ctn') || rawUnit.toLowerCase().includes('box') || rawUnit.toLowerCase().includes('carton')) {
+                rawUnit = "CTN";
+            } else {
+                rawUnit = "PACK";
+            }
+            const key = `${name}_${rawUnit}`;
+
+            if (!summary[key]) summary[key] = { name, unit: rawUnit, drivers: {}, total: 0 };
+            
+            // 🚀 3. 분리된 기사 키(driverKey)로 수량 누적
+            if (!summary[key].drivers[driverKey]) summary[key].drivers[driverKey] = 0;
+
+            summary[key].drivers[driverKey] += qty;
+            summary[key].total += qty;
+          });
+        });
+
+        // 🚀 4. 정렬 로직 (Unassigned -> 1st Run 모음 -> 2nd Run 모음 -> 이름순)
+        const drivers = Array.from(driverSet).sort((a,b) => {
+            if (a === "Unassigned") return -1;
+            if (b === "Unassigned") return 1;
+            
+            const [nameA, runA] = a.split('_');
+            const [nameB, runB] = b.split('_');
+            
+            // 먼저 1st Run과 2nd Run을 분리 (1이 우선)
+            if (runA !== runB) return Number(runA) - Number(runB);
+            
+            // 차수가 같다면 이름순
+            return nameA.localeCompare(nameB);
+        });
+        
+        const sortedList = Object.values(summary).sort((a,b) => a.name.localeCompare(b.name));
+
+        setProductSummaryData({ summaryList: sortedList, activeDrivers: drivers });
+      } catch (e) {
+        console.error("Error fetching summary", e);
+      } finally {
+        setProductSummaryLoading(false);
+      }
+    };
+
+    fetchProductSummary();
+  }, [showProductSummary, selectedDate]);
+
+  // 🚀 표 헤더에 보여줄 기사님 텍스트 변환 함수 (예: "John_1" -> "John (1st)")
+  const formatDriverHeader = (key: string) => {
+      if (key === "Unassigned") return "Unassigned";
+      const [name, run] = key.split('_');
+      return `${name} (${run === '1' ? '1st' : '2nd'})`;
   };
 
   useEffect(() => {
@@ -653,6 +753,16 @@ export default function DeliveryRoutePage() {
               onChange={(e) => setSelectedDate(e.target.value)}
             />
           </div>
+
+          <Button 
+            onClick={() => setShowProductSummary(true)} 
+            variant="outline" 
+            size="sm" 
+            className="h-9 text-xs font-bold flex items-center gap-1.5 text-indigo-600 border-indigo-200 hover:bg-indigo-50 shadow-sm transition-all active:scale-95 ml-2"
+          >
+            <Package className="w-4 h-4" /> By PRODUCTS
+          </Button>
+
         </div>
         <Button variant="outline" size="sm" onClick={() => setIsMapOpen(true)} disabled={invoices.length === 0} className="h-9 text-xs font-bold text-slate-600 hover:text-blue-600 hover:bg-blue-50 border border-slate-300 gap-2"><MapIcon className="w-4 h-4" /> View Map</Button>
       </div>
@@ -678,7 +788,6 @@ export default function DeliveryRoutePage() {
                               <span className={cn("font-bold text-sm truncate", isSelected ? "text-emerald-900" : "text-slate-700")}>{route.driverName}</span>
                               {isDone && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
                               
-                              {/* 🚀 열쇠 카운트 뱃지 표시 */}
                               {route.keyInvoices.length > 0 && (
                                   <div
                                       onClick={(e) => {
@@ -871,7 +980,6 @@ export default function DeliveryRoutePage() {
         </div>
       </div>
 
-      {/* 🚀 [수정] 열쇠 필요 고객 모달 (심플하게 이름만 표시) */}
       <Dialog open={isKeyDialogOpen} onOpenChange={setIsKeyDialogOpen}>
           <DialogContent className="sm:max-w-md bg-white p-0 overflow-hidden rounded-2xl shadow-xl">
               <DialogHeader className="bg-amber-50 border-b border-amber-100 p-4">
@@ -1028,6 +1136,76 @@ export default function DeliveryRoutePage() {
         </DialogContent>
     </Dialog>
 
+    {/* 🚀 2. 전체 화면 PRODUCTS 팝업 (Dialog) - 테이블 헤더 고정(Sticky) */}
+    <Dialog open={showProductSummary} onOpenChange={setShowProductSummary}>
+      <DialogContent className="!max-w-[100vw] !w-screen !h-[100dvh] !m-0 !p-0 !rounded-none !border-none bg-white flex flex-col shadow-none select-none [&>button]:hidden">
+        <DialogHeader className="p-6 border-b flex flex-row items-center justify-between shrink-0 space-y-0 bg-slate-50 relative">
+          <div>
+            <DialogTitle className="text-2xl font-black text-slate-900 flex items-center gap-2">
+              <Package className="w-6 h-6 text-indigo-600" /> Daily Products Summary
+            </DialogTitle>
+            <DialogDescription className="font-bold text-slate-500 mt-1">
+              Total items scheduled for delivery on <span className="text-indigo-600">{selectedDate}</span>
+            </DialogDescription>
+          </div>
+          <Button variant="ghost" size="icon" onClick={() => setShowProductSummary(false)} className="absolute right-6 top-6 h-12 w-12 hover:bg-red-50 hover:text-red-500 transition-colors rounded-full z-50">
+             <X className="w-8 h-8" />
+          </Button>
+        </DialogHeader>
+
+        {/* 🚀 flex 구조 및 overflow 옵션을 변경하여 헤더(thead)가 찰싹 달라붙게 고정! */}
+        <div className="flex-1 p-4 sm:p-6 bg-white overflow-hidden flex flex-col">
+          {productSummaryLoading ? (
+            <div className="flex flex-col items-center justify-center h-full text-slate-400 space-y-4">
+              <Loader2 className="w-12 h-12 animate-spin text-indigo-500" />
+              <p className="font-bold animate-pulse">Loading daily summary...</p>
+            </div>
+          ) : (
+            <div className="flex-1 overflow-auto rounded-xl border border-slate-200 shadow-sm custom-scrollbar bg-white">
+              <table className="w-full text-sm text-left relative border-collapse">
+                <thead className="sticky top-0 z-20 shadow-md">
+                  <tr>
+                    <th className="px-5 py-4 font-black text-slate-700 w-1/3 border-r border-b border-slate-200 bg-slate-100">Product Name</th>
+                    <th className="px-3 py-4 font-black text-slate-700 text-center w-24 border-r border-b border-slate-200 bg-slate-100">Unit</th>
+                    {productSummaryData.activeDrivers.map(driver => (
+                      <th key={driver} className="px-3 py-4 font-black text-slate-600 text-center border-r border-b border-slate-200 bg-slate-100 truncate max-w-[120px]" title={formatDriverHeader(driver)}>
+                        {formatDriverHeader(driver)}
+                      </th>
+                    ))}
+                    <th className="px-4 py-4 font-black text-indigo-700 text-center border-b border-indigo-200 bg-indigo-50">Total</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {productSummaryData.summaryList.length === 0 ? (
+                    <tr>
+                      <td colSpan={productSummaryData.activeDrivers.length + 3} className="text-center py-16 text-slate-400 font-bold bg-slate-50">
+                        No products found for this date.
+                      </td>
+                    </tr>
+                  ) : (
+                    productSummaryData.summaryList.map((item, idx) => (
+                      <tr key={idx} className={cn("hover:bg-blue-50/50 transition-colors", idx % 2 === 0 ? "bg-white" : "bg-slate-100/80")}>
+                        <td className="px-5 py-3 font-bold text-slate-800 border-r border-slate-200/60">{item.name}</td>
+                        <td className="px-3 py-3 font-bold text-slate-500 text-center border-r border-slate-200/60">{item.unit}</td>
+                        {productSummaryData.activeDrivers.map(driver => (
+                          <td key={driver} className={cn("px-3 py-3 text-center border-r border-slate-200/60 font-bold", item.drivers[driver] ? "text-slate-900 bg-emerald-50/50" : "text-slate-300")}>
+                            {item.drivers[driver] || "-"}
+                          </td>
+                        ))}
+                        <td className="px-4 py-3 font-black text-indigo-700 text-center bg-indigo-50/50 text-base">
+                          {item.total}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+
     <RouteMapDialog isOpen={isMapOpen} onClose={() => setIsMapOpen(false)} driverName={currentRouteInfo?.driverName || "Driver"} driverId={currentRouteInfo?.driverId} invoices={invoices} startLocation={resolveLocation(startDestType, customStart)} finalLocation={resolveLocation(finalDestType, customFinal)} isGoogleLoaded={isGoogleLoaded} isRouteChanged={isRouteChanged} />
     </>
   );
@@ -1083,7 +1261,6 @@ function SortableInvoiceCard({ invoice, displayNum, isNewInDB, onClick }: { invo
                             <span className={cn("font-bold text-sm truncate flex items-center gap-1.5", isCompleted ? "text-slate-400 line-through" : "text-slate-800")}>
                                 {invoice.customers?.name || invoice.invoice_to || "Unknown"}
                                 
-                                {/* 🚀 [수정] 툴팁 에러 해결: span 으로 감싸기 */}
                                 {invoice.customers?.use_key && (
                                     <span title="Physical Key Required" className="flex shrink-0">
                                         <Key className="w-3.5 h-3.5 text-amber-500" />

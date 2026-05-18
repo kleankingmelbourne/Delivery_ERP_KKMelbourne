@@ -546,7 +546,6 @@ export default function DriverDashboardPage() {
           customerPw: item.customer_pw || "",
           createdWho: item.created_who || "System"
       });
-      setNewPw(item.customer_pw || "");
       setIsEditingPw(false);
       setCheckedItems({}); 
       setInvoiceItems([]);

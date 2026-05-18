@@ -2,13 +2,13 @@
 
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { createClient } from "@/utils/supabase/client";
-import Script from "next/script"; 
+// 🚀 [수정] 중복 에러를 발생시키던 Script 임포트를 제거했습니다.
 import { 
   Calendar as CalendarIcon, Truck, Map as MapIcon, Navigation, 
-  MapPin, CheckCircle2, User, Loader2, MapPin as WarehouseIcon, Radio,
-  Box, X, Circle, FileText, Sparkles, Building2, Home, MousePointerClick, 
-  Save, RotateCcw, Edit2, Check, GripVertical, Printer, ChevronLeft, ChevronRight, ChevronDown,
-  Key, Package
+  MapPin, CheckCircle2, User, Loader2,
+  Box, X, Circle, FileText, Sparkles, Home, 
+  Save, RotateCcw, GripVertical, Printer, ChevronDown,
+  Key, Package, Search // 🚀 [추가] PRODUCTS 모달용 Search, Package 아이콘 추가
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -28,8 +28,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
@@ -45,12 +43,6 @@ import {
   useSensor,
   useSensors,
   DragEndEvent,
-  pointerWithin,
-  DragOverlay,
-  defaultDropAnimationSideEffects,
-  DragStartEvent,
-  DragOverEvent,
-  DropAnimation
 } from '@dnd-kit/core';
 import {
   arrayMove,
@@ -100,23 +92,6 @@ interface Invoice {
   invoice_items?: InvoiceItem[];
 }
 
-interface DisplayInvoice extends Invoice {
-  current_driver_id: string | null;
-  current_run: number;
-  is_new_arrival?: boolean;
-}
-
-interface Driver {
-  id: string;
-  display_name: string | null;
-}
-
-interface DriverColumnState {
-    driver: Driver;
-    run: number;
-    columnId: string;
-}
-
 interface KeyInvoiceInfo {
   id: string;
   name: string;
@@ -149,6 +124,9 @@ const getMelbourneDate = () => {
   const formatter = new Intl.DateTimeFormat('en-CA', options); 
   return formatter.format(now);
 };
+
+// --- Google Map Imports (useJsApiLoader만 사용) ---
+import { useJsApiLoader } from '@react-google-maps/api';
 
 export default function DeliveryRoutePage() {
   const supabase = createClient();
@@ -185,9 +163,15 @@ export default function DeliveryRoutePage() {
   const [printingRouteKey, setPrintingRouteKey] = useState<string | null>(null);
 
   const [isMapOpen, setIsMapOpen] = useState(false);
-  const [isGoogleLoaded, setIsGoogleLoaded] = useState(false);
-  const [warehouseLocation, setWarehouseLocation] = useState(DEFAULT_LOCATION);
   const GOOGLE_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+
+  // 🚀 [수정] 구글맵스 중복 방지를 위해 useJsApiLoader만 단독 사용
+  const [libraries] = useState<("places" | "geometry" | "routes")[]>(["places", "geometry", "routes"]);
+  const { isLoaded } = useJsApiLoader({
+      id: 'google-map-script',
+      googleMapsApiKey: GOOGLE_API_KEY || "",
+      libraries: libraries
+  });
 
   // Detail Dialog State
   const [isDetailOpen, setIsDetailOpen] = useState(false);
@@ -201,10 +185,21 @@ export default function DeliveryRoutePage() {
   const [isKeyDialogOpen, setIsKeyDialogOpen] = useState(false);
   const [keyDialogData, setKeyDialogData] = useState<{driverName: string, invoices: KeyInvoiceInfo[]} | null>(null);
 
-  // 🚀 PRODUCTS 모달 상태
+  // 🚀 PRODUCTS 모달 및 검색 관련 상태
   const [showProductSummary, setShowProductSummary] = useState(false);
   const [productSummaryData, setProductSummaryData] = useState<{ summaryList: any[], activeDrivers: string[] }>({ summaryList: [], activeDrivers: [] });
   const [productSummaryLoading, setProductSummaryLoading] = useState(false);
+  
+  const [productSearchTerm, setProductSearchTerm] = useState(""); 
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
+
+  // 0.5초 디바운스 적용
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearchTerm(productSearchTerm);
+    }, 500); 
+    return () => clearTimeout(handler);
+  }, [productSearchTerm]);
 
   const [touchStartX, setTouchStartX] = useState<number | null>(null);
   const [touchStartY, setTouchStartY] = useState<number | null>(null);
@@ -218,17 +213,7 @@ export default function DeliveryRoutePage() {
 
   useEffect(() => { 
       setIsMounted(true); 
-      if (window.google && window.google.maps) setIsGoogleLoaded(true);
       fetchCompanySettings();
-  }, []);
-
-  useEffect(() => {
-    if ("geolocation" in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        (position) => setWarehouseLocation({ lat: position.coords.latitude, lng: position.coords.longitude }),
-        () => console.warn("Location access denied, using default.")
-      );
-    }
   }, []);
 
   const fetchCompanySettings = async () => {
@@ -369,14 +354,12 @@ export default function DeliveryRoutePage() {
         data?.forEach((inv: any) => {
           const profile = Array.isArray(inv.profiles) ? inv.profiles[0] : inv.profiles;
           
-          // 🚀 1. 배송 차수(Run) 가져오기
           const rawRun = inv.delivery_run ?? 0;
           const run = rawRun === 0 ? 1 : rawRun;
           
           const driverName = profile?.display_name || "Unassigned";
-          
-          // 🚀 2. 기사님 이름과 차수를 결합하여 고유 키 생성 (예: John_1, Unassigned)
           const driverKey = driverName === "Unassigned" ? "Unassigned" : `${driverName}_${run}`;
+          
           driverSet.add(driverKey);
 
           inv.invoice_items?.forEach((item: any) => {
@@ -395,8 +378,6 @@ export default function DeliveryRoutePage() {
             const key = `${name}_${rawUnit}`;
 
             if (!summary[key]) summary[key] = { name, unit: rawUnit, drivers: {}, total: 0 };
-            
-            // 🚀 3. 분리된 기사 키(driverKey)로 수량 누적
             if (!summary[key].drivers[driverKey]) summary[key].drivers[driverKey] = 0;
 
             summary[key].drivers[driverKey] += qty;
@@ -404,7 +385,6 @@ export default function DeliveryRoutePage() {
           });
         });
 
-        // 🚀 4. 정렬 로직 (Unassigned -> 1st Run 모음 -> 2nd Run 모음 -> 이름순)
         const drivers = Array.from(driverSet).sort((a,b) => {
             if (a === "Unassigned") return -1;
             if (b === "Unassigned") return 1;
@@ -412,10 +392,7 @@ export default function DeliveryRoutePage() {
             const [nameA, runA] = a.split('_');
             const [nameB, runB] = b.split('_');
             
-            // 먼저 1st Run과 2nd Run을 분리 (1이 우선)
             if (runA !== runB) return Number(runA) - Number(runB);
-            
-            // 차수가 같다면 이름순
             return nameA.localeCompare(nameB);
         });
         
@@ -432,7 +409,15 @@ export default function DeliveryRoutePage() {
     fetchProductSummary();
   }, [showProductSummary, selectedDate]);
 
-  // 🚀 표 헤더에 보여줄 기사님 텍스트 변환 함수 (예: "John_1" -> "John (1st)")
+  // 🚀 [검색 기능] 필터링된 상품 목록 (디바운스 값 사용)
+  const filteredProductSummary = useMemo(() => {
+    if (!debouncedSearchTerm.trim()) return productSummaryData.summaryList;
+    const lowerTerm = debouncedSearchTerm.toLowerCase();
+    return productSummaryData.summaryList.filter(item =>
+      item.name.toLowerCase().includes(lowerTerm)
+    );
+  }, [productSummaryData.summaryList, debouncedSearchTerm]);
+
   const formatDriverHeader = (key: string) => {
       if (key === "Unassigned") return "Unassigned";
       const [name, run] = key.split('_');
@@ -731,12 +716,6 @@ export default function DeliveryRoutePage() {
 
   return (
     <>
-    <Script 
-        src={`https://maps.googleapis.com/maps/api/js?key=${GOOGLE_API_KEY}&libraries=places,geometry&loading=async`}
-        strategy="afterInteractive"
-        onLoad={() => { setIsGoogleLoaded(true); }}
-    />
-
     <div className="flex flex-col h-[calc(100vh-65px)] bg-slate-50/50">
       <div className="h-16 border-b border-slate-200 bg-white px-6 flex items-center justify-between shrink-0 z-10 shadow-sm">
         <div className="flex items-center gap-4">
@@ -754,13 +733,14 @@ export default function DeliveryRoutePage() {
             />
           </div>
 
+          {/* 🚀 PRODUCTS 버튼 */}
           <Button 
             onClick={() => setShowProductSummary(true)} 
             variant="outline" 
             size="sm" 
             className="h-9 text-xs font-bold flex items-center gap-1.5 text-indigo-600 border-indigo-200 hover:bg-indigo-50 shadow-sm transition-all active:scale-95 ml-2"
           >
-            <Package className="w-4 h-4" /> By PRODUCTS
+            <Package className="w-4 h-4" /> by PRODUCTS
           </Button>
 
         </div>
@@ -981,35 +961,35 @@ export default function DeliveryRoutePage() {
       </div>
 
       <Dialog open={isKeyDialogOpen} onOpenChange={setIsKeyDialogOpen}>
-          <DialogContent className="sm:max-w-md bg-white p-0 overflow-hidden rounded-2xl shadow-xl">
-              <DialogHeader className="bg-amber-50 border-b border-amber-100 p-4">
-                  <DialogTitle className="flex items-center gap-2 text-amber-900 font-black text-lg">
+          <DialogContent className="sm:max-w-md bg-white p-0 overflow-hidden rounded-2xl shadow-xl z-[200]">
+              <DialogHeader className="bg-amber-50 border-b border-amber-100 p-4 pb-3">
+                  <DialogTitle className="flex items-center justify-center gap-2 text-amber-900 font-black text-lg">
                       <Key className="w-5 h-5 text-amber-600" />
                       Keys Required ({keyDialogData?.invoices.length || 0})
                   </DialogTitle>
-                  <DialogDescription className="text-amber-700/80 font-medium">
+                  <DialogDescription className="text-center text-amber-700/80 font-medium text-xs mt-1">
                       {keyDialogData?.driverName} Route
                   </DialogDescription>
               </DialogHeader>
-              <div className="p-4 overflow-y-auto max-h-[60vh] space-y-2 bg-slate-50/50">
+              <div className="p-4 overflow-y-auto max-h-[50vh] space-y-2 bg-slate-50/50">
                   {keyDialogData?.invoices.map((inv, idx) => (
-                      <div key={inv.id} className="flex items-center p-3 bg-white border border-slate-200 rounded-xl shadow-sm hover:border-amber-300 transition-colors">
-                          <div className="flex items-center gap-3">
-                              <div className="w-6 h-6 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center font-bold text-xs shrink-0">
-                                  {idx + 1}
-                              </div>
-                              <span className="font-bold text-slate-800 text-[15px]">
+                      <div key={inv.id} className="flex items-center gap-3 p-3 bg-white border border-slate-200 rounded-xl shadow-sm hover:border-amber-300 transition-colors">
+                          <div className="w-7 h-7 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center font-bold text-sm shrink-0">
+                              {idx + 1}
+                          </div>
+                          <div className="flex flex-col flex-1 min-w-0">
+                              <span className="font-bold text-slate-800 text-sm truncate">
                                 {inv.name || "Unknown"}
                               </span>
                           </div>
                       </div>
                   ))}
-                  {keyDialogData?.invoices.length === 0 && (
-                      <div className="text-center text-slate-400 py-10">No keys required for this route.</div>
+                  {keyDialogData?.invoices?.length === 0 && (
+                      <div className="text-center text-slate-400 py-10 font-medium">No keys required for this route.</div>
                   )}
               </div>
               <div className="p-3 border-t border-slate-100 bg-slate-50 flex justify-end">
-                  <Button variant="outline" onClick={() => setIsKeyDialogOpen(false)} className="bg-white hover:bg-slate-100">Close</Button>
+                  <Button variant="outline" onClick={() => setIsKeyDialogOpen(false)} className="bg-white hover:bg-slate-100 font-bold">Close</Button>
               </div>
           </DialogContent>
       </Dialog>
@@ -1136,10 +1116,13 @@ export default function DeliveryRoutePage() {
         </DialogContent>
     </Dialog>
 
-    {/* 🚀 2. 전체 화면 PRODUCTS 팝업 (Dialog) - 테이블 헤더 고정(Sticky) */}
-    <Dialog open={showProductSummary} onOpenChange={setShowProductSummary}>
-      <DialogContent className="!max-w-[100vw] !w-screen !h-[100dvh] !m-0 !p-0 !rounded-none !border-none bg-white flex flex-col shadow-none select-none [&>button]:hidden">
-        <DialogHeader className="p-6 border-b flex flex-row items-center justify-between shrink-0 space-y-0 bg-slate-50 relative">
+    {/* 🚀 전체 화면 PRODUCTS 팝업 (Dialog) - 0.5초 디바운스 검색 & 테이블 헤더 고정 */}
+    <Dialog open={showProductSummary} onOpenChange={(open) => {
+        setShowProductSummary(open);
+        if (!open) setProductSearchTerm(""); 
+    }}>
+      <DialogContent className="!max-w-[100vw] !w-screen !h-[100dvh] !m-0 !p-0 !rounded-none !border-none bg-slate-50 flex flex-col shadow-none select-none [&>button]:hidden z-[200]">
+        <DialogHeader className="p-6 border-b flex flex-row items-center justify-between shrink-0 space-y-0 bg-white relative shadow-sm z-30">
           <div>
             <DialogTitle className="text-2xl font-black text-slate-900 flex items-center gap-2">
               <Package className="w-6 h-6 text-indigo-600" /> Daily Products Summary
@@ -1153,8 +1136,20 @@ export default function DeliveryRoutePage() {
           </Button>
         </DialogHeader>
 
-        {/* 🚀 flex 구조 및 overflow 옵션을 변경하여 헤더(thead)가 찰싹 달라붙게 고정! */}
-        <div className="flex-1 p-4 sm:p-6 bg-white overflow-hidden flex flex-col">
+        {/* 🚀 검색창 (Search Bar) - 상단 고정 */}
+        <div className="px-4 py-3 sm:px-6 bg-white border-b border-slate-200 shrink-0 shadow-sm z-20 relative">
+            <div className="relative max-w-md">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <Input 
+                    placeholder="Search product name..." 
+                    value={productSearchTerm} 
+                    onChange={(e) => setProductSearchTerm(e.target.value)} 
+                    className="pl-9 h-10 bg-slate-50 border-slate-200 focus-visible:ring-indigo-500 rounded-xl font-bold"
+                />
+            </div>
+        </div>
+
+        <div className="flex-1 p-4 sm:p-6 bg-slate-50 overflow-hidden flex flex-col relative z-10">
           {productSummaryLoading ? (
             <div className="flex flex-col items-center justify-center h-full text-slate-400 space-y-4">
               <Loader2 className="w-12 h-12 animate-spin text-indigo-500" />
@@ -1163,7 +1158,7 @@ export default function DeliveryRoutePage() {
           ) : (
             <div className="flex-1 overflow-auto rounded-xl border border-slate-200 shadow-sm custom-scrollbar bg-white">
               <table className="w-full text-sm text-left relative border-collapse">
-                <thead className="sticky top-0 z-20 shadow-md">
+                <thead className="sticky top-0 z-30 shadow-md bg-slate-100 backdrop-blur-md">
                   <tr>
                     <th className="px-5 py-4 font-black text-slate-700 w-1/3 border-r border-b border-slate-200 bg-slate-100">Product Name</th>
                     <th className="px-3 py-4 font-black text-slate-700 text-center w-24 border-r border-b border-slate-200 bg-slate-100">Unit</th>
@@ -1178,21 +1173,27 @@ export default function DeliveryRoutePage() {
                 <tbody className="divide-y divide-slate-100">
                   {productSummaryData.summaryList.length === 0 ? (
                     <tr>
-                      <td colSpan={productSummaryData.activeDrivers.length + 3} className="text-center py-16 text-slate-400 font-bold bg-slate-50">
+                      <td colSpan={productSummaryData.activeDrivers.length + 3} className="text-center py-16 text-slate-400 font-bold bg-white">
                         No products found for this date.
                       </td>
                     </tr>
+                  ) : filteredProductSummary.length === 0 ? (
+                    <tr>
+                      <td colSpan={productSummaryData.activeDrivers.length + 3} className="text-center py-16 text-slate-400 font-bold bg-white">
+                        No products found matching "{debouncedSearchTerm}".
+                      </td>
+                    </tr>
                   ) : (
-                    productSummaryData.summaryList.map((item, idx) => (
-                      <tr key={idx} className={cn("hover:bg-blue-50/50 transition-colors", idx % 2 === 0 ? "bg-white" : "bg-slate-100/80")}>
+                    filteredProductSummary.map((item: any, idx: number) => (
+                      <tr key={idx} className={cn("hover:bg-blue-50/50 transition-colors", idx % 2 === 0 ? "bg-white" : "bg-slate-50")}>
                         <td className="px-5 py-3 font-bold text-slate-800 border-r border-slate-200/60">{item.name}</td>
                         <td className="px-3 py-3 font-bold text-slate-500 text-center border-r border-slate-200/60">{item.unit}</td>
                         {productSummaryData.activeDrivers.map(driver => (
-                          <td key={driver} className={cn("px-3 py-3 text-center border-r border-slate-200/60 font-bold", item.drivers[driver] ? "text-slate-900 bg-emerald-50/50" : "text-slate-300")}>
+                          <td key={driver} className={cn("px-3 py-3 text-center border-r border-slate-200/60 font-bold", item.drivers[driver] ? "text-slate-900 bg-emerald-50/30" : "text-slate-300")}>
                             {item.drivers[driver] || "-"}
                           </td>
                         ))}
-                        <td className="px-4 py-3 font-black text-indigo-700 text-center bg-indigo-50/50 text-base">
+                        <td className="px-4 py-3 font-black text-indigo-700 text-center bg-indigo-50/50 text-base border-l border-indigo-100">
                           {item.total}
                         </td>
                       </tr>
@@ -1206,7 +1207,7 @@ export default function DeliveryRoutePage() {
       </DialogContent>
     </Dialog>
 
-    <RouteMapDialog isOpen={isMapOpen} onClose={() => setIsMapOpen(false)} driverName={currentRouteInfo?.driverName || "Driver"} driverId={currentRouteInfo?.driverId} invoices={invoices} startLocation={resolveLocation(startDestType, customStart)} finalLocation={resolveLocation(finalDestType, customFinal)} isGoogleLoaded={isGoogleLoaded} isRouteChanged={isRouteChanged} />
+    <RouteMapDialog isOpen={isMapOpen} onClose={() => setIsMapOpen(false)} driverName={currentRouteInfo?.driverName || "Driver"} driverId={currentRouteInfo?.driverId} invoices={invoices} startLocation={resolveLocation(startDestType, customStart)} finalLocation={resolveLocation(finalDestType, customFinal)} isLoaded={isLoaded} isRouteChanged={isRouteChanged} />
     </>
   );
 }
@@ -1293,9 +1294,9 @@ function SortableInvoiceCard({ invoice, displayNum, isNewInDB, onClick }: { invo
 }
 
 function RouteMapDialog({ 
-    isOpen, onClose, driverName, driverId, invoices, startLocation, finalLocation, isGoogleLoaded, isRouteChanged 
+    isOpen, onClose, driverName, driverId, invoices, startLocation, finalLocation, isLoaded, isRouteChanged 
 }: { 
-    isOpen: boolean, onClose: () => void, driverName: string, driverId?: string, invoices: Invoice[], startLocation: any, finalLocation: any, isGoogleLoaded: boolean, isRouteChanged: boolean 
+    isOpen: boolean, onClose: () => void, driverName: string, driverId?: string, invoices: Invoice[], startLocation: any, finalLocation: any, isLoaded: boolean, isRouteChanged: boolean 
 }) {
     const supabase = createClient();
     const mapRef = useRef<HTMLDivElement>(null);
@@ -1339,7 +1340,7 @@ function RouteMapDialog({
     }, [isOpen, driverId]);
 
     useEffect(() => {
-        if (!isOpen || !isGoogleLoaded || !window.google || !window.google.maps) return;
+        if (!isOpen || !isLoaded || !window.google || !window.google.maps) return;
 
         const timer = setTimeout(() => {
             if (!mapRef.current) return; 
@@ -1497,7 +1498,7 @@ function RouteMapDialog({
 
         return () => clearTimeout(timer); 
 
-    }, [isOpen, isGoogleLoaded, invoices, startLocation, finalLocation, isRouteChanged]); 
+    }, [isOpen, isLoaded, invoices, startLocation, finalLocation, isRouteChanged]); 
 
     useEffect(() => {
         if (!mapInstance.current || !window.google) return;
@@ -1542,7 +1543,7 @@ function RouteMapDialog({
                 </DialogHeader>
                 <div className="flex-1 relative w-full h-full bg-slate-100">
                     <div ref={mapRef} className="absolute inset-0 w-full h-full" />
-                    {!isGoogleLoaded && (
+                    {(!isLoaded || !window.google) && (
                         <div className="absolute inset-0 flex items-center justify-center bg-white/50 z-50">
                             <Loader2 className="w-8 h-8 animate-spin text-slate-400" />
                         </div>

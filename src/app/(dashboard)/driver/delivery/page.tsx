@@ -8,7 +8,7 @@ import {
   ArrowUpDown, Play, Unlock, Save, Home, 
   Sparkles, Building2, MousePointerClick, Flag, Circle,
   MessageSquareText, MapPin, ListOrdered, MapIcon, RefreshCw, ImageIcon, Pencil, ArrowDown,
-  Key, AlertTriangle, Download, BellRing // 🚀 [추가] 팝업용 BellRing 아이콘 임포트
+  Key, AlertTriangle, Download, BellRing 
 } from "lucide-react";
 import {
   DndContext, 
@@ -247,7 +247,6 @@ export default function DriverDashboardPage() {
       2: { isStarted: false, isEditing: false }
   });
 
-  // 🚀 [추가] 편집 모드(Edit) 상태를 백그라운드 싱크에서 안전하게 체크하기 위한 Ref
   const isEditingRef = useRef(false);
   useEffect(() => {
       isEditingRef.current = Object.values(runStates).some(rs => rs.isEditing);
@@ -281,7 +280,6 @@ export default function DriverDashboardPage() {
 
   const [uploadErrorData, setUploadErrorData] = useState<{ file: File, targetId: string, customerName: string } | null>(null);
 
-  // 🚀 [추가] 새 배송 팝업 알림을 위한 상태
   const [newDeliveryAlert, setNewDeliveryAlert] = useState<{ show: boolean; customers: string[] }>({ show: false, customers: [] });
   const prevInvoiceIds = useRef<Set<string>>(new Set());
 
@@ -351,11 +349,25 @@ export default function DriverDashboardPage() {
     setIsDestModalOpen(false);
   };
 
+  // 🚀 [수정 완료] 프로필 좌표 덮어쓰기 로직 완전 제거. 오직 설정값(route_prefs)만 업데이트합니다.
   const saveRoutePrefs = async (newStartType: string, newFinalType: string, newStartAddr: string, newFinalAddr: string) => {
     if (!user) return;
-    const prefs = { ...(dbProfile?.route_prefs || {}), startDestType: newStartType, finalDestType: newFinalType, customStart: newStartAddr, customFinal: newFinalAddr };
+
+    const prefs = { 
+        ...(dbProfile?.route_prefs || {}), 
+        startDestType: newStartType, 
+        finalDestType: newFinalType, 
+        customStart: newStartAddr, 
+        customFinal: newFinalAddr 
+    };
+
     setDbProfile((prev: any) => ({ ...prev, route_prefs: prefs })); 
-    await supabase.from('profiles').update({ route_prefs: prefs }).eq('id', user.id);
+    
+    try {
+        await supabase.from('profiles').update({ route_prefs: prefs }).eq('id', user.id);
+    } catch (e) {
+        console.error("Failed to save DB route prefs", e);
+    }
   };
 
   const updateRunState = (run: number, updates: Partial<RunState>) => setRunStates(prev => ({ ...prev, [run]: { ...prev[run], ...updates } }));
@@ -365,10 +377,6 @@ export default function DriverDashboardPage() {
       const savedItems = items.filter(d => d.delivery_order > 0).sort((a, b) => a.delivery_order - b.delivery_order);
       return [...newItems, ...savedItems];
   };
-
-  const getSafeHomeAddress = useCallback(() => {
-    return dbProfile?.address || "Address not set";
-  }, [dbProfile]);
 
   const fetchDeliveryData = useCallback(async (isSilent = false) => {
       if (!user) return;
@@ -429,7 +437,6 @@ export default function DriverDashboardPage() {
                   } as DeliveryItem;
               });
 
-              // 🚀 [추가] 실시간으로 새로운 배송건이 들어왔는지 감지하고 팝업 띄우기
               const currentIds = new Set(rawItems.map(item => item.id));
               if (isSilent && prevInvoiceIds.current.size > 0) {
                   const addedItems = rawItems.filter(item => !prevInvoiceIds.current.has(item.id));
@@ -444,24 +451,18 @@ export default function DriverDashboardPage() {
 
               const sortedItems = sortDeliveries(rawItems);
               
-              // 🚀 [핵심 수정] 기사님이 수정(Edit) 중일 때 목록이 통째로 덮어씌워지며 꼬이는 문제 해결
               setDeliveries(currentLocal => {
                   if (isEditingRef.current && isSilent) {
-                      // 1. 현재 로컬 화면에 떠있는 ID들을 파악
                       const currentLocalIds = new Set(currentLocal.map(d => d.id));
-                      // 2. 새로 추가된 아이템만 뽑아내기 (DB에서 방금 추가된 것)
                       const newlyAdded = sortedItems.filter(d => !currentLocalIds.has(d.id));
                       
-                      // 3. 기존에 화면에 있던 아이템들은 "현재 드래그/수정 중인 순서(delivery_order)"를 그대로 유지한 채 데이터만 업데이트
                       const updatedLocal = currentLocal.map(localItem => {
                           const dbItem = sortedItems.find(si => si.id === localItem.id);
                           return dbItem ? { ...dbItem, delivery_order: localItem.delivery_order } : null;
                       }).filter(Boolean) as DeliveryItem[];
 
-                      // 4. 새로 추가된 아이템은 맨 위에 붙이고, 기존 순서는 안전하게 보존!
                       return [...newlyAdded, ...updatedLocal];
                   }
-                  // 편집 중이 아닐 때는 DB에서 온 최신 정렬 상태를 그대로 적용
                   return sortedItems;
               });
               
@@ -614,12 +615,21 @@ export default function DriverDashboardPage() {
       }));
   };
 
+  // 🚀 [수정 완료] Start, Final 공통 사용. Company, Home 선택 시 저장된 좌표 우선 사용. Custom은 텍스트 그대로 반환.
   const getPointLocation = useCallback((type: string, customText: string) => {
-      const drvLoc = dbProfile?.lat && dbProfile?.lng ? { lat: dbProfile.lat, lng: dbProfile.lng } : null;
-      if (type === 'company') return companyLocation ? { lat: companyLocation.lat, lng: companyLocation.lng } : companyLocation?.address;
-      if (type === 'home') return drvLoc ? drvLoc : getSafeHomeAddress();
+      if (type === 'company') {
+          return (companyLocation?.lat && companyLocation?.lng) 
+              ? { lat: companyLocation.lat, lng: companyLocation.lng } 
+              : companyLocation?.address || "";
+      }
+      if (type === 'home') {
+          return (dbProfile?.lat && dbProfile?.lng) 
+              ? { lat: dbProfile.lat, lng: dbProfile.lng } 
+              : dbProfile?.address || "";
+      }
+      // type === 'custom'
       return customText;
-  }, [companyLocation, dbProfile, getSafeHomeAddress]);
+  }, [companyLocation, dbProfile]);
 
   const drawMapRoute = useCallback(() => {
       if (!isLoaded || !window.google || currentList.length === 0) {
@@ -711,26 +721,19 @@ export default function DriverDashboardPage() {
   const handleSaveOrder = async () => {
     setIsSavingOrder(true);
     try {
-        // 1. DB에 보낼 새 순서 데이터 준비
         const upsertData = currentList.map((item, index) => ({ id: item.id, delivery_order: index + 1 }));
-        
-        // 2. DB에 새 순서 저장
         await supabase.from('invoices').upsert(upsertData, { onConflict: 'id' });
         
-        // 🚀 3. [추가된 부분] DB 저장이 끝나면 화면(로컬 데이터)도 즉시 새 순번으로 덮어씌웁니다!
         const updatedDeliveries = deliveries.map(d => {
-            // 현재 작업 중인 Run(1st or 2nd)에 속한 배송건인지 확인
             if ((d.delivery_run === 0 ? 1 : d.delivery_run) === activeRun) {
                 const foundIndex = currentList.findIndex(cl => cl.id === d.id);
                 if (foundIndex !== -1) {
-                    // 느낌표(0번)였던 항목도 여기서 index + 1 이 되어 정상적인 숫자를 부여받습니다.
                     return { ...d, delivery_order: foundIndex + 1 };
                 }
             }
             return d;
         });
         
-        // 4. 업데이트된 상태를 화면에 즉각 반영
         setDeliveries(updatedDeliveries);
         setOriginalDeliveries(updatedDeliveries);
         updateRunState(activeRun, { isEditing: false, isStarted: false }); 
@@ -893,7 +896,6 @@ export default function DriverDashboardPage() {
             </div>
           )}
 
-          {/* 🚀 [추가] 새 배송 팝업 알림 다이얼로그 */}
           <Dialog open={newDeliveryAlert.show} onOpenChange={(open) => !open && setNewDeliveryAlert({ show: false, customers: [] })}>
               <DialogContent className="w-[90%] max-w-sm rounded-3xl p-6 bg-white shadow-2xl z-[300]">
                   <DialogHeader className="flex flex-col items-center gap-3">
@@ -959,6 +961,56 @@ export default function DriverDashboardPage() {
               </DialogContent>
           </Dialog>
 
+          <Dialog open={isDestModalOpen} onOpenChange={setIsDestModalOpen}>
+              <DialogContent className="w-[90%] max-w-sm rounded-3xl p-6 bg-white shadow-2xl z-[300]">
+                  <DialogHeader className="mb-2">
+                      <DialogTitle className="text-xl font-black text-slate-800 text-center flex flex-col items-center gap-2">
+                          <MapPin className="w-8 h-8 text-blue-600" />
+                          Set {modalTarget === 'start' ? 'Start' : 'Final'} Location
+                      </DialogTitle>
+                  </DialogHeader>
+                  <div className="flex flex-col gap-3 mt-2">
+                      <Button 
+                          variant={ (modalTarget === 'start' ? startDestType : finalDestType) === 'company' ? 'default' : 'outline' }
+                          className={cn("h-12 text-sm font-bold rounded-xl", (modalTarget === 'start' ? startDestType : finalDestType) === 'company' ? "bg-blue-600 text-white hover:bg-blue-700" : "text-slate-600 hover:bg-slate-100")}
+                          onClick={() => modalTarget === 'start' ? setStartDestType('company') : setFinalDestType('company')}
+                      >
+                          <Building2 className="w-5 h-5 mr-2" /> Company
+                      </Button>
+                      <Button 
+                          variant={ (modalTarget === 'start' ? startDestType : finalDestType) === 'home' ? 'default' : 'outline' }
+                          className={cn("h-12 text-sm font-bold rounded-xl", (modalTarget === 'start' ? startDestType : finalDestType) === 'home' ? "bg-emerald-600 text-white hover:bg-emerald-700" : "text-slate-600 hover:bg-slate-100")}
+                          onClick={() => modalTarget === 'start' ? setStartDestType('home') : setFinalDestType('home')}
+                      >
+                          <Home className="w-5 h-5 mr-2" /> Home
+                      </Button>
+                      <Button 
+                          variant={ (modalTarget === 'start' ? startDestType : finalDestType) === 'custom' ? 'default' : 'outline' }
+                          className={cn("h-12 text-sm font-bold rounded-xl", (modalTarget === 'start' ? startDestType : finalDestType) === 'custom' ? "bg-amber-500 text-white hover:bg-amber-600" : "text-slate-600 hover:bg-slate-100")}
+                          onClick={() => modalTarget === 'start' ? setStartDestType('custom') : setFinalDestType('custom')}
+                      >
+                          <MapPin className="w-5 h-5 mr-2" /> Custom Address
+                      </Button>
+
+                      {(modalTarget === 'start' ? startDestType : finalDestType) === 'custom' && (
+                          <Input 
+                              placeholder="Enter full address..." 
+                              className="mt-2 h-12 rounded-xl bg-slate-50 border-slate-200 font-medium"
+                              value={modalTarget === 'start' ? customStart : customFinal}
+                              onChange={(e) => modalTarget === 'start' ? setCustomStart(e.target.value) : setCustomFinal(e.target.value)}
+                          />
+                      )}
+
+                      <Button 
+                          className="h-14 mt-4 bg-slate-900 hover:bg-slate-800 text-white font-black rounded-xl shadow-lg transition-transform active:scale-95"
+                          onClick={() => handleSetPoint(modalTarget === 'start' ? startDestType : finalDestType)}
+                      >
+                          <Save className="w-5 h-5 mr-2" /> Save Location
+                      </Button>
+                  </div>
+              </DialogContent>
+          </Dialog>
+
           <div className="shrink-0 bg-white z-20 border-b border-slate-100 shadow-sm relative">
             <div className="flex items-center justify-between p-4 pb-2 max-w-4xl mx-auto w-full">
                 <div className="flex items-center gap-2">
@@ -990,8 +1042,8 @@ export default function DriverDashboardPage() {
                   <PullToRefreshWrapper onRefresh={async () => { await fetchDeliveryData(true); }}>
                       <div className="p-4 space-y-3">
                           <div className="grid grid-cols-2 gap-3 max-w-4xl mx-auto w-full">
-                              <div className="bg-white border border-slate-200 rounded-2xl p-3 flex flex-col gap-1 shadow-sm cursor-pointer hover:bg-slate-50" onClick={() => { setModalTarget('start'); setIsDestModalOpen(true); }}><div className="flex items-center gap-2"><Flag className="w-3 h-3 text-blue-600" /><span className="text-[10px] font-bold text-slate-400 uppercase">Start</span></div><div className="text-xs font-bold text-slate-700 truncate">{startDestType === 'company' ? 'Company' : startDestType === 'home' ? 'Home' : 'Custom'}</div></div>
-                              <div className="bg-white border border-slate-200 rounded-2xl p-3 flex flex-col gap-1 shadow-sm cursor-pointer hover:bg-slate-50" onClick={() => { setModalTarget('final'); setIsDestModalOpen(true); }}><div className="flex items-center gap-2"><Home className="w-3 h-3 text-emerald-600" /><span className="text-[10px] font-bold text-slate-400 uppercase">Final</span></div><div className="text-xs font-bold text-slate-700 truncate">{finalDestType === 'company' ? 'Company' : finalDestType === 'home' ? 'Home' : 'Custom'}</div></div>
+                              <div className="bg-white border border-slate-200 rounded-2xl p-3 flex flex-col gap-1 shadow-sm cursor-pointer hover:bg-slate-50 transition-all active:scale-95" onClick={() => { setModalTarget('start'); setIsDestModalOpen(true); }}><div className="flex items-center gap-2"><Flag className="w-3 h-3 text-blue-600" /><span className="text-[10px] font-bold text-slate-400 uppercase">Start</span></div><div className="text-xs font-bold text-slate-700 truncate">{startDestType === 'company' ? 'Company' : startDestType === 'home' ? 'Home' : (customStart || 'Custom')}</div></div>
+                              <div className="bg-white border border-slate-200 rounded-2xl p-3 flex flex-col gap-1 shadow-sm cursor-pointer hover:bg-slate-50 transition-all active:scale-95" onClick={() => { setModalTarget('final'); setIsDestModalOpen(true); }}><div className="flex items-center gap-2"><Home className="w-3 h-3 text-emerald-600" /><span className="text-[10px] font-bold text-slate-400 uppercase">Final</span></div><div className="text-xs font-bold text-slate-700 truncate">{finalDestType === 'company' ? 'Company' : finalDestType === 'home' ? 'Home' : (customFinal || 'Custom')}</div></div>
                           </div>
                       </div>
                       <div className="px-4 py-2 flex items-center justify-between sticky top-0 bg-slate-50/90 backdrop-blur-sm z-10 max-w-4xl mx-auto w-full">

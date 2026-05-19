@@ -25,6 +25,7 @@ interface Product {
   buy_price: number;
   total_pack_ctn: number;
   unit_name?: string;
+  is_active: boolean;
 }
 
 interface ProductItem extends Product {
@@ -104,9 +105,10 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
         product_units (unit_name)
       `)
       .in("id", productIds)
+      .eq("is_active", true)
       .order("product_name");
 
-    if (productsData) {
+      if (productsData) {
       const merged: ProductItem[] = productsData.map((prod: any) => {
         const custom = customData.find((c: any) => c.product_id === prod.id);
         const pRate = custom?.custom_price_pack ?? "";
@@ -180,6 +182,7 @@ export default function CustomerProductDialog({ isOpen, onClose, customerId, cus
         sell_price_ctn, sell_price_pack, buy_price, total_pack_ctn,
         product_units (unit_name)
       `)
+      .eq("is_active", true)
       .or(`product_name.ilike.%${term}%,product_barcode.ilike.%${term}%,vendor_product_id.ilike.%${term}%`)
       .limit(10);
 

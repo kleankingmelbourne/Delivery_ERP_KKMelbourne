@@ -338,7 +338,7 @@ export default function DeliveryRoutePage() {
         const { data, error } = await supabase
           .from("invoices")
           .select(`
-            id, driver_id, delivery_run,
+            id, driver_id, delivery_run, invoice_to,
             profiles:driver_id ( display_name ),
             invoice_items ( quantity, unit, products ( product_name ) )
           `)
@@ -359,7 +359,8 @@ export default function DeliveryRoutePage() {
           
           const driverName = profile?.display_name || "Unassigned";
           const driverKey = driverName === "Unassigned" ? "Unassigned" : `${driverName}_${run}`;
-          
+          const customerName = inv.invoice_to || "Unknown"
+
           driverSet.add(driverKey);
 
           inv.invoice_items?.forEach((item: any) => {
@@ -377,10 +378,19 @@ export default function DeliveryRoutePage() {
             }
             const key = `${name}_${rawUnit}`;
 
-            if (!summary[key]) summary[key] = { name, unit: rawUnit, drivers: {}, total: 0 };
-            if (!summary[key].drivers[driverKey]) summary[key].drivers[driverKey] = 0;
+            if (!summary[key]) {
+                summary[key] = { name, unit: rawUnit, drivers: {}, customers: {}, total: 0 };
+            }
+            if (!summary[key].drivers[driverKey]) {
+                summary[key].drivers[driverKey] = 0;
+            }
+            if (!summary[key].customers[driverKey]) {
+                summary[key].customers[driverKey] = {};
+            }
 
+            // 🚀 기사별 수량 누적 및 고객별 수량 데이터 동시 저장
             summary[key].drivers[driverKey] += qty;
+            summary[key].customers[driverKey][customerName] = (summary[key].customers[driverKey][customerName] || 0) + qty;
             summary[key].total += qty;
           });
         });
@@ -1156,7 +1166,7 @@ export default function DeliveryRoutePage() {
               <p className="font-bold animate-pulse">Loading daily summary...</p>
             </div>
           ) : (
-            <div className="flex-1 overflow-auto rounded-xl border border-slate-200 shadow-sm custom-scrollbar bg-white">
+            <div className="flex-1 overflow-auto rounded-xl border border-slate-200 shadow-sm custom-scrollbar bg-white pb-20">
               <table className="w-full text-sm text-left relative border-collapse">
                 <thead className="sticky top-0 z-30 shadow-md bg-slate-100 backdrop-blur-md">
                   <tr>
@@ -1189,8 +1199,33 @@ export default function DeliveryRoutePage() {
                         <td className="px-5 py-3 font-bold text-slate-800 border-r border-slate-200/60">{item.name}</td>
                         <td className="px-3 py-3 font-bold text-slate-500 text-center border-r border-slate-200/60">{item.unit}</td>
                         {productSummaryData.activeDrivers.map(driver => (
-                          <td key={driver} className={cn("px-3 py-3 text-center border-r border-slate-200/60 font-bold", item.drivers[driver] ? "text-slate-900 bg-emerald-50/30" : "text-slate-300")}>
+                          <td 
+                              key={driver} 
+                              className={cn(
+                                  "relative group px-3 py-3 text-center border-r border-slate-200/60 font-bold transition-all", 
+                                  item.drivers[driver] ? "text-slate-900 bg-emerald-50/30 hover:bg-emerald-200 cursor-pointer" : "text-slate-300"
+                              )}
+                          >
                             {item.drivers[driver] || "-"}
+                            
+                            {/* 🚀 말풍선(Tooltip) 로직 */}
+                            {item.drivers[driver] > 0 && item.customers?.[driver] && (
+                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:flex flex-col w-max max-w-[280px] min-w-[160px] bg-slate-800 text-white text-xs rounded-xl p-3 z-[250] shadow-2xl">
+                                    <div className="font-black border-b border-slate-600 mb-2 pb-1.5 text-slate-300 uppercase tracking-wider text-left flex items-center gap-1.5">
+                                        <User className="w-3.5 h-3.5" /> Customers
+                                    </div>
+                                    <div className="flex flex-col gap-2 max-h-[220px] overflow-y-auto custom-scrollbar pr-1">
+                                        {Object.entries(item.customers[driver]).map(([cName, cQty]) => (
+                                            <div key={cName} className="flex justify-between items-start gap-4 text-left">
+                                                <span className="truncate flex-1 font-medium">{cName}</span>
+                                                <span className="font-mono text-emerald-400 font-bold shrink-0">{String(cQty)}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    {/* 말풍선 꼬리 */}
+                                    <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-3.5 h-3.5 bg-slate-800 rotate-45"></div>
+                                </div>
+                            )}
                           </td>
                         ))}
                         <td className="px-4 py-3 font-black text-indigo-700 text-center bg-indigo-50/50 text-base border-l border-indigo-100">

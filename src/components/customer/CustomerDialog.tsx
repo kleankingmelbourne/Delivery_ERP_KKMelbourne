@@ -278,10 +278,11 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
     setLoading(true);
     
     try {
-      const { id, customer_groups, profiles, created_at, ...cleanData } = formData as any;
+      const { id, customer_groups, profiles, created_at, login_email, password, ...cleanData } = formData as any;
       
       const payload: any = {
         ...cleanData,
+        password: formData.password ? formData.password : (customerData?.password || ""),
         credit_limit: formData.credit_limit ? Number(formData.credit_limit) : null,
         group_id: formData.group_id ? Number(formData.group_id) : null,
         in_charge_sale: formData.in_charge_sale || null,

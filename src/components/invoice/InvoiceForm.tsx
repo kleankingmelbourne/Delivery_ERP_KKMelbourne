@@ -423,7 +423,10 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     initData();
   }, [invoiceId, isEditMode, router, today, productUnits]);
 
-  // 2. Customer Change Effect 
+  // 🌟 최적화 추가: 고객의 결제 조건(Due Date Term)을 저장할 상태값 하나 추가
+  const [customerDueTerm, setCustomerDueTerm] = useState<string | null>(null);
+
+  // 2-1. 고객이 변경될 때만 딱 1번 실행되는 진짜 통신 (최적화 완료)
   useEffect(() => {
     if (!selectedCustomerId) {
         setAllowedProducts([]); 
@@ -431,6 +434,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
         setAvailableCredit(0); 
         setCurrentDriverId(null); 
         setCustomerStats({ totalOverdue: 0, oldestInvoiceDate: null }); 
+        setCustomerDueTerm(null); // 추가
         if (!isEditMode) setAllProducts([]); 
         return;
     }
@@ -445,7 +449,8 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       const customerData = customerRes.data;
       if (customerData) {
           setStaffNote(customerData.note || ""); 
-          if (!isEditMode) calculateDueDate(invoiceDate, customerData.due_date);
+          setCustomerDueTerm(customerData.due_date); // 결제 조건만 저장해둠
+          
           if (!currentDriverId) setCurrentDriverId(customerData.in_charge_delivery || null); 
 
           const apData = customerData.customer_products?.filter((item: any) => item.products && item.products.is_active === true) || []; 
@@ -483,8 +488,17 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     };
     
     loadCustomerDetail();
-  }, [selectedCustomerId, isEditMode, invoiceDate, currentDriverId, supabase]); 
+    // 🚀 의존성 배열에서 invoiceDate, currentDriverId 제거! 오직 고객 변경시에만 통신!
+  }, [selectedCustomerId, isEditMode, supabase]); 
 
+
+  // 2-2. 날짜가 바뀌거나 고객이 바뀌면 화면의 텍스트(Due Date)만 재계산하는 로직 (DB 통신 없음!)
+  useEffect(() => {
+      if (!isEditMode && selectedCustomerId) {
+          calculateDueDate(invoiceDate, customerDueTerm);
+      }
+  }, [invoiceDate, customerDueTerm, isEditMode, selectedCustomerId]);
+  
   const handleRemoveAllowedProduct = async (productId: string) => {
       const allowedItem = allowedProducts.find(ap => ap.product_id === productId);
       if (!allowedItem || !allowedItem.id) return;
@@ -765,7 +779,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
             updateQtyMap.set(item.productId, { ctn: 0, pack: 0 });
         }
         const req = updateQtyMap.get(item.productId)!;
-        const qty = Number(item.quantity) || 0;
+        const qty = Math.abs(Number(item.quantity) || 0);
         
         if (isCtnUnit(item.unit)) req.ctn += qty;
         else req.pack += qty;

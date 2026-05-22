@@ -52,6 +52,7 @@ export default function DashboardPage() {
   const [stats, setStats] = useState({
     todayRevenue: 0,
     overdueAmount: 0, 
+    overdueCount: 0,
     totalOutstanding: 0, 
     unpaidCount: 0,
     deliveryTotal: 0,
@@ -119,6 +120,7 @@ export default function DashboardPage() {
       let totalOut = 0;
       let overdueOut = 0;
       let unpaidCnt = 0;
+      let overdueCnt = 0;
 
       if (unpaidRes.data) {
           unpaidRes.data.forEach(inv => {
@@ -133,6 +135,7 @@ export default function DashboardPage() {
               
               if (inv.due_date && inv.due_date < today) {
                   overdueOut += remaining;
+                  overdueCnt += 1;
               }
           });
       }
@@ -159,6 +162,7 @@ export default function DashboardPage() {
       setStats({
         todayRevenue: todayRev,
         overdueAmount: overdueOut,
+        overdueCount: overdueCnt,
         totalOutstanding: totalOut,
         unpaidCount: unpaidCnt,
         deliveryTotal: delTotal,
@@ -216,7 +220,9 @@ export default function DashboardPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-red-700">${stats.overdueAmount.toLocaleString()}</div>
-            <p className="text-xs text-red-600/80 mt-1 font-medium">Past Due Date</p>
+            <p className="text-xs text-red-600/80 mt-1 font-medium">
+              <span className="font-bold text-red-700">{stats.overdueCount}</span> invoices past Due
+            </p>
           </CardContent>
         </Card>
 

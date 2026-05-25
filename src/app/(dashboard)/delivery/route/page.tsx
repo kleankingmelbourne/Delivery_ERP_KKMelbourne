@@ -978,7 +978,8 @@ export default function DeliveryRoutePage() {
                       Keys Required ({keyDialogData?.invoices.length || 0})
                   </DialogTitle>
                   <DialogDescription className="text-center text-amber-700/80 font-medium text-xs mt-1">
-                      {keyDialogData?.driverName} Route
+                      //{keyDialogData?.driverName} Route
+                      Run {currentRouteInfo?.run || 1} Customers
                   </DialogDescription>
               </DialogHeader>
               <div className="p-4 overflow-y-auto max-h-[50vh] space-y-2 bg-slate-50/50">
@@ -1198,6 +1199,7 @@ export default function DeliveryRoutePage() {
                       <tr key={idx} className={cn("hover:bg-blue-50/50 transition-colors", idx % 2 === 0 ? "bg-white" : "bg-slate-50")}>
                         <td className="px-5 py-3 font-bold text-slate-800 border-r border-slate-200/60">{item.name}</td>
                         <td className="px-3 py-3 font-bold text-slate-500 text-center border-r border-slate-200/60">{item.unit}</td>
+                        {/* 🚀 각 드라이버별 수량(말풍선 포함) */}
                         {productSummaryData.activeDrivers.map(driver => (
                           <td 
                               key={driver} 
@@ -1211,9 +1213,11 @@ export default function DeliveryRoutePage() {
                             {/* 🚀 말풍선(Tooltip) 로직 */}
                             {item.drivers[driver] > 0 && item.customers?.[driver] && (
                                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:flex flex-col w-max max-w-[280px] min-w-[160px] bg-slate-800 text-white text-xs rounded-xl p-3 z-[250] shadow-2xl">
+                                    {/* 구지 Customers 라는 헤더는 필요 없는것 같아....
                                     <div className="font-black border-b border-slate-600 mb-2 pb-1.5 text-slate-300 uppercase tracking-wider text-left flex items-center gap-1.5">
                                         <User className="w-3.5 h-3.5" /> Customers
-                                    </div>
+                                    </div> 
+                                    */}
                                     <div className="flex flex-col gap-2 max-h-[220px] overflow-y-auto custom-scrollbar pr-1">
                                         {Object.entries(item.customers[driver]).map(([cName, cQty]) => (
                                             <div key={cName} className="flex justify-between items-start gap-4 text-left">
@@ -1242,7 +1246,17 @@ export default function DeliveryRoutePage() {
       </DialogContent>
     </Dialog>
 
-    <RouteMapDialog isOpen={isMapOpen} onClose={() => setIsMapOpen(false)} driverName={currentRouteInfo?.driverName || "Driver"} driverId={currentRouteInfo?.driverId} invoices={invoices} startLocation={resolveLocation(startDestType, customStart)} finalLocation={resolveLocation(finalDestType, customFinal)} isLoaded={isLoaded} isRouteChanged={isRouteChanged} />
+      <RouteMapDialog 
+        isOpen={isMapOpen} 
+        onClose={() => setIsMapOpen(false)} 
+        driverName={currentRouteInfo?.driverName || "Driver"} 
+        driverId={currentRouteInfo?.driverId} 
+        invoices={invoices} 
+        startLocation={resolveLocation(startDestType, customStart)} 
+        finalLocation={resolveLocation(finalDestType, customFinal)} 
+        isLoaded={isLoaded} 
+        isRouteChanged={isRouteChanged} 
+      />
     </>
   );
 }

@@ -887,7 +887,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
               };
           });
           parallelTasks.push(supabase.from("invoice_items").insert(itemsData));
-          //parallelTasks.push(updateInventory(validItems, true));
           await updateInventory(validItems, true);  //DDANG 수정
         }
 

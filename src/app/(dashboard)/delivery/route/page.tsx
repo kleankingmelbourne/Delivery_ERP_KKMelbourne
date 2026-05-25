@@ -1211,7 +1211,7 @@ export default function DeliveryRoutePage() {
                             
                             {/* 🚀 말풍선(Tooltip) 로직 */}
                             {item.drivers[driver] > 0 && item.customers?.[driver] && (
-                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:flex flex-col w-max max-w-[280px] min-w-[160px] bg-slate-800 text-white text-xs rounded-xl p-3 z-[250] shadow-2xl">
+                                <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 hidden group-hover:flex flex-col w-max max-w-[280px] min-w-[160px] bg-slate-800 text-white text-xs rounded-xl p-3 z-[250] shadow-2xl">
                                     {/* 구지 Customers 라는 헤더는 필요 없는것 같아....
                                     <div className="font-black border-b border-slate-600 mb-2 pb-1.5 text-slate-300 uppercase tracking-wider text-left flex items-center gap-1.5">
                                         <User className="w-3.5 h-3.5" /> Customers
@@ -1226,7 +1226,7 @@ export default function DeliveryRoutePage() {
                                         ))}
                                     </div>
                                     {/* 말풍선 꼬리 */}
-                                    <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-3.5 h-3.5 bg-slate-800 rotate-45"></div>
+                                    <div className="absolute -top-1.5 left-1/2 -translate-x-1/2 w-3.5 h-3.5 bg-slate-800 rotate-45"></div>
                                 </div>
                             )}
                           </td>

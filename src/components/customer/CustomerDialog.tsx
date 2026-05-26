@@ -72,7 +72,7 @@ export default function CustomerDialog({ isOpen, onClose, onSuccess, customerDat
       try {
         const [groupRes, staffRes] = await Promise.all([
           supabase.from('customer_groups').select('id, name').order('name'),
-          supabase.from('profiles').select('id, display_name').eq('status', 'active').order('display_name')
+          supabase.from('profiles').select('id, display_name').eq('status', 'active').neq('user_level', 'CUSTOMER').order('display_name')
         ]);
         
         if (isMounted) {

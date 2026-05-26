@@ -2,13 +2,12 @@
 
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { createClient } from "@/utils/supabase/client";
-// 🚀 [수정] 중복 에러를 발생시키던 Script 임포트를 제거했습니다.
 import { 
   Calendar as CalendarIcon, Truck, Map as MapIcon, Navigation, 
   MapPin, CheckCircle2, User, Loader2,
   Box, X, Circle, FileText, Sparkles, Home, 
   Save, RotateCcw, GripVertical, Printer, ChevronDown,
-  Key, Package, Search // 🚀 [추가] PRODUCTS 모달용 Search, Package 아이콘 추가
+  Key, Package, Search
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -165,7 +164,6 @@ export default function DeliveryRoutePage() {
   const [isMapOpen, setIsMapOpen] = useState(false);
   const GOOGLE_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
 
-  // 🚀 [수정] 구글맵스 중복 방지를 위해 useJsApiLoader만 단독 사용
   const [libraries] = useState<("places" | "geometry" | "routes")[]>(["places", "geometry", "routes"]);
   const { isLoaded } = useJsApiLoader({
       id: 'google-map-script',
@@ -185,7 +183,7 @@ export default function DeliveryRoutePage() {
   const [isKeyDialogOpen, setIsKeyDialogOpen] = useState(false);
   const [keyDialogData, setKeyDialogData] = useState<{driverName: string, invoices: KeyInvoiceInfo[]} | null>(null);
 
-  // 🚀 PRODUCTS 모달 및 검색 관련 상태
+  // PRODUCTS 모달 및 검색 관련 상태
   const [showProductSummary, setShowProductSummary] = useState(false);
   const [productSummaryData, setProductSummaryData] = useState<{ summaryList: any[], activeDrivers: string[] }>({ summaryList: [], activeDrivers: [] });
   const [productSummaryLoading, setProductSummaryLoading] = useState(false);
@@ -237,10 +235,16 @@ export default function DeliveryRoutePage() {
 
         if (error) throw error;
 
+        // ✅ 1. 가져온 데이터에서 delivery_run이 0이거나 "0"인 것은 제외
+        const validInvoices = data?.filter((item: any) => 
+            item.delivery_run !== 0 && item.delivery_run !== "0"
+        ) || [];
+
         const groups: Record<string, DriverRouteInfo> = {};
         const locMap: Record<string, LocationData> = {}; 
 
-        data?.forEach((item: any) => {
+        // ✅ 2. 걸러진 validInvoices를 순회
+        validInvoices.forEach((item: any) => {
             const dId = item.driver_id;
             const profile = Array.isArray(item.profiles) ? item.profiles[0] : item.profiles;
             const dName = profile?.display_name || "Unknown";
@@ -255,7 +259,7 @@ export default function DeliveryRoutePage() {
                 };
             }
 
-            const run = (item.delivery_run === 0 || item.delivery_run === null) ? 1 : item.delivery_run;
+            const run = item.delivery_run === null ? 1 : item.delivery_run;
             const key = `${dId}_${run}`;
             
             if (!groups[key]) groups[key] = { driverId: dId, driverName: dName, run: run, count: 0, completedCount: 0, newCount: 0, keyInvoices: [] };
@@ -308,7 +312,7 @@ export default function DeliveryRoutePage() {
       const { data, error } = await supabase
         .from("invoices")
         .select(`
-            id, invoice_to, invoice_date, delivery_order, delivery_run, driver_id, is_completed, memo,
+            id, invoice_to, invoice_date, customer_id, delivery_order, delivery_run, driver_id, is_completed, memo,
             customers ( name, suburb, address, lat, lng, delivery_address, delivery_lat, delivery_lng, use_key )
         `)
         .eq("invoice_date", selectedDate)
@@ -319,7 +323,9 @@ export default function DeliveryRoutePage() {
 
       if (data) {
           const filtered = (data as any[]).filter(item => {
-              const itemRun = (item.delivery_run === 0 || item.delivery_run === null) ? 1 : item.delivery_run;
+              // ✅ 메인 화면 리스트에서도 0 제외
+              if (item.delivery_run === 0 || item.delivery_run === "0") return false;
+              const itemRun = item.delivery_run === null ? 1 : item.delivery_run;
               return itemRun === run;
           });
           setInvoices(filtered);
@@ -328,7 +334,7 @@ export default function DeliveryRoutePage() {
       setLoading(false);
   };
 
-  // 🚀 PRODUCTS 모달용 데이터 Fetching 로직 (1st Run / 2nd Run 완벽 분리)
+  // PRODUCTS 모달용 데이터 Fetching 로직
   useEffect(() => {
     if (!showProductSummary) return;
 
@@ -348,14 +354,16 @@ export default function DeliveryRoutePage() {
 
         if (error) throw error;
 
+        // ✅ PRODUCTS 모달에서도 0 제외
+        const validData = data?.filter((inv: any) => inv.delivery_run !== 0 && inv.delivery_run !== "0") || [];
+
         const summary: Record<string, any> = {};
         const driverSet = new Set<string>();
 
-        data?.forEach((inv: any) => {
+        validData.forEach((inv: any) => {
           const profile = Array.isArray(inv.profiles) ? inv.profiles[0] : inv.profiles;
           
-          const rawRun = inv.delivery_run ?? 0;
-          const run = rawRun === 0 ? 1 : rawRun;
+          const run = inv.delivery_run === null ? 1 : inv.delivery_run;
           
           const driverName = profile?.display_name || "Unassigned";
           const driverKey = driverName === "Unassigned" ? "Unassigned" : `${driverName}_${run}`;
@@ -388,7 +396,6 @@ export default function DeliveryRoutePage() {
                 summary[key].customers[driverKey] = {};
             }
 
-            // 🚀 기사별 수량 누적 및 고객별 수량 데이터 동시 저장
             summary[key].drivers[driverKey] += qty;
             summary[key].customers[driverKey][customerName] = (summary[key].customers[driverKey][customerName] || 0) + qty;
             summary[key].total += qty;
@@ -419,7 +426,7 @@ export default function DeliveryRoutePage() {
     fetchProductSummary();
   }, [showProductSummary, selectedDate]);
 
-  // 🚀 [검색 기능] 필터링된 상품 목록 (디바운스 값 사용)
+  // [검색 기능] 필터링된 상품 목록 (디바운스 값 사용)
   const filteredProductSummary = useMemo(() => {
     if (!debouncedSearchTerm.trim()) return productSummaryData.summaryList;
     const lowerTerm = debouncedSearchTerm.toLowerCase();
@@ -497,7 +504,9 @@ export default function DeliveryRoutePage() {
 
         if (!error && data) {
             const filtered = data.filter(item => {
-                const itemRun = (item.delivery_run === 0 || item.delivery_run === null) ? 1 : item.delivery_run;
+                // ✅ 프린트 시에도 0 제외
+                if (item.delivery_run === 0 || item.delivery_run === "0") return false;
+                const itemRun = item.delivery_run === null ? 1 : item.delivery_run;
                 return itemRun === run;
             });
             const invoiceIds = filtered.map(inv => inv.id);
@@ -743,7 +752,7 @@ export default function DeliveryRoutePage() {
             />
           </div>
 
-          {/* 🚀 PRODUCTS 버튼 */}
+          {/* PRODUCTS 버튼 */}
           <Button 
             onClick={() => setShowProductSummary(true)} 
             variant="outline" 
@@ -1126,7 +1135,7 @@ export default function DeliveryRoutePage() {
         </DialogContent>
     </Dialog>
 
-    {/* 🚀 전체 화면 PRODUCTS 팝업 (Dialog) - 0.5초 디바운스 검색 & 테이블 헤더 고정 */}
+    {/* 전체 화면 PRODUCTS 팝업 (Dialog) - 0.5초 디바운스 검색 & 테이블 헤더 고정 */}
     <Dialog open={showProductSummary} onOpenChange={(open) => {
         setShowProductSummary(open);
         if (!open) setProductSearchTerm(""); 
@@ -1146,7 +1155,7 @@ export default function DeliveryRoutePage() {
           </Button>
         </DialogHeader>
 
-        {/* 🚀 검색창 (Search Bar) - 상단 고정 */}
+        {/* 검색창 (Search Bar) - 상단 고정 */}
         <div className="px-4 py-3 sm:px-6 bg-white border-b border-slate-200 shrink-0 shadow-sm z-20 relative">
             <div className="relative max-w-md">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
@@ -1198,7 +1207,7 @@ export default function DeliveryRoutePage() {
                       <tr key={idx} className={cn("hover:bg-blue-50/50 transition-colors", idx % 2 === 0 ? "bg-white" : "bg-slate-50")}>
                         <td className="px-5 py-3 font-bold text-slate-800 border-r border-slate-200/60">{item.name}</td>
                         <td className="px-3 py-3 font-bold text-slate-500 text-center border-r border-slate-200/60">{item.unit}</td>
-                        {/* 🚀 각 드라이버별 수량(말풍선 포함) */}
+                        {/* 각 드라이버별 수량(말풍선 포함) */}
                         {productSummaryData.activeDrivers.map(driver => (
                           <td 
                               key={driver} 
@@ -1209,14 +1218,9 @@ export default function DeliveryRoutePage() {
                           >
                             {item.drivers[driver] || "-"}
                             
-                            {/* 🚀 말풍선(Tooltip) 로직 */}
+                            {/* 말풍선(Tooltip) 로직 */}
                             {item.drivers[driver] > 0 && item.customers?.[driver] && (
                                 <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 hidden group-hover:flex flex-col w-max max-w-[280px] min-w-[160px] bg-slate-800 text-white text-xs rounded-xl p-3 z-[250] shadow-2xl">
-                                    {/* 구지 Customers 라는 헤더는 필요 없는것 같아....
-                                    <div className="font-black border-b border-slate-600 mb-2 pb-1.5 text-slate-300 uppercase tracking-wider text-left flex items-center gap-1.5">
-                                        <User className="w-3.5 h-3.5" /> Customers
-                                    </div> 
-                                    */}
                                     <div className="flex flex-col gap-2 max-h-[220px] overflow-y-auto custom-scrollbar pr-1">
                                         {Object.entries(item.customers[driver]).map(([cName, cQty]) => (
                                             <div key={cName} className="flex justify-between items-start gap-4 text-left">

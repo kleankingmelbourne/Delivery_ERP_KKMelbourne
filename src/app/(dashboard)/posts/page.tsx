@@ -143,7 +143,7 @@ export default function AdminPostsPage() {
     const filePath = `uploads/${fileName}`;
 
     // 💡 스토리지 버킷 이름 확인! (새로 만드신 이름으로 수정하셨다면 여기서도 수정해주세요)
-    const { error: uploadError } = await supabase.storage.from('post_image').upload(filePath, file);
+    const { error: uploadError } = await supabase.storage.from('post-image').upload(filePath, file);
 
     if (uploadError) {
       toast({ title: "Upload Failed", description: uploadError.message, variant: "destructive" });
@@ -151,7 +151,7 @@ export default function AdminPostsPage() {
       return;
     }
 
-    const { data } = supabase.storage.from('post_image').getPublicUrl(filePath);
+    const { data } = supabase.storage.from('post-image').getPublicUrl(filePath);
     
     // 🚀 마크다운 대신 실제 HTML <img> 태그를 삽입합니다!
     setContent((prev) => prev + `<p><img src="${data.publicUrl}" alt="uploaded image" style="max-width: 100%; border-radius: 8px;" /></p>`);

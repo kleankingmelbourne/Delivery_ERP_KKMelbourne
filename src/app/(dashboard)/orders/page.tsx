@@ -228,90 +228,127 @@ export default function AdminOrderTable() {
 
   const handleBulkConvertToInvoice = async () => {
     if (selectedIds.size === 0) return;
-    if (!confirm(`Convert ${selectedIds.size} selected pending orders to invoices?`)) return;
+    if (!confirm(`선택한 ${selectedIds.size}개의 주문을 인보이스로 변환하시겠습니까?\n(동일한 고객의 주문은 하나의 인보이스로 자동 병합됩니다)`)) return;
     setLoading(true);
 
     try {
       const idsArray = Array.from(selectedIds);
       const targetOrders = orders.filter(o => idsArray.includes(o.id));
 
+      // 1. 선택된 모든 주문의 아이템 가져오기
       const { data: allItems } = await supabase.from("order_items").select("*").in("order_id", idsArray);
-      if (!allItems || allItems.length === 0) throw new Error("No items found for selected orders.");
+      if (!allItems || allItems.length === 0) throw new Error("선택한 주문들에 상품 내역이 없습니다.");
 
+      // 2. 주문들을 customer_id 기준으로 그룹화하기
+      const groupedOrders = targetOrders.reduce((acc, order) => {
+        if (!acc[order.customer_id]) {
+          acc[order.customer_id] = [];
+        }
+        acc[order.customer_id].push(order);
+        return acc;
+      }, {} as Record<string, Order[]>);
+
+      // 3. 새 인보이스 ID 시작 번호 채번 (가장 최근 번호 가져오기)
       const { data: lastInv } = await supabase.from("invoices").select("id").order("id", { ascending: false }).limit(1);
-      let startNum = 1001;
+      let currentInvNum = 1001;
       if (lastInv && lastInv.length > 0) {
           const lastNum = parseInt(lastInv[0].id.replace(/[^0-9]/g, ""));
-          if (!isNaN(lastNum)) startNum = lastNum + 1;
+          if (!isNaN(lastNum)) currentInvNum = lastNum + 1;
       }
 
       const newInvoices: any[] = [];
       const newInvoiceItems: any[] = [];
       const orderUpdates: any[] = [];
-
       const currentAdminName = user?.user_metadata?.full_name || user?.email || "Admin";
 
-      targetOrders.forEach((order, index) => {
-          const orderItems = allItems.filter((item: any) => item.order_id === order.id);
-          if(orderItems.length === 0) return; 
+      // 4. 고객 그룹별로 순회하며 인보이스 생성 준비
+      for (const customerId in groupedOrders) {
+        const customerOrders = groupedOrders[customerId];
+        const newInvId = `IV-${currentInvNum}`; // 현재 채번된 ID 할당
+        currentInvNum++; // 다음 고객을 위해 번호 1 증가
 
-          const newInvId = `IV-${startNum + index}`;
-          const orderSubtotal = order.total_amount;
-          const gstTotal = roundAmount(orderSubtotal * 0.1);
-          const finalInvoiceTotal = roundAmount(orderSubtotal + gstTotal);
-          const dueDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+        let combinedSubtotal = 0;
+        let combinedMemos: string[] = [];
 
-          newInvoices.push({
-              id: newInvId,
-              customer_id: order.customer_id,
-              invoice_to: order.customers?.name || 'Unknown',
-              invoice_date: order.requested_date,
-              due_date: dueDate,
-              total_amount: finalInvoiceTotal,
-              paid_amount: 0,
-              subtotal: orderSubtotal,
-              gst_total: gstTotal,
-              status: 'Unpaid',
-              created_who: 'customer',
-              updated_who: currentAdminName,
-              driver_id: order.customers?.in_charge_delivery || null,
-              memo: order.order_memo || "",
-              is_pickup: order.is_pickup || false
-          });
+        // 해당 고객의 주문들 금액 합산 및 메모 병합
+        customerOrders.forEach(order => {
+            combinedSubtotal += order.total_amount;
+            if (order.order_memo) {
+              combinedMemos.push(`[Order #${order.id}]: ${order.order_memo}`);
+            }
+        });
 
-          orderItems.forEach((item: any) => {
-              newInvoiceItems.push({
-                  invoice_id: newInvId,
-                  product_id: item.product_id,
-                  description: item.description,
-                  quantity: item.quantity,
-                  unit: item.unit,
-                  unit_price: item.unit_price,
-                  base_price: item.base_price,
-                  discount: item.discount,
-                  amount: roundAmount(item.quantity * item.unit_price)
-              });
-          });
+        const gstTotal = roundAmount(combinedSubtotal * 0.1);
+        const finalInvoiceTotal = roundAmount(combinedSubtotal + gstTotal);
+        const mergedMemo = combinedMemos.join("\n");
 
-          orderUpdates.push(
-              supabase.from("orders").update({ status: 'invoiced', invoice_id: newInvId }).eq('id', order.id)
-          );
-      });
+        const firstOrder = customerOrders[0];
+        const dueDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
-      const { error: invError } = await supabase.from("invoices").insert(newInvoices);
-      if (invError) throw invError;
+        // 단일 인보이스 객체 생성 (이 고객을 위한)
+        newInvoices.push({
+            id: newInvId,
+            customer_id: customerId,
+            invoice_to: firstOrder.customers?.name || 'Unknown',
+            invoice_date: new Date().toISOString().split('T')[0],
+            due_date: dueDate,
+            total_amount: finalInvoiceTotal,
+            paid_amount: 0,
+            subtotal: combinedSubtotal,
+            gst_total: gstTotal,
+            status: 'Unpaid',
+            created_who: 'customer',
+            updated_who: currentAdminName,
+            driver_id: firstOrder.customers?.in_charge_delivery || null,
+            memo: mergedMemo,
+            is_pickup: customerOrders.some(o => o.is_pickup) // 하나라도 픽업이면 true
+        });
 
-      const { error: itemError } = await supabase.from("invoice_items").insert(newInvoiceItems);
-      if (itemError) throw itemError;
+        // 5. 이 고객의 주문들에 속한 아이템들만 필터링하여 새 인보이스에 연결
+        const customerOrderIds = customerOrders.map(o => o.id);
+        const groupItems = allItems.filter((item: any) => customerOrderIds.includes(item.order_id));
+
+        groupItems.forEach((item: any) => {
+            newInvoiceItems.push({
+                invoice_id: newInvId,
+                product_id: item.product_id,
+                description: item.description,
+                quantity: item.quantity,
+                unit: item.unit,
+                unit_price: item.unit_price,
+                base_price: item.base_price,
+                discount: item.discount,
+                amount: roundAmount(item.quantity * item.unit_price)
+            });
+        });
+
+        // 6. 이 고객의 원본 주문들 상태 업데이트 준비
+        customerOrders.forEach(order => {
+            orderUpdates.push(
+                supabase.from("orders").update({ status: 'invoiced', invoice_id: newInvId }).eq('id', order.id)
+            );
+        });
+      }
+
+      // 7. Supabase DB 일괄 처리 (Insert & Update)
+      if (newInvoices.length > 0) {
+        const { error: invError } = await supabase.from("invoices").insert(newInvoices);
+        if (invError) throw invError;
+      }
+
+      if (newInvoiceItems.length > 0) {
+        const { error: itemError } = await supabase.from("invoice_items").insert(newInvoiceItems);
+        if (itemError) throw itemError;
+      }
 
       await Promise.all(orderUpdates);
 
-      alert(`✅ Successfully converted ${newInvoices.length} orders to invoices.`);
+      alert(`✅ 성공적으로 총 ${newInvoices.length}개의 인보이스가 생성되었습니다.`);
       setSelectedIds(new Set());
       fetchOrders();
 
     } catch (error: any) {
-      alert(`Failed to convert: ${error.message}`);
+      alert(`변환 실패: ${error.message}`);
     } finally {
       setLoading(false);
     }

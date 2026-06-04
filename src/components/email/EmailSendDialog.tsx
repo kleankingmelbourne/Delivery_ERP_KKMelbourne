@@ -54,8 +54,8 @@ export default function EmailSendDialog({ open, onOpenChange, data }: EmailSendD
       if (data.type === 'purchase-order') typeLabel = "Purchase Order";
       else typeLabel = data.type.charAt(0).toUpperCase() + data.type.slice(1);
 
-      setSubject(`${typeLabel} #${data.docNumber} from Klean King`);
-      setMessage(`Dear ${data.customerName},\n\nPlease find attached the ${typeLabel} #${data.docNumber}.\n\nBest regards,\nKlean King`);
+      setSubject(`${typeLabel} #${data.docNumber} from Klean King Melbourne Pty Ltd`);
+      setMessage(`Dear ${data.customerName},\n\nPlease find attached the ${typeLabel} #${data.docNumber}.\n\nBest regards,\nKlean King Melbourne Pty Ltd`);
       
       generatePdf(data);
     }

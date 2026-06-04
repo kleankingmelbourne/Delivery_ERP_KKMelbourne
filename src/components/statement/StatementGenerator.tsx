@@ -73,17 +73,64 @@ export default function StatementGenerator({
     setGenerated(false);
 
     try {
-      const { data, error } = await supabase
-        .from("invoices")
-        .select("*")
-        .eq("customer_id", customerId)
-        .gte("invoice_date", startDate)
-        .lte("invoice_date", endDate)
-        .neq("status", "Paid")
-        .order("invoice_date", { ascending: true });
+      // 1. 인보이스와 남은 크레딧(Payment) 데이터를 동시에 가져옵니다.
+      const [invRes, payRes] = await Promise.all([
+        supabase
+          .from("invoices")
+          .select("*")
+          .eq("customer_id", customerId)
+          .gte("invoice_date", startDate)
+          .lte("invoice_date", endDate)
+          .order("invoice_date", { ascending: true }),
+        supabase
+          .from("payments")
+          .select("id, payment_date, unallocated_amount")
+          .eq("customer_id", customerId)
+          .gt("unallocated_amount", 0) // 잔액이 남아있는 것만
+      ]);
 
-      if (error) throw error;
-      setInvoices(data || []);
+      if (invRes.error) throw invRes.error;
+      if (payRes.error) throw payRes.error;
+
+      // 2. 인보이스 필터링: Paid, Completed, Cancel 제외 & 잔액 0원 제외
+      const openInvoices = invRes.data?.filter(inv => {
+         const s = (inv.status || '').toLowerCase();
+         if (s === 'paid' || s === 'completed' || s.includes('cancel')) return false;
+         if (inv.total_amount > 0 && Math.abs(inv.total_amount - (inv.paid_amount || 0)) < 0.01) return false;
+         
+         // 화면에 이미 사용된 크레딧 메모도 표시하지 않음
+         const isCredit = (typeof inv.id === 'string' && inv.id.startsWith('CR-')) || inv.total_amount < 0 || s === 'credit';
+         if (isCredit) return false;
+
+         return true;
+      }).map(inv => ({
+          id: inv.id,
+          date: inv.invoice_date,
+          type: 'Invoice',
+          status: inv.status,
+          total: inv.total_amount,
+          balance: inv.total_amount - (inv.paid_amount || 0)
+      })) || [];
+
+      // 3. 남은 크레딧을 목록 형식에 맞게 변환
+      const openCredits = payRes.data?.map(pay => {
+          const isCrMemo = typeof pay.id === 'string' && pay.id.startsWith('CR-');
+          return {
+              id: pay.id,
+              date: pay.payment_date || endDate,
+              type: isCrMemo ? 'Credit Memo' : 'Payment',
+              status: 'Available',
+              total: 0, 
+              balance: -(pay.unallocated_amount || 0) // 잔액 깎아주는 역할이므로 마이너스 표기
+          };
+      }) || [];
+
+      // 4. 합친 후 날짜순(오름차순) 정렬
+      const combinedList = [...openInvoices, ...openCredits].sort(
+          (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+      );
+
+      setInvoices(combinedList);
       setGenerated(true);
 
       if (!isAuto) {
@@ -220,22 +267,34 @@ export default function StatementGenerator({
                   <th className="px-4 py-3 text-right">Balance</th>
                 </tr>
               </thead>
-              <tbody className="divide-y">
-                {invoices.length === 0 ? (
-                    <tr><td colSpan={5} className="p-6 text-center text-slate-400">No invoices found for this period.</td></tr>
-                ) : (
-                    invoices.map(inv => (
-                        <tr key={inv.id}>
-                            <td className="px-4 py-3">{inv.invoice_date}</td>
-                            <td className="px-4 py-3">{inv.id.slice(0,13).toUpperCase()}</td>
-                            <td className="px-4 py-3">{inv.status}</td>
-                            <td className="px-4 py-3 text-right">${inv.total_amount.toFixed(2)}</td>
-                            <td className="px-4 py-3 text-right font-bold">${(inv.total_amount - inv.paid_amount).toFixed(2)}</td>
-                        </tr>
-                    ))
-                )}
-              </tbody>
-            </table>
+                <tbody className="divide-y">
+                  {invoices.length === 0 ? (
+                      <tr><td colSpan={5} className="p-6 text-center text-slate-400">No active invoices or credits found for this period.</td></tr>
+                  ) : (
+                      invoices.map(inv => (
+                          <tr key={inv.id}>
+                              <td className="px-4 py-3">{inv.date}</td>
+                              <td className="px-4 py-3">{inv.id.slice(0,13).toUpperCase()}</td>
+                              <td className="px-4 py-3">
+                                  {inv.type === 'Payment' || inv.type === 'Credit Memo' ? (
+                                      <span className="text-emerald-600 font-bold bg-emerald-50 px-2 py-0.5 rounded text-[10px]">{inv.type}</span>
+                                  ) : (
+                                      inv.status
+                                  )}
+                              </td>
+                              <td className="px-4 py-3 text-right">
+                                  {inv.total > 0 ? `$${inv.total.toFixed(2)}` : '-'}
+                              </td>
+                              <td className={`px-4 py-3 text-right font-bold ${inv.balance < 0 ? 'text-emerald-600' : ''}`}>
+                                  {inv.balance < 0 
+                                      ? `-$${Math.abs(inv.balance).toFixed(2)}` 
+                                      : `$${inv.balance.toFixed(2)}`}
+                              </td>
+                          </tr>
+                      ))
+                  )}
+                </tbody>
+              </table>
           </div>
         </div>
       )}

@@ -260,7 +260,7 @@ export const downloadPickingSummary = async (ids: string[]) => {
 export const downloadSummaryTxt = downloadPickingSummary;
 
 // ==================================================================
-// 3. STATEMENT SECTION (🔥 병렬화 핵심 최적화)
+// 3. STATEMENT SECTION (🔥 발생 일자 기준 Ageing + 미사용 크레딧만 표시)
 // ==================================================================
 
 export const fetchAndGenerateStatementBlob = async (customerId: string, startDate: string, endDate: string, customerName: string) => {
@@ -269,60 +269,74 @@ export const fetchAndGenerateStatementBlob = async (customerId: string, startDat
   const [
     { data: customer },
     { data: invoices },
-    { data: payments },
-    { data: allOpenInvoices },
-    { data: prevInv },
-    { data: prevPay },
     { data: settingsList },
     { data: creditData }
   ] = await Promise.all([
     supabase.from("customers").select("*").eq("id", customerId).maybeSingle(),
-    supabase.from("invoices").select("*").eq("customer_id", customerId).gte("invoice_date", startDate).lte("invoice_date", endDate),
-    supabase.from("payments").select("*").eq("customer_id", customerId).gte("payment_date", startDate).lte("payment_date", endDate),
-    supabase.from("invoices").select("invoice_date, total_amount, paid_amount, id").eq("customer_id", customerId).neq("status", "Paid"),
-    supabase.from("invoices").select("total_amount").eq("customer_id", customerId).lt("invoice_date", startDate),
-    supabase.from("payments").select("amount").eq("customer_id", customerId).lt("payment_date", startDate),
+    supabase.from("invoices").select("*").eq("customer_id", customerId).lte("invoice_date", endDate),
     supabase.from('company_settings').select('*').limit(1),
-    supabase.from('payments').select('unallocated_amount').eq('customer_id', customerId).gt('unallocated_amount', 0)
+    // 🚀 [수정됨] id를 추가로 가져와서 어떤 크레딧인지 식별합니다.
+    supabase.from('payments').select('id, unallocated_amount, payment_date').eq('customer_id', customerId).gt('unallocated_amount', 0)
   ]);
 
   const transactions: StatementTransaction[] = [];
   
-  invoices?.forEach(inv => {
-    const isCredit = (typeof inv.id === 'string' && inv.id.startsWith('CR-')) || inv.total_amount < 0;
+  const openInvoices = invoices?.filter(inv => {
+     const s = (inv.status || '').toLowerCase();
+     if (s === 'paid' || s === 'completed' || s.includes('cancel')) return false;
+     
+     if (inv.total_amount > 0 && Math.abs(inv.total_amount - (inv.paid_amount || 0)) < 0.01) return false;
+     return true;
+  }) || [];
+
+  // 1. 미납 인보이스만 목록에 추가
+  openInvoices.forEach(inv => {
+    const isCredit = 
+        (typeof inv.id === 'string' && inv.id.startsWith('CR-')) || 
+        inv.total_amount < 0 || 
+        (inv.status || '').toLowerCase() === 'credit';
+    
+    // 🚀 크레딧은 여기서 무조건 제외합니다. (사용 완료된 크레딧을 원천 차단)
+    if (isCredit) return; 
     
     transactions.push({ 
         id: inv.id, 
         date: inv.invoice_date, 
-        type: isCredit ? 'Credit' : 'Invoice', 
+        type: 'Invoice', 
         reference: inv.id.toUpperCase(), 
-        amount: isCredit ? 0 : inv.total_amount, 
-        credit: isCredit ? Math.abs(inv.total_amount) : 0, 
-        dueDate: inv.due_date
+        amount: inv.total_amount, 
+        credit: inv.paid_amount || 0, 
+        dueDate: inv.due_date,
+        status: inv.status
     });
   });
 
-  payments?.forEach(pay => {
-    if (typeof pay.id === 'string' && pay.id.startsWith('CR-')) return; 
-
-    transactions.push({ 
-        id: pay.id, 
-        date: pay.payment_date, 
-        type: 'Payment', 
-        reference: pay.id.slice(0,8).toUpperCase(), 
-        amount: 0, 
-        credit: pay.amount 
+  // 2. 🚀 [핵심 추가됨] 잔액이 남아있는(unallocated > 0) 크레딧/초과결제금만 목록에 추가
+  creditData?.forEach((credit: any) => {
+    const isCrMemo = typeof credit.id === 'string' && credit.id.startsWith('CR-');
+    
+    transactions.push({
+        id: credit.id,
+        date: credit.payment_date || endDate, 
+        type: isCrMemo ? 'Credit' : 'Payment',
+        reference: credit.id ? credit.id.toUpperCase() : 'CREDIT',
+        amount: 0,
+        credit: credit.unallocated_amount, // 🚀 남은 크레딧 금액만 표시하여 잔액 계산을 맞춤
+        status: 'Active'
     });
   });
 
-  const openingBal = (prevInv?.reduce((sum, i) => sum + i.total_amount, 0) || 0) - (prevPay?.reduce((sum, p) => sum + p.amount, 0) || 0);
+  const openingBal = 0;
 
   const ageing: StatementAgeing = { current: 0, days30: 0, days60: 0, days90: 0, over90: 0, total: 0 };
   const today = new Date();
 
-  // 1. 먼저 순수하게 연체된 미납액만 각 버킷에 할당
-  allOpenInvoices?.forEach((inv: any) => {
-    const outstanding = inv.total_amount - inv.paid_amount;
+  // 3. 미납 인보이스 금액을 날짜 구간에 맞게 더하기 (플러스 금액)
+  openInvoices.forEach((inv: any) => {
+    const isCredit = (typeof inv.id === 'string' && inv.id.startsWith('CR-')) || inv.total_amount < 0;
+    if (isCredit) return; // Ageing 더할 때도 크레딧은 건너뜀
+
+    const outstanding = inv.total_amount - (inv.paid_amount || 0);
     if (outstanding !== 0) {
         const invDate = new Date(inv.invoice_date);
         const diffTime = Math.abs(today.getTime() - invDate.getTime());
@@ -336,27 +350,22 @@ export const fetchAndGenerateStatementBlob = async (customerId: string, startDat
     }
   });
   
-  // 2. 고객의 총 크레딧 잔액 구하기
-  let remainingCredit = creditData ? creditData.reduce((sum, p) => sum + (p.unallocated_amount || 0), 0) : 0;
+  // 4. 남은 크레딧을 "발생한 날짜" 구간에서 빼기 (마이너스 금액)
+  creditData?.forEach((credit: any) => {
+      const unallocated = credit.unallocated_amount || 0;
+      if (unallocated > 0 && credit.payment_date) {
+          const payDate = new Date(credit.payment_date);
+          const diffTime = Math.abs(today.getTime() - payDate.getTime());
+          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-  // 3. 🚀 [수정 포인트] 크레딧을 오래된 연체 구간부터 차감 (가장 오래된 빚부터 청산)
-  if (remainingCredit > 0) {
-      const applyCredit = (amount: number) => {
-          const deduction = Math.min(amount, remainingCredit);
-          remainingCredit -= deduction;
-          return amount - deduction;
-      };
+          if (diffDays <= 30) ageing.current -= unallocated;
+          else if (diffDays <= 60) ageing.days30 -= unallocated;
+          else if (diffDays <= 90) ageing.days60 -= unallocated;
+          else if (diffDays <= 120) ageing.days90 -= unallocated; 
+          else ageing.over90 -= unallocated;
+      }
+  });
 
-      ageing.over90 = applyCredit(ageing.over90);
-      ageing.days90 = applyCredit(ageing.days90);
-      ageing.days60 = applyCredit(ageing.days60);
-      ageing.days30 = applyCredit(ageing.days30);
-      
-      // 그래도 크레딧이 남았다면, Current 칸에서 차감 (마이너스로 표시됨)
-      ageing.current -= remainingCredit; 
-  }
-
-  // 4. 표에 표시될 최종 합계 업데이트
   ageing.total = ageing.current + ageing.days30 + ageing.days60 + ageing.days90 + ageing.over90;
 
   const settings = settingsList?.[0] || {};
@@ -369,6 +378,7 @@ export const fetchAndGenerateStatementBlob = async (customerId: string, startDat
     customerName, startDate, endDate, 
     openingBalance: openingBal, 
     ageing: ageing,
+    // 날짜 오름차순 정렬
     transactions: transactions.sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime()),
     customerId: customer?.id,
     customerAddress: customerAddress,

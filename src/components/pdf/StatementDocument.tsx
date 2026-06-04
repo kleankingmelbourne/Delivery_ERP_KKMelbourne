@@ -11,6 +11,7 @@ export interface StatementTransaction {
   credit: number;     
   balance?: number;   
   dueDate?: string; // 이미 포함되어 있음
+  status?: string;
 }
 
 export interface StatementAgeing {

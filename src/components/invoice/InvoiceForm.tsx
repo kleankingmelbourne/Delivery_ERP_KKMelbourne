@@ -930,12 +930,11 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       if (isEditMode && targetId) {
           const isCreditMemo = targetId.startsWith("CR-");
 
-          // 🚀 [수정] 수정 시에도 해당 아이디가 크레딧 메모라면 due_date를 null로 덮어씌웁니다!
           const updatePayload: any = { 
               customer_id: selectedCustomerId, 
               invoice_to: customerName, 
               invoice_date: invoiceDate, 
-              due_date: isCreditMemo ? null : dueDate, // <-- 수정됨
+              due_date: isCreditMemo ? null : dueDate, 
               total_amount: grandTotal, 
               subtotal: subTotal, 
               gst_total: gstTotal, 
@@ -944,6 +943,12 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
               driver_id: currentDriverId, 
               is_pickup: isPickup 
           };
+
+          // 🚀 [수정 포인트 1] 수정(Edit) 시: 총 금액이 정확히 0원이면 강제로 Paid 처리
+          if (grandTotal === 0) {
+              updatePayload.status = "Paid";
+              updatePayload.paid_amount = 0;
+          }
 
           if (isCreditMemo) {
               updatePayload.paid_amount = grandTotal;
@@ -979,7 +984,26 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
               }
           }
       } else {
-          const { data: inv, error: err1 } = await supabase.from("invoices").insert({ customer_id: selectedCustomerId, invoice_to: customerName, invoice_date: invoiceDate, due_date: dueDate, total_amount: grandTotal, paid_amount: 0, subtotal: subTotal, gst_total: gstTotal, created_who: currentUserName, updated_who: currentUserName, status: "Unpaid", memo: memo, driver_id: currentDriverId, is_pickup: isPickup }).select().single();
+          // 🚀 [수정 포인트 2] 신규 생성(Insert) 시: 총 금액이 0원이면 Paid, 아니면 Unpaid
+          const initialStatus = grandTotal === 0 ? "Paid" : "Unpaid";
+
+          const { data: inv, error: err1 } = await supabase.from("invoices").insert({ 
+              customer_id: selectedCustomerId, 
+              invoice_to: customerName, 
+              invoice_date: invoiceDate, 
+              due_date: dueDate, 
+              total_amount: grandTotal, 
+              paid_amount: 0, 
+              subtotal: subTotal, 
+              gst_total: gstTotal, 
+              created_who: currentUserName, 
+              updated_who: currentUserName, 
+              status: initialStatus, // <-- 수정된 변수 적용
+              memo: memo, 
+              driver_id: currentDriverId, 
+              is_pickup: isPickup 
+          }).select().single();
+          
           if (err1 || !inv) throw err1 || new Error("Invoice creation failed");
           targetId = inv.id;
       }

@@ -304,22 +304,41 @@ export default function AdminOrderTable() {
             is_pickup: customerOrders.some(o => o.is_pickup) // 하나라도 픽업이면 true
         });
 
-        // 5. 이 고객의 주문들에 속한 아이템들만 필터링하여 새 인보이스에 연결
+        // 5. 🚀 이 고객의 주문들에 속한 아이템들 필터링 및 중복 합산(Merge)
         const customerOrderIds = customerOrders.map(o => o.id);
         const groupItems = allItems.filter((item: any) => customerOrderIds.includes(item.order_id));
 
+        const mergedItemsMap = new Map();
+
         groupItems.forEach((item: any) => {
-            newInvoiceItems.push({
-                invoice_id: newInvId,
-                product_id: item.product_id,
-                description: item.description,
-                quantity: item.quantity,
-                unit: item.unit,
-                unit_price: item.unit_price,
-                base_price: item.base_price,
-                discount: item.discount,
-                amount: roundAmount(item.quantity * item.unit_price)
-            });
+            // 중복을 판별할 고유 키 생성 (상품ID + 단위 + 단가)
+            // 단가가 다를 경우 수량을 합치면 회계 계산이 어긋나므로 단가까지 키에 포함하여 안전하게 분리
+            const mergeKey = `${item.product_id || item.description}_${item.unit}_${item.unit_price}`;
+
+            if (mergedItemsMap.has(mergeKey)) {
+                // 이미 추가된 동일 상품이 있다면 수량과 총액만 누적
+                const existingItem = mergedItemsMap.get(mergeKey);
+                existingItem.quantity += item.quantity;
+                existingItem.amount = roundAmount(existingItem.quantity * existingItem.unit_price);
+            } else {
+                // 처음 나오는 상품이면 Map에 신규 등록
+                mergedItemsMap.set(mergeKey, {
+                    invoice_id: newInvId,
+                    product_id: item.product_id,
+                    description: item.description,
+                    quantity: item.quantity,
+                    unit: item.unit,
+                    unit_price: item.unit_price,
+                    base_price: item.base_price,
+                    discount: item.discount,
+                    amount: roundAmount(item.quantity * item.unit_price)
+                });
+            }
+        });
+
+        // 병합 완료된 아이템들을 최종 등록 배열에 추가
+        mergedItemsMap.forEach(mergedItem => {
+            newInvoiceItems.push(mergedItem);
         });
 
         // 6. 이 고객의 원본 주문들 상태 업데이트 준비

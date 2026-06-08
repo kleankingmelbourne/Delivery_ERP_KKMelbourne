@@ -123,9 +123,6 @@ export const generateStatementBufferForServer = async (
 // ==================================================================
 // 🔥 SERVER-SIDE ONLY: CRON JOB 전용 Invoice 데이터 추출 함수
 // ==================================================================
-// ==================================================================
-// 🔥 SERVER-SIDE ONLY: CRON JOB 전용 Invoice 데이터 추출 함수
-// ==================================================================
 export const getServerInvoiceData = async (invoiceId: string): Promise<any | null> => {
     if (!invoiceId) return null;
     const supabase = createClient();
@@ -242,7 +239,10 @@ export const getServerInvoiceData = async (invoiceId: string): Promise<any | nul
 // 🔥 SERVER-SIDE ONLY: CRON JOB 전용 Invoice 생성 함수
 // ==================================================================
 export const generateInvoiceBufferForServer = async (
-    invoiceId: string
+    invoiceId: string,
+    passedCustomerName: string,   // 🚀 route.ts에서 던져준 이름
+    passedCustomerEmail: string,  // 🚀 route.ts에서 던져준 이메일
+    passedCustomerEmailCc: string // 🚀 route.ts에서 던져준 참조 이메일
 ): Promise<{ buffer: Buffer, filename: string, customerEmail: string, customerEmailCc: string, customerName: string } | null> => {
     try {
         const data = await getServerInvoiceData(invoiceId);
@@ -251,15 +251,16 @@ export const generateInvoiceBufferForServer = async (
         const buffer = await renderToBuffer(<InvoiceDocument data={data} />);
         console.log(`[Server] PDF 렌더링 완료: ${data.invoiceNo}`);
         
-        const safeName = (data.customerName || "Customer").replace(/[^a-zA-Z0-9가-힣\s]/g, "").trim(); 
+        // 🚀 DB를 다시 뒤질 필요 없이, 넘겨받은 안전한 데이터를 그대로 사용합니다.
+        const safeName = passedCustomerName.replace(/[^a-zA-Z0-9가-힣\s]/g, "").trim(); 
         const filename = `${data.invoiceNo}_${data.date}_${safeName}.pdf`;
 
         return { 
             buffer, 
             filename,
-            customerEmail: data.customerEmail,
-            customerEmailCc: data.customerEmailCc,
-            customerName: data.customerName
+            customerEmail: passedCustomerEmail,
+            customerEmailCc: passedCustomerEmailCc,
+            customerName: passedCustomerName
         };
 
     } catch (error) {

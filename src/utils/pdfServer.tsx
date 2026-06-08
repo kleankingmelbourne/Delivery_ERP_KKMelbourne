@@ -237,7 +237,7 @@ export const generateInvoiceBufferForServer = async (
     invoiceId: string
 ): Promise<{ buffer: Buffer, filename: string, customerEmail: string, customerEmailCc: string, customerName: string } | null> => {
     try {
-        console.log(`[Server] 데이터 조회 시작: ${invoiceId}`);
+
         const data = await getServerInvoiceData(invoiceId);
         if (!data) throw new Error("Invoice data not found");
 
@@ -250,7 +250,7 @@ export const generateInvoiceBufferForServer = async (
         const filename = `${data.invoiceNo}_${data.date}_${safeName}.pdf`;
 
         const supabase = createClient();
-        const { data: customerData } = await supabase.from('customers').select('email, email_cc').eq('company', data.customerName).limit(1).single();
+        const { data: customerData } = await supabase.from('customers').select('email, email_cc').eq('company', data.name).limit(1).single();
 
         return { 
             buffer, 

@@ -2,6 +2,7 @@
 import { renderToBuffer, Font } from '@react-pdf/renderer';
 import { createClient } from '@/utils/supabase/client';
 import StatementDocument, { StatementData, StatementTransaction, StatementAgeing } from '@/components/pdf/StatementDocument';
+import InvoiceDocument from '@/components/pdf/InvoiceDocument';
 import React from 'react';
 import path from 'path'; // 🚀 파일 경로를 찾기 위한 Node.js 기본 모듈
 
@@ -119,8 +120,6 @@ export const generateStatementBufferForServer = async (
     }
 };
 
-import InvoiceDocument from '@/components/pdf/InvoiceDocument';
-
 // ==================================================================
 // 🔥 SERVER-SIDE ONLY: CRON JOB 전용 Invoice 데이터 추출 함수
 // ==================================================================
@@ -134,7 +133,7 @@ export const getServerInvoiceData = async (invoiceId: string): Promise<any | nul
         .select(`
           *,
           customers ( 
-            name, company, address, suburb, state, postcode, mobile,
+            id, name, company, address, suburb, state, postcode, mobile, email, email_cc,
             delivery_address, delivery_suburb, delivery_state, delivery_postcode
           ),
           invoice_items ( quantity, unit, unit_price, amount, is_gst_included, products ( * ) )
@@ -195,7 +194,9 @@ export const getServerInvoiceData = async (invoiceId: string): Promise<any | nul
         invoiceNo: invoice.id,
         date: invoice.invoice_date,
         dueDate: invoice.due_date || invoice.invoice_date,
-        customerName: invoice.customers?.company || invoice.customers?.name || "Unknown Customer",
+        
+        // 🚀 [수정] 무조건 존재하느 고객의 name 컬럼을 1순위 기준 이름으로 설정합니다.
+        customerName: invoice.customers?.name || invoice.customers?.company || "Unknown Customer",
         customerMobile: invoice.customers?.mobile || "",
         deliveryName: invoice.customers?.name || "",
         address: billingAddr,
@@ -219,9 +220,11 @@ export const getServerInvoiceData = async (invoiceId: string): Promise<any | nul
         bank_payid: settings.bank_payid || "-",
         invoiceInfo: settings.invoice_info || "",
         isCreditMemo: isCreditMemo,
+        logoUrl: `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/company_logo/logo.png`,
         
-        // 🚀 서버 환경 전용 물리적 로고 주소
-        logoUrl: `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/company_logo/logo.png`
+        // 🚀 [핵심 추가] 따로 다시 조회하지 않도록 이메일 정보를 데이터에 미리 심어둡니다.
+        customerEmail: invoice.customers?.email || "",
+        customerEmailCc: invoice.customers?.email_cc || ""
       };
     } catch (err) {
       console.error("❌ [PDF Server] Mapping Error:", err);
@@ -237,32 +240,28 @@ export const generateInvoiceBufferForServer = async (
     invoiceId: string
 ): Promise<{ buffer: Buffer, filename: string, customerEmail: string, customerEmailCc: string, customerName: string } | null> => {
     try {
-
         const data = await getServerInvoiceData(invoiceId);
         if (!data) throw new Error("Invoice data not found");
 
-        
-        // 🚀 만약 여기서 에러가 난다면 폰트나 로고 URL 문제일 확률 99%입니다.
         const buffer = await renderToBuffer(<InvoiceDocument data={data} />);
-        console.log(`[Server] PDF 렌더링 완료`);
+        console.log(`[Server] PDF 렌더링 완료: ${data.invoiceNo}`);
         
         const safeName = (data.customerName || "Customer").replace(/[^a-zA-Z0-9가-힣\s]/g, "").trim(); 
         const filename = `${data.invoiceNo}_${data.date}_${safeName}.pdf`;
 
-        const supabase = createClient();
-        const { data: customerData } = await supabase.from('customers').select('email, email_cc, name').limit(1).single();
+        // 🗑️ 에러를 유발하던 위험한 Supabase 추가 단일 조회 로직을 완전히 삭제했습니다!
+        // 위에서 조인(JOIN)으로 묶어온 안전한 이메일 데이터를 그대로 전달합니다.
 
         return { 
             buffer, 
             filename,
-            customerEmail: customerData?.email || "",
-            customerEmailCc: customerData?.email_cc || "",
-            customerName: customerData?.name
+            customerEmail: data.customerEmail,
+            customerEmailCc: data.customerEmailCc,
+            customerName: data.customerName
         };
 
     } catch (error) {
-        // 🚀 에러 발생 시 정확한 에러 내용 출력
-        console.error("❌ 상세 에러 내용:", error);
+        console.error("❌ Server Invoice PDF Generation Error:", error);
         return null;
     }
 };

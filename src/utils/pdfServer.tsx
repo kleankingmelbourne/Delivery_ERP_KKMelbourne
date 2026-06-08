@@ -118,3 +118,42 @@ export const generateStatementBufferForServer = async (
         return null;
     }
 };
+
+import InvoiceDocument from '@/components/pdf/InvoiceDocument';
+import { getInvoiceData } from '@/utils/downloadPdf'; // 기존 인보이스 데이터 가져오는 함수 재사용
+
+// ==================================================================
+// 🔥 SERVER-SIDE ONLY: CRON JOB 전용 Invoice 생성 함수
+// ==================================================================
+export const generateInvoiceBufferForServer = async (
+    invoiceId: string
+): Promise<{ buffer: Buffer, filename: string, customerEmail: string, customerEmailCc: string, customerName: string } | null> => {
+    try {
+        // 1. 기존 downloadPdf.ts에 있는 getInvoiceData를 그대로 재활용하여 데이터를 가져옵니다.
+        const data = await getInvoiceData(invoiceId);
+        if (!data) throw new Error("Invoice data not found");
+
+        // 🚀 [핵심] 서버 전용 renderToBuffer 사용!
+        const buffer = await renderToBuffer(<InvoiceDocument data={data} />);
+        
+        const safeName = (data.customerName || "Customer").replace(/[^a-zA-Z0-9가-힣\s]/g, "").trim(); 
+        const filename = `${data.invoiceNo}_${data.date}_${safeName}.pdf`;
+
+        // 이메일 발송에 필요한 정보도 같이 묶어서 반환합니다.
+        // (getInvoiceData 내부에서 customers 조인이 되어 있어야 합니다)
+        const supabase = createClient();
+        const { data: customerData } = await supabase.from('customers').select('email, email_cc').eq('company', data.customerName).limit(1).single();
+
+        return { 
+            buffer, 
+            filename,
+            customerEmail: customerData?.email || "",
+            customerEmailCc: customerData?.email_cc || "",
+            customerName: data.customerName
+        };
+
+    } catch (error) {
+        console.error("❌ Server Invoice PDF Generation Error:", error);
+        return null;
+    }
+};

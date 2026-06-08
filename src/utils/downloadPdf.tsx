@@ -118,7 +118,9 @@ export const getInvoiceData = async (invoiceId: string): Promise<any | null> => 
       accountNumber: settings.account_number || "",
       bank_payid: settings.bank_payid || "-",
       invoiceInfo: settings.invoice_info || "",
-      isCreditMemo: isCreditMemo
+      isCreditMemo: isCreditMemo,
+      // 🚀 [여기 추가!] 서버용 로고 URL을 인보이스 데이터에도 얹어서 보냅니다.
+      logoUrl: `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/company_logo/logo.png`
     };
   } catch (err) {
     console.error("❌ [PDF] Mapping Error:", err);

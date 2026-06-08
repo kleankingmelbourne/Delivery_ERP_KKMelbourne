@@ -42,6 +42,7 @@ export interface InvoiceData {
   companyAddress?: string;
   invoiceInfo?: string;
   title?: string;
+  logoUrl?: string; // 🚀 에러 방지용 타입 추가
 }
 
 const styles = StyleSheet.create({
@@ -124,8 +125,9 @@ const styles = StyleSheet.create({
 });
 
 export const InvoicePage = ({ data }: { data: InvoiceData }) => {
-  const logoUrl = typeof window !== 'undefined' ? `${window.location.origin}/images/logo.png` : '/images/logo.png';
-
+  // 🚀 서버에서 넘겨준 주소가 있으면 먼저 쓰고, 없으면 로컬 주소를 쓰도록 수정!
+  const logoUrl = data.logoUrl || (typeof window !== 'undefined' ? `${window.location.origin}/images/logo.png` : '/images/logo.png');
+  
   return (
     <Page size="A4" style={styles.page}>
       <View style={styles.topSection}>

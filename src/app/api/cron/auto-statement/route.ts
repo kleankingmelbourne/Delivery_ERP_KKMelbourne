@@ -153,6 +153,11 @@ export async function GET(request: Request) {
               <br/>
               <p>Best regards,</p>
               <p><strong>Klean King Melbourne Pty Ltd</strong></p>
+              <img 
+                src="${supabaseUrl}/storage/v1/object/public/company_logo/logo.png" 
+                alt="Klean King Logo" 
+                style="width: 150px; margin-top: 15px; display: block;" 
+              />
             </div>
           `,
           attachments: [

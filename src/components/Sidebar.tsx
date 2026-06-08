@@ -68,6 +68,7 @@ const menuItems = [
       { name: "INVOICE LIST", href: "/invoice", icon: List },       
       { name: "PAID", href: "/invoice/paid", icon: CheckCircle2 },  
       { name: "UNPAID", href: "/invoice/unpaid", icon: AlertCircle }, 
+      { name: "AUTO INVOICE", href: "/invoice/auto-invoice", icon: RefreshCw }, 
     ]
   },
 

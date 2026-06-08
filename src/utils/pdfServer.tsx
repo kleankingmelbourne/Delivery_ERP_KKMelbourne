@@ -241,7 +241,7 @@ export const generateInvoiceBufferForServer = async (
         const data = await getServerInvoiceData(invoiceId);
         if (!data) throw new Error("Invoice data not found");
 
-        console.log(`[Server] PDF 렌더링 시작: ${data.invoiceNo}`);
+        
         // 🚀 만약 여기서 에러가 난다면 폰트나 로고 URL 문제일 확률 99%입니다.
         const buffer = await renderToBuffer(<InvoiceDocument data={data} />);
         console.log(`[Server] PDF 렌더링 완료`);
@@ -250,14 +250,14 @@ export const generateInvoiceBufferForServer = async (
         const filename = `${data.invoiceNo}_${data.date}_${safeName}.pdf`;
 
         const supabase = createClient();
-        const { data: customerData } = await supabase.from('customers').select('email, email_cc').eq('company', data.name).limit(1).single();
+        const { data: customerData } = await supabase.from('customers').select('email, email_cc, name').limit(1).single();
 
         return { 
             buffer, 
             filename,
             customerEmail: customerData?.email || "",
             customerEmailCc: customerData?.email_cc || "",
-            customerName: data.customerName
+            customerName: customerData?.name
         };
 
     } catch (error) {

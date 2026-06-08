@@ -46,6 +46,7 @@ export interface StatementData {
   bsb?: string;
   accountNumber?: string;
   bank_payid?: string;
+  logoUrl?: string; // 🚀 기존 logoPath 대신 logoUrl로 추가/변경
 }
 
 const styles = StyleSheet.create({
@@ -99,8 +100,9 @@ const styles = StyleSheet.create({
 });
 
 const StatementDocument = ({ data }: { data: StatementData }) => {
-  const logoUrl = typeof window !== 'undefined' ? `${window.location.origin}/images/logo.png` : '/images/logo.png';
-  
+  //const logoUrl = typeof window !== 'undefined' ? `${window.location.origin}/images/logo.png` : '/images/logo.png';
+  const logoUrl = data.logoUrl || (typeof window !== 'undefined' ? `${window.location.origin}/images/logo.png` : '/images/logo.png');
+
   let runningBalance = data.openingBalance;
   
   const formatDate = (dateStr: string) => {

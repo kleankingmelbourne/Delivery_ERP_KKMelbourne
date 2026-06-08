@@ -101,7 +101,9 @@ export const generateStatementBufferForServer = async (
             companyName: settings.company_name || "KLEAN KING", 
             companyAddress: formatAddress(settings.address_line1, settings.suburb, settings.state, settings.postcode),
             companyEmail: settings.email, companyPhone: settings.phone, bankName: settings.bank_name, bsb: settings.bsb_number, 
-            accountNumber: settings.account_number, bank_payid: settings.bank_payid, statementInfo: settings.statement_info
+            accountNumber: settings.account_number, bank_payid: settings.bank_payid, statementInfo: settings.statement_info,
+            // 🚀 [여기에 꼭 넣어주세요!] Supabase 스토리지의 실제 로고 이미지 주소를 전달합니다.
+            logoUrl: `${supabase}/storage/v1/object/public/company_logo/logo.png`
         };
 
         // 클라이언트 렌더링용이 아닌, 백그라운드용 버퍼 생성

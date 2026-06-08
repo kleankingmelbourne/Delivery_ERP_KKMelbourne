@@ -11,7 +11,7 @@ import {
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/components/providers/AuthProvider"; 
-
+import { updateInventory } from "@/utils/inventory"; 
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -217,6 +217,13 @@ export default function AdminOrderTable() {
         await supabase.from("invoice_items").insert(invItemsData);
         await supabase.from("orders").update({ status: 'invoiced', invoice_id: newInvId }).eq('id', order.id);
 
+        const inventoryItems = items.map(item => ({
+          productId: item.product_id, // OrderItem은 product_id를 씁니다.
+          quantity: item.quantity,
+          unit: item.unit
+        }));
+        await updateInventory(supabase, inventoryItems, false); // false = 재고 차감
+
         alert(`✅ Invoice ${newInvId} created (Subtotal: ${formatCurrency(orderSubtotal)} + GST: ${formatCurrency(gstTotal)})`);
         fetchOrders(); 
     } catch (error: any) {
@@ -290,7 +297,7 @@ export default function AdminOrderTable() {
             id: newInvId,
             customer_id: customerId,
             invoice_to: firstOrder.customers?.name || 'Unknown',
-            invoice_date: new Date().toISOString().split('T')[0],
+            invoice_date: firstOrder.requested_date,
             due_date: dueDate,
             total_amount: finalInvoiceTotal,
             paid_amount: 0,
@@ -362,6 +369,14 @@ export default function AdminOrderTable() {
 
       await Promise.all(orderUpdates);
 
+      // 🚀 [추가된 부분] 일괄 변환 완료 직후 전체 아이템에 대해 재고 차감 실행
+      const bulkInventoryItems = newInvoiceItems.map(item => ({
+          productId: item.product_id,
+          quantity: item.quantity,
+          unit: item.unit
+      }));
+      await updateInventory(supabase, bulkInventoryItems, false); // false = 재고 차감
+      
       alert(`✅ 성공적으로 총 ${newInvoices.length}개의 인보이스가 생성되었습니다.`);
       setSelectedIds(new Set());
       fetchOrders();

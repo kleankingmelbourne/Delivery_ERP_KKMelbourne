@@ -152,14 +152,35 @@ export const downloadInvoicePdf = async (id: string) => {
   if (result) saveAs(result.blob, result.filename);
 };
 
+
 export const printInvoicePdf = async (id: string) => {
   const result = await fetchAndGenerateBlob([id], 'single');
+  
   if (result) {
     const url = URL.createObjectURL(result.blob);
-    window.open(url, '_blank');
+    
+    // 1. 화면에 보이지 않는 숨겨진 iframe 생성
+    const iframe = document.createElement('iframe');
+    iframe.style.display = 'none';
+    iframe.src = url;
+
+    // 2. iframe에 PDF 로드가 완료되면 즉시 인쇄창 호출
+    iframe.onload = () => {
+      // 미리보기 없이 시스템 인쇄창 띄우기
+      iframe.contentWindow?.print();
+
+      // 3. 인쇄창 호출 후 메모리 누수 방지를 위해 찌꺼기 청소
+      // (인쇄창이 안정적으로 뜰 시간을 벌기 위해 2초 뒤 삭제)
+      setTimeout(() => {
+        document.body.removeChild(iframe);
+        URL.revokeObjectURL(url);
+      }, 2000);
+    };
+
+    // 4. HTML 문서에 iframe을 삽입하여 로드 시작
+    document.body.appendChild(iframe);
   }
 };
-
 export const downloadBulkPdf = async (ids: string[]) => {
   if (ids.length === 0) return;
   const results = await Promise.all(ids.map(id => getInvoiceData(id)));
@@ -615,4 +636,112 @@ export const fetchAndGeneratePackingListBlob = async (id: string): Promise<{ blo
 export const downloadPackingListPdf = async (id: string) => {
   const result = await fetchAndGeneratePackingListBlob(id);
   if (result) saveAs(result.blob, result.filename);
+};
+
+// ==================================================================
+// 🔥 6. SERVER-SIDE ONLY: CRON JOB 전용 Statement 생성 함수
+// ==================================================================
+import { renderToBuffer } from '@react-pdf/renderer';
+
+export const generateStatementBufferForServer = async (
+    customerId: string, 
+    startDate: string, 
+    endDate: string, 
+    customerName: string
+): Promise<{ buffer: Buffer, filename: string } | null> => {
+    try {
+        // 1. 기존과 똑같이 DB에서 Statement에 필요한 데이터를 가져옵니다.
+        const supabase = createClient();
+        
+        const [
+            { data: customer },
+            { data: invoices },
+            { data: settingsList },
+            { data: creditData }
+        ] = await Promise.all([
+            supabase.from("customers").select("*").eq("id", customerId).maybeSingle(),
+            supabase.from("invoices").select("*").eq("customer_id", customerId).lte("invoice_date", endDate),
+            supabase.from('company_settings').select('*').limit(1),
+            supabase.from('payments').select('id, unallocated_amount, payment_date').eq('customer_id', customerId).gt('unallocated_amount', 0)
+        ]);
+
+        const transactions: StatementTransaction[] = [];
+        
+        const openInvoices = invoices?.filter(inv => {
+             const s = (inv.status || '').toLowerCase();
+             if (s === 'paid' || s === 'completed' || s.includes('cancel')) return false;
+             if (inv.total_amount > 0 && Math.abs(inv.total_amount - (inv.paid_amount || 0)) < 0.01) return false;
+             return true;
+        }) || [];
+
+        openInvoices.forEach(inv => {
+            const isCredit = (typeof inv.id === 'string' && inv.id.startsWith('CR-')) || inv.total_amount < 0 || (inv.status || '').toLowerCase() === 'credit';
+            if (isCredit) return; 
+            transactions.push({ 
+                id: inv.id, date: inv.invoice_date, type: 'Invoice', reference: inv.id.toUpperCase(), 
+                amount: inv.total_amount, credit: inv.paid_amount || 0, dueDate: inv.due_date, status: inv.status
+            });
+        });
+
+        creditData?.forEach((credit: any) => {
+            const isCrMemo = typeof credit.id === 'string' && credit.id.startsWith('CR-');
+            transactions.push({
+                id: credit.id, date: credit.payment_date || endDate, type: isCrMemo ? 'Credit' : 'Payment',
+                reference: credit.id ? credit.id.toUpperCase() : 'CREDIT', amount: 0, credit: credit.unallocated_amount, status: 'Active'
+            });
+        });
+
+        const ageing: StatementAgeing = { current: 0, days30: 0, days60: 0, days90: 0, over90: 0, total: 0 };
+        const today = new Date();
+
+        openInvoices.forEach((inv: any) => {
+            const isCredit = (typeof inv.id === 'string' && inv.id.startsWith('CR-')) || inv.total_amount < 0;
+            if (isCredit) return;
+            const outstanding = inv.total_amount - (inv.paid_amount || 0);
+            if (outstanding !== 0) {
+                const invDate = new Date(inv.invoice_date);
+                const diffTime = Math.abs(today.getTime() - invDate.getTime());
+                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                if (diffDays <= 30) ageing.current += outstanding; else if (diffDays <= 60) ageing.days30 += outstanding;
+                else if (diffDays <= 90) ageing.days60 += outstanding; else if (diffDays <= 120) ageing.days90 += outstanding; else ageing.over90 += outstanding;
+            }
+        });
+        
+        creditData?.forEach((credit: any) => {
+            const unallocated = credit.unallocated_amount || 0;
+            if (unallocated > 0 && credit.payment_date) {
+                const payDate = new Date(credit.payment_date);
+                const diffTime = Math.abs(today.getTime() - payDate.getTime());
+                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                if (diffDays <= 30) ageing.current -= unallocated; else if (diffDays <= 60) ageing.days30 -= unallocated;
+                else if (diffDays <= 90) ageing.days60 -= unallocated; else if (diffDays <= 120) ageing.days90 -= unallocated; else ageing.over90 -= unallocated;
+            }
+        });
+
+        ageing.total = ageing.current + ageing.days30 + ageing.days60 + ageing.days90 + ageing.over90;
+
+        const settings = settingsList?.[0] || {};
+        const formatAddress = (addr?: string, sub?: string, st?: string, post?: string) => [addr, sub, st, post].filter(Boolean).join(", ");
+        let customerAddress = formatAddress(customer?.address, customer?.suburb, customer?.state, customer?.postcode);
+        if (customer?.mobile) customerAddress += `\nMobile: ${customer.mobile}`;
+
+        const statementData: StatementData = {
+            customerName, startDate, endDate, openingBalance: 0, ageing: ageing,
+            transactions: transactions.sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime()),
+            customerId: customer?.id, customerAddress: customerAddress,
+            companyName: settings.company_name || "KLEAN KING", 
+            companyAddress: formatAddress(settings.address_line1, settings.suburb, settings.state, settings.postcode),
+            companyEmail: settings.email, companyPhone: settings.phone, bankName: settings.bank_name, bsb: settings.bsb_number, 
+            accountNumber: settings.account_number, bank_payid: settings.bank_payid, statementInfo: settings.statement_info
+        };
+
+        // 🚀 [가장 중요한 부분] 클라이언트용 Blob 대신 서버 전용 renderToBuffer 사용!
+        const buffer = await renderToBuffer(<StatementDocument data={statementData} />);
+        
+        return { buffer, filename: `Statement_${customerName}_${endDate}.pdf` };
+
+    } catch (error) {
+        console.error("❌ Server PDF Generation Error:", error);
+        return null;
+    }
 };

@@ -14,16 +14,18 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useAuth } from "@/components/providers/AuthProvider";
+import { updateInventory, isCtnUnit } from "@/utils/inventory"; //DDANG
+
 
 // --- [Utility] ---
 const roundAmount = (num: number) => Math.round((num + Number.EPSILON) * 100) / 100;
 
-// 🚀 단위가 박스(CTN/Carton/Box)인지 정확히 판별하는 도우미 함수
-const isCtnUnit = (unitStr: string | undefined | null) => {
-    if (!unitStr) return false;
-    const s = unitStr.toLowerCase();
-    return s.includes('ctn') || s.includes('carton') || s.includes('box');
-};
+//DDANG 🚀 단위가 박스(CTN/Carton/Box)인지 정확히 판별하는 도우미 함수
+//const isCtnUnit = (unitStr: string | undefined | null) => {
+//    if (!unitStr) return false;
+//    const s = unitStr.toLowerCase();
+//    return s.includes('ctn') || s.includes('carton') || s.includes('box');
+//};
 
 // --- [Utility] Debounce Hook ---
 function useDebounce<T>(value: T, delay: number): T {
@@ -759,87 +761,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       return insufficientItems;
   };
 
-  const updateInventory = async (itemList: InvoiceItem[], isReturn: boolean) => {
-    const validItems = itemList.filter(i => i.productId);
-    if (validItems.length === 0) return;
-
-    const productIds = Array.from(new Set(validItems.map(i => i.productId)));
-
-    const { data: products } = await supabase
-        .from('products')
-        .select('id, current_stock_level, current_stock_level_pack, total_pack_ctn')
-        .in('id', productIds);
-
-    if (!products) return;
-
-    const updateQtyMap = new Map<string, { ctn: number, pack: number }>();
-    
-    validItems.forEach(item => {
-        if (!updateQtyMap.has(item.productId)) {
-            updateQtyMap.set(item.productId, { ctn: 0, pack: 0 });
-        }
-        const req = updateQtyMap.get(item.productId)!;
-        const qty = Math.abs(Number(item.quantity) || 0);
-        
-        if (isCtnUnit(item.unit)) req.ctn += qty;
-        else req.pack += qty;
-    });
-
-    const updatePromises = []; 
-
-    for (const [productId, req] of updateQtyMap.entries()) {
-        const product = products.find((p: any) => p.id === productId);
-        if (!product) continue;
-
-        const currentCtn = Number(product.current_stock_level) || 0;
-        const currentPack = Number(product.current_stock_level_pack) || 0;
-        const packsPerCtn = Number(product.total_pack_ctn) || 0; 
-        
-        const hasCarton = packsPerCtn > 1;
-
-        let newCtn = currentCtn;
-        let newPack = currentPack;
-
-        if (hasCarton) {
-            let totalCurrentPacks = (currentCtn * packsPerCtn) + currentPack;
-            const totalUpdatePacks = (req.ctn * packsPerCtn) + req.pack;
-
-            if (isReturn) {
-                totalCurrentPacks += totalUpdatePacks;
-            } else {
-                totalCurrentPacks -= totalUpdatePacks;
-            }
-
-            newCtn = Math.floor(totalCurrentPacks / packsPerCtn);
-            newPack = totalCurrentPacks % packsPerCtn;
-            
-            if (newPack < 0) {
-                newPack += packsPerCtn;
-            }
-        } else {
-            if (isReturn) {
-                newCtn += req.ctn;
-                newPack += req.pack;
-            } else {
-                newCtn -= req.ctn;
-                newPack -= req.pack;
-            }
-        }
-
-        updatePromises.push(
-            supabase
-                .from('products')
-                .update({ 
-                    current_stock_level: newCtn, 
-                    current_stock_level_pack: newPack 
-                })
-                .eq('id', productId)
-        );
-    }
-
-    await Promise.all(updatePromises);
-  };
-
   const handleCreditMemoCreation = async (redirect: boolean) => {
     try {
         const { data: lastCr } = await supabase.from('invoices').select('id').ilike('id', 'CR-%').order('id', { ascending: false }).limit(1).single();
@@ -887,7 +808,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
               };
           });
           parallelTasks.push(supabase.from("invoice_items").insert(itemsData));
-          await updateInventory(validItems, true);  //DDANG 수정
+          await updateInventory(supabase, validItems, true);  //DDANG 수정
         }
 
         const creditAmount = Math.abs(grandTotal); 
@@ -955,7 +876,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
           }
 
           const [ , invUpdateRes, invDelRes ] = await Promise.all([
-              originalItems.length > 0 ? updateInventory(originalItems, true) : Promise.resolve(),
+              originalItems.length > 0 ? updateInventory(supabase, originalItems, true) : Promise.resolve(),
               supabase.from("invoices").update(updatePayload).eq("id", targetId),
               supabase.from("invoice_items").delete().eq("invoice_id", targetId)
           ]);
@@ -1026,7 +947,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
       const parallelSaveTasks = [
         itemsData.length > 0 ? supabase.from("invoice_items").insert(itemsData) : Promise.resolve(),
-        itemsData.length > 0 ? updateInventory(validItems, false) : Promise.resolve(),
+        itemsData.length > 0 ? updateInventory(supabase, validItems, false) : Promise.resolve(),
         supabase.from("customers").update({ note: staffNote }).eq("id", selectedCustomerId)
       ];
 

@@ -5,6 +5,8 @@ import StatementDocument, { StatementData, StatementTransaction, StatementAgeing
 import React from 'react';
 import path from 'path'; // 🚀 파일 경로를 찾기 위한 Node.js 기본 모듈
 
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+
 // ==================================================================
 // 🚀 서버 환경 전용 폰트 등록 (Next.js의 public 폴더 경로를 직접 지정)
 // ==================================================================
@@ -103,7 +105,7 @@ export const generateStatementBufferForServer = async (
             companyEmail: settings.email, companyPhone: settings.phone, bankName: settings.bank_name, bsb: settings.bsb_number, 
             accountNumber: settings.account_number, bank_payid: settings.bank_payid, statementInfo: settings.statement_info,
             // 🚀 [여기에 꼭 넣어주세요!] Supabase 스토리지의 실제 로고 이미지 주소를 전달합니다.
-            logoUrl: `${supabase}/storage/v1/object/public/company_logo/logo.png`
+            logoUrl: `${supabaseUrl}/storage/v1/object/public/company_logo/logo.png`
         };
 
         // 클라이언트 렌더링용이 아닌, 백그라운드용 버퍼 생성

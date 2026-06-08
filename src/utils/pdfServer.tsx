@@ -120,7 +120,115 @@ export const generateStatementBufferForServer = async (
 };
 
 import InvoiceDocument from '@/components/pdf/InvoiceDocument';
-import { getInvoiceData } from '@/utils/downloadPdf'; // 기존 인보이스 데이터 가져오는 함수 재사용
+
+// ==================================================================
+// 🔥 SERVER-SIDE ONLY: CRON JOB 전용 Invoice 데이터 추출 함수
+// ==================================================================
+export const getServerInvoiceData = async (invoiceId: string): Promise<any | null> => {
+    if (!invoiceId) return null;
+    const supabase = createClient();
+    
+    const [invoiceRes, settingsRes] = await Promise.all([
+      supabase
+        .from('invoices')
+        .select(`
+          *,
+          customers ( 
+            name, company, address, suburb, state, postcode, mobile,
+            delivery_address, delivery_suburb, delivery_state, delivery_postcode
+          ),
+          invoice_items ( quantity, unit, unit_price, amount, is_gst_included, products ( * ) )
+        `)
+        .eq('id', invoiceId)
+        .single(),
+      supabase.from('company_settings').select('*').limit(1)
+    ]);
+  
+    if (invoiceRes.error || !invoiceRes.data) return null;
+    const invoice = invoiceRes.data;
+    const settingsList = settingsRes.data;
+    const settings = settingsList && settingsList.length > 0 ? settingsList[0] : {};
+  
+    try {
+      const mappedItems = invoice.invoice_items?.map((item: any) => {
+        const product = item.products || {};
+        const name = product.name || product.product_name || product.description || "Item";
+        const vId = product.vendor_product_id;
+        const formattedId = vId ? `[${vId}]` : "";
+        return {
+          qty: item.quantity || 0,
+          unit: item.unit || product.unit || "EA",
+          description: name,
+          itemCode: formattedId,
+          unitPrice: item.unit_price || 0,
+          amount: item.amount || 0,
+          isGstIncluded: item.is_gst_included !== false
+        };
+      }) || [];
+  
+      if (mappedItems.length === 0) {
+        mappedItems.push({ qty: 0, unit: "-", description: "[No Items Found]", itemCode: "-", unitPrice: 0, amount: 0, isGstIncluded: true });
+      }
+  
+      const formatAddress = (addr?: string, sub?: string, st?: string, post?: string) => 
+        [addr, sub, st, post].filter(Boolean).join(" ");
+  
+      const billingAddr = formatAddress(invoice.customers?.address, invoice.customers?.suburb, invoice.customers?.state, invoice.customers?.postcode);
+      const finalDeliveryAddress = formatAddress(invoice.delivery_address, invoice.delivery_suburb, invoice.delivery_state, invoice.delivery_postcode) || billingAddr;
+  
+      const finalSubtotal = invoice.subtotal !== null && invoice.subtotal !== undefined 
+          ? Number(invoice.subtotal) 
+          : mappedItems.reduce((sum: number, item: any) => sum + (Number(item.amount) || 0), 0);
+          
+      const finalGST = invoice.gst_total !== null && invoice.gst_total !== undefined 
+          ? Number(invoice.gst_total) 
+          : finalSubtotal * 0.10;
+          
+      const finalTotalAmount = invoice.total_amount !== null && invoice.total_amount !== undefined 
+          ? Number(invoice.total_amount) 
+          : finalSubtotal + finalGST;
+  
+      const isCreditMemo = typeof invoice.id === 'string' && invoice.id.startsWith('CR-');
+  
+      return {
+        id: invoice.id,
+        invoiceNo: invoice.id,
+        date: invoice.invoice_date,
+        dueDate: invoice.due_date || invoice.invoice_date,
+        customerName: invoice.customers?.company || invoice.customers?.name || "Unknown Customer",
+        customerMobile: invoice.customers?.mobile || "",
+        deliveryName: invoice.customers?.name || "",
+        address: billingAddr,
+        deliveryAddress: finalDeliveryAddress,
+        memo: invoice.memo || invoice.notes || "", 
+        items: mappedItems,
+        subtotal: finalSubtotal,
+        gst: finalGST,
+        total: finalTotalAmount,
+        totalAmount: finalTotalAmount,
+        paidAmount: Number(invoice.paid_amount) || 0,
+        balanceDue: finalTotalAmount - (Number(invoice.paid_amount) || 0),
+        companyName: settings.company_name || "",
+        companyAbn: settings.abn || "",
+        companyPhone: settings.phone || "",
+        companyEmail: settings.email || "",
+        companyAddress: formatAddress(settings.address_line1, settings.suburb, settings.state, settings.postcode),
+        bankName: settings.bank_name || "",
+        bsb: settings.bsb_number || "",
+        accountNumber: settings.account_number || "",
+        bank_payid: settings.bank_payid || "-",
+        invoiceInfo: settings.invoice_info || "",
+        isCreditMemo: isCreditMemo,
+        
+        // 🚀 서버 환경 전용 물리적 로고 주소
+        logoUrl: `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/company_logo/logo.png`
+      };
+    } catch (err) {
+      console.error("❌ [PDF Server] Mapping Error:", err);
+      return null;
+    }
+  };
+
 
 // ==================================================================
 // 🔥 SERVER-SIDE ONLY: CRON JOB 전용 Invoice 생성 함수
@@ -129,18 +237,15 @@ export const generateInvoiceBufferForServer = async (
     invoiceId: string
 ): Promise<{ buffer: Buffer, filename: string, customerEmail: string, customerEmailCc: string, customerName: string } | null> => {
     try {
-        // 1. 기존 downloadPdf.ts에 있는 getInvoiceData를 그대로 재활용하여 데이터를 가져옵니다.
-        const data = await getInvoiceData(invoiceId);
+        // 🚀 클라이언트 함수 대신, 방금 위에 만든 서버 전용 함수를 호출합니다!
+        const data = await getServerInvoiceData(invoiceId);
         if (!data) throw new Error("Invoice data not found");
 
-        // 🚀 [핵심] 서버 전용 renderToBuffer 사용!
         const buffer = await renderToBuffer(<InvoiceDocument data={data} />);
         
         const safeName = (data.customerName || "Customer").replace(/[^a-zA-Z0-9가-힣\s]/g, "").trim(); 
         const filename = `${data.invoiceNo}_${data.date}_${safeName}.pdf`;
 
-        // 이메일 발송에 필요한 정보도 같이 묶어서 반환합니다.
-        // (getInvoiceData 내부에서 customers 조인이 되어 있어야 합니다)
         const supabase = createClient();
         const { data: customerData } = await supabase.from('customers').select('email, email_cc').eq('company', data.customerName).limit(1).single();
 

@@ -5,7 +5,7 @@ import { createClient } from "@/utils/supabase/client";
 import { 
   Plus, Search, Filter, X, 
   Eye, ChevronUp, CreditCard, Trash2, AlertTriangle, MoreHorizontal, FileText,
-  Edit // ✅ Edit 아이콘 사용
+  Edit, ChevronLeft, ChevronRight // ✅ 좌우 화살표 아이콘 추가
 } from "lucide-react";
 import Link from "next/link";
 
@@ -19,8 +19,8 @@ interface Payment {
   id: string;
   payment_date: string;
   amount: number;
-  unallocated_amount: number; // Credit
-  category: string; // Payment Method
+  unallocated_amount: number;
+  category: string;
   reason: string;
   customer: {
     name: string;
@@ -45,19 +45,25 @@ export default function PaymentListPage() {
   const [payments, setPayments] = useState<Payment[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
-  
-  // Method 필터 상태
   const [selectedMethod, setSelectedMethod] = useState("");
 
-  // ------------------------------------------------------------------
-  // [FIX] 날짜 초기화 로직 (서버 시간 문제 해결)
-  // ------------------------------------------------------------------
+  // ✅ 페이지네이션 관련 상태 추가
+  const [limit, setLimit] = useState<number | "all">(20); // 기본값 20개
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
+
+  // ✅ 검색어 디바운스 상태 (서버에 검색 요청을 너무 자주 보내지 않기 위함)
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+  const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(new Set());
+  const [allocationsCache, setAllocationsCache] = useState<Record<string, PaymentAllocation[]>>({});
+  const [loadingRows, setLoadingRows] = useState<Set<string>>(new Set());
 
+  // 날짜 초기화 로직
   useEffect(() => {
     const now = new Date();
-    // 로컬 시간 기준 YYYY-MM-DD
     const year = now.getFullYear();
     const month = String(now.getMonth() + 1).padStart(2, '0');
     const day = String(now.getDate()).padStart(2, '0');
@@ -66,36 +72,76 @@ export default function PaymentListPage() {
     setStartDate(localDate);
     setEndDate(localDate);
   }, []);
-  // ------------------------------------------------------------------
 
-  const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(new Set());
-  const [allocationsCache, setAllocationsCache] = useState<Record<string, PaymentAllocation[]>>({});
-  const [loadingRows, setLoadingRows] = useState<Set<string>>(new Set());
+  // ✅ 1. 사용자가 검색어를 입력하면 0.5초 대기 후 서버 요청 검색어 업데이트
+  useEffect(() => {
+    const handler = setTimeout(() => setDebouncedSearch(searchTerm), 500);
+    return () => clearTimeout(handler);
+  }, [searchTerm]);
 
-  // [FIX] 데이터 로딩 (날짜가 세팅된 후에 실행)
+  //✅ 2. 필터(날짜, 보기 개수, 메서드, 검색어)가 변경되면 무조건 1페이지로 리셋
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [startDate, endDate, limit, selectedMethod, debouncedSearch]);
+
+  // ✅ 3. 조건이나 페이지가 변경될 때마다 데이터 다시 읽어오기
   useEffect(() => {
     if (startDate && endDate) {
       fetchPayments();
     }
-  }, [startDate, endDate]);
+  }, [startDate, endDate, limit, currentPage, selectedMethod, debouncedSearch]);
 
   const fetchPayments = async () => {
     setLoading(true);
+
+    // 1. 기본 쿼리 설정
     let query = supabase
       .from("payments")
       .select(`
         *,
         customer:customers (name)
-      `)
-      // [UPDATE] CR- 제외 필터 삭제 -> 모든 Payment 표시
+      `, { count: "exact" })
       .order("payment_date", { ascending: false });
 
+    // 2. 날짜 및 메서드 필터 적용
     if (startDate) query = query.gte("payment_date", startDate);
     if (endDate) query = query.lte("payment_date", `${endDate}T23:59:59`);
+    if (selectedMethod) query = query.eq("category", selectedMethod);
 
-    const { data, error } = await query;
-    if (!error && data) {
+    // ✅ 3. 검색 로직 수정: Two-step 검색 적용
+    if (debouncedSearch) {
+      // Step A: 고객 테이블에서 검색어가 포함된 고객의 ID들을 먼저 찾습니다.
+      const { data: matchedCustomers } = await supabase
+        .from("customers")
+        .select("id")
+        .ilike("name", `%${debouncedSearch}%`);
+
+      // 찾은 고객 ID들을 배열로 추출
+      const customerIds = matchedCustomers?.map((c) => c.id) || [];
+
+      // Step B: 찾아낸 고객 ID가 있으면 or 조건에 포함하고, 없으면 결제 ID만 검색
+      if (customerIds.length > 0) {
+        // 💡 주의: payments 테이블이 customers 테이블과 연결된 컬럼명이 'customer_id'라고 가정했습니다.
+        query = query.or(`id.ilike.%${debouncedSearch}%,customer_id.in.(${customerIds.join(',')})`);
+      } else {
+        query = query.ilike("id", `%${debouncedSearch}%`);
+      }
+    }
+
+    // 4. 페이지네이션 적용
+    if (limit !== "all") {
+      const from = (currentPage - 1) * limit;
+      const to = from + limit - 1;
+      query = query.range(from, to);
+    }
+
+    const { data, count, error } = await query;
+    
+    if (error) {
+      console.error("Fetch Error:", error);
+    } else if (data) {
       setPayments(data as any); 
+      if (count !== null) setTotalCount(count);
     }
     setLoading(false);
   };
@@ -116,14 +162,8 @@ export default function PaymentListPage() {
         const { data, error } = await supabase
           .from("payment_allocations")
           .select(`
-            id,
-            amount,
-            created_at,
-            invoice:invoices (
-              id,
-              invoice_date,
-              total_amount
-            )
+            id, amount, created_at,
+            invoice:invoices ( id, invoice_date, total_amount )
           `)
           .eq("payment_id", paymentId)
           .order("created_at", { ascending: false });
@@ -141,7 +181,6 @@ export default function PaymentListPage() {
     }
   };
 
-  // --- [최종 수정] Payment 삭제 로직: CR-은 전체 삭제, 일반은 결제만 취소 ---
   const handleDeletePayment = async (paymentId: string) => {
     const isCreditMemo = paymentId.startsWith('CR-');
     
@@ -154,8 +193,6 @@ export default function PaymentListPage() {
     setLoading(true);
 
     try {
-      // 1. 일반 인보이스들의 결제 상태(paid_amount) 복구 로직
-      // (CR- 인보이스는 어차피 통째로 지울 것이므로 이 단계에서 복구할 필요 없음)
       if (!isCreditMemo) {
         const { data: allocations, error: allocError } = await supabase
           .from('payment_allocations')
@@ -193,23 +230,19 @@ export default function PaymentListPage() {
         }
       }
 
-      // 2. [핵심] CR- 인보이스인 경우 전체 삭제 (순서가 중요: 아이템 -> 인보이스 순)
       if (isCreditMemo) {
-          // 🚀 반드시 아이템(속)을 먼저 지워야 껍데기(인보이스)를 지울 수 있습니다!
           await supabase.from('invoice_items').delete().eq('invoice_id', paymentId);
           const { error: invDelError } = await supabase.from('invoices').delete().eq('id', paymentId);
           if (invDelError) throw invDelError;
       }
 
-      // 3. 결제 내역(Payment & Allocation) 삭제
-      // 🚀 일반 결제건은 여기서 결제 기록만 날아가고 인보이스/아이템은 건드리지 않습니다.
       await supabase.from('payment_allocations').delete().eq('payment_id', paymentId);
       const { error: deleteError } = await supabase.from('payments').delete().eq('id', paymentId);
       
       if (deleteError) throw deleteError;
 
       alert(isCreditMemo ? "Credit Memo와 결제 내역이 모두 삭제되었습니다." : "결제 내역이 성공적으로 취소되었습니다.");
-      fetchPayments(); // 목록 새로고침
+      fetchPayments(); 
 
     } catch (error: any) {
       console.error("Delete Error:", error);
@@ -219,16 +252,12 @@ export default function PaymentListPage() {
     }
   };
 
-
-  // --- Helpers ---
   const uniqueMethods = Array.from(new Set(payments.map(p => p.category))).filter(Boolean).sort();
 
+  // ✅ 서버 사이드 검색을 적용했으므로, 클라이언트 필터는 Customer Name 보조용으로만 사용
   const filteredPayments = payments.filter(p => {
-    const matchesSearch = (p.customer?.name || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
-                          p.id.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesMethod = selectedMethod ? p.category === selectedMethod : true;
-    
-    return matchesSearch && matchesMethod;
+    return (p.customer?.name || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
+           p.id.toLowerCase().includes(searchTerm.toLowerCase());
   });
 
   const formatCurrency = (amount: number) => 
@@ -240,6 +269,9 @@ export default function PaymentListPage() {
   };
 
   const clearDates = () => { setStartDate(""); setEndDate(""); };
+
+  // ✅ 총 페이지 수 계산
+  const totalPages = limit === "all" ? 1 : Math.ceil(totalCount / limit);
 
   return (
     <div className="p-6 max-w-[1600px] mx-auto space-y-6">
@@ -283,7 +315,34 @@ export default function PaymentListPage() {
 
         <div className="flex-1"></div>
 
-        <div className="relative min-w-[180px]">
+        {/* ✅ 개수 제한 선택 셀렉트 박스 (10, 20, 30, 50, all) */}
+        <div className="flex items-center gap-2">
+          {/* 1. 라벨 추가 */}
+          <span className="text-xs font-bold text-slate-500 uppercase whitespace-nowrap">Show:</span> 
+          
+          {/* 2. 드롭다운 컨테이너 (relative 추가) */}
+          <div className="relative min-w-[100px]">
+            <select 
+              value={limit} 
+              onChange={(e) => setLimit(e.target.value === "all" ? "all" : Number(e.target.value))}
+              // ✅ w-full 제거 (한 줄에 넣기 위해), pr-8로 화살표 공간 확보
+              className="w-full pl-3 pr-8 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-slate-400 bg-white appearance-none cursor-pointer text-slate-700 font-medium"
+            >
+              <option value={10}>10</option>
+              <option value={20}>20</option>
+              <option value={30}>30</option>
+              <option value={50}>50</option>
+              <option value="all">ALL</option>
+            </select>
+            
+            {/* 3. 화살표 아이콘 */}
+            <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
+              <ChevronUp className="w-4 h-4 text-slate-400 rotate-180" />
+            </div>
+          </div>
+        </div>
+
+        <div className="relative min-w-[150px]">
            <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
              <CreditCard className="w-4 h-4" />
            </div>
@@ -306,7 +365,7 @@ export default function PaymentListPage() {
           <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400"/>
           <input 
             type="text" 
-            placeholder="Search customer..." 
+            placeholder="Search ID or Customer..." 
             className="w-full pl-10 pr-4 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-slate-400" 
             value={searchTerm} 
             onChange={(e) => setSearchTerm(e.target.value)}
@@ -315,179 +374,206 @@ export default function PaymentListPage() {
       </div>
 
       {/* Table */}
-      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-        <table className="w-full text-left text-sm">
-          <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase text-xs">
-            <tr>
-              <th className="px-6 py-4">Payment #</th>
-              <th className="px-6 py-4">Date</th>
-              <th className="px-6 py-4">Customer</th>
-              <th className="px-6 py-4">Method</th>
-              <th className="px-6 py-4 text-right">Total Amount</th>
-              <th className="px-6 py-4 text-right">Credit</th>
-              <th className="px-6 py-4 text-center">Status</th>
-              <th className="px-6 py-4 text-center">Action</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {loading ? (
-              <tr><td colSpan={8} className="p-10 text-center text-slate-400">Loading payments...</td></tr>
-            ) : filteredPayments.length === 0 ? (
-              <tr><td colSpan={8} className="p-10 text-center text-slate-400">No payments found.</td></tr>
-            ) : (
-              filteredPayments.map((pay) => {
-                const isExpanded = expandedRowIds.has(pay.id);
-                const isCreditRemaining = pay.unallocated_amount > 0;
-                const isCreditMemo = pay.id.startsWith("CR-");
+      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm flex flex-col">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase text-xs">
+              <tr>
+                <th className="px-6 py-4">Payment #</th>
+                <th className="px-6 py-4">Date</th>
+                <th className="px-6 py-4">Customer</th>
+                <th className="px-6 py-4">Method</th>
+                <th className="px-6 py-4 text-right">Total Amount</th>
+                <th className="px-6 py-4 text-right">Credit</th>
+                <th className="px-6 py-4 text-center">Status</th>
+                <th className="px-6 py-4 text-center">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {loading ? (
+                <tr><td colSpan={8} className="p-10 text-center text-slate-400">Loading payments...</td></tr>
+              ) : filteredPayments.length === 0 ? (
+                <tr><td colSpan={8} className="p-10 text-center text-slate-400">No payments found.</td></tr>
+              ) : (
+                filteredPayments.map((pay) => {
+                  const isExpanded = expandedRowIds.has(pay.id);
+                  const isCreditRemaining = pay.unallocated_amount > 0;
+                  const isCreditMemo = pay.id.startsWith("CR-");
 
-                return (
-                  <React.Fragment key={pay.id}>
-                    <tr className={`transition-colors border-b border-slate-50 ${isExpanded ? "bg-slate-50" : "hover:bg-slate-50"}`}>
-                      <td className="px-6 py-4 font-mono text-xs text-slate-500" title={pay.id}>
-                        {isCreditMemo ? (
-                            <span className="bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded border border-blue-100 font-bold">
-                                {pay.id}
-                            </span>
-                        ) : (
-                            `#${pay.id ? pay.id.slice(0,12).toUpperCase() : "UNKNOWN"}`
-                        )}
-                      </td>
-                      <td className="px-6 py-4 text-slate-700">{pay.payment_date}</td>
-                      <td className="px-6 py-4 font-bold text-slate-900">{pay.customer?.name || "Unknown"}</td>
-                      <td className="px-6 py-4">
-                        <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium ${isCreditMemo ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-slate-200 text-slate-700'}`}>
-                          {isCreditMemo ? <FileText className="w-3 h-3"/> : <CreditCard className="w-3 h-3 text-slate-400" />}
-                          {pay.category}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 text-right font-bold text-slate-900">{formatCurrency(pay.amount)}</td>
-                      <td className="px-6 py-4 text-right">
-                        {isCreditRemaining ? (
-                          <span className="font-bold text-emerald-600">{formatCurrency(pay.unallocated_amount)}</span>
-                        ) : (
-                          <span className="text-slate-300">-</span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 text-center">
-                        {isCreditRemaining ? (
-                          <span className="px-2 py-1 bg-emerald-100 text-emerald-700 text-[10px] font-bold rounded-full border border-emerald-200">CREDIT AVAILABLE</span>
-                        ) : (
-                          <span className="px-2 py-1 bg-slate-100 text-slate-500 text-[10px] font-bold rounded-full border border-slate-200">FULLY USED</span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 text-center">
-                        <div className="flex items-center justify-center gap-2">
-                          {/* 1. Detail Toggle */}
-                          <button 
-                            onClick={() => toggleRow(pay.id)}
-                            className={`p-2 rounded-full transition-all ${isExpanded ? 'bg-slate-200 text-slate-900' : 'text-slate-400 hover:bg-slate-100 hover:text-blue-600'}`}
-                            title="View Details"
-                          >
-                            {isExpanded ? <ChevronUp className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                          </button>
-
-                          {/* 2. Edit Payment (새로 추가) */}
-                          <Link href={`/payment/edit/${pay.id}`}>
+                  return (
+                    <React.Fragment key={pay.id}>
+                      <tr className={`transition-colors border-b border-slate-50 ${isExpanded ? "bg-slate-50" : "hover:bg-slate-50"}`}>
+                        <td className="px-6 py-4 font-mono text-xs text-slate-500" title={pay.id}>
+                          {isCreditMemo ? (
+                              <span className="bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded border border-blue-100 font-bold">
+                                  {pay.id}
+                              </span>
+                          ) : (
+                              `#${pay.id ? pay.id.slice(0,12).toUpperCase() : "UNKNOWN"}`
+                          )}
+                        </td>
+                        <td className="px-6 py-4 text-slate-700">{pay.payment_date}</td>
+                        <td className="px-6 py-4 font-bold text-slate-900">{pay.customer?.name || "Unknown"}</td>
+                        <td className="px-6 py-4">
+                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium ${isCreditMemo ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-slate-200 text-slate-700'}`}>
+                            {isCreditMemo ? <FileText className="w-3 h-3"/> : <CreditCard className="w-3 h-3 text-slate-400" />}
+                            {pay.category}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 text-right font-bold text-slate-900">{formatCurrency(pay.amount)}</td>
+                        <td className="px-6 py-4 text-right">
+                          {isCreditRemaining ? (
+                            <span className="font-bold text-emerald-600">{formatCurrency(pay.unallocated_amount)}</span>
+                          ) : (
+                            <span className="text-slate-300">-</span>
+                          )}
+                        </td>
+                        <td className="px-6 py-4 text-center">
+                          {isCreditRemaining ? (
+                            <span className="px-2 py-1 bg-emerald-100 text-emerald-700 text-[10px] font-bold rounded-full border border-emerald-200">CREDIT AVAILABLE</span>
+                          ) : (
+                            <span className="px-2 py-1 bg-slate-100 text-slate-500 text-[10px] font-bold rounded-full border border-slate-200">FULLY USED</span>
+                          )}
+                        </td>
+                        <td className="px-6 py-4 text-center">
+                          <div className="flex items-center justify-center gap-2">
                             <button 
-                              onClick={(e) => e.stopPropagation()}
-                              className="p-2 text-slate-400 hover:bg-slate-100 hover:text-blue-600 rounded-full transition-all"
-                              title="Edit Payment"
+                              onClick={() => toggleRow(pay.id)}
+                              className={`p-2 rounded-full transition-all ${isExpanded ? 'bg-slate-200 text-slate-900' : 'text-slate-400 hover:bg-slate-100 hover:text-blue-600'}`}
+                              title="View Details"
                             >
-                              <Edit className="w-4 h-4" />
+                              {isExpanded ? <ChevronUp className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                             </button>
-                          </Link>
-                          
-                          {/* 3. Delete Payment */}
-                          <button 
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeletePayment(pay.id);
-                            }}
-                            className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-full transition-all"
-                            title="Delete Payment"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
 
-                    {/* Detail Row */}
-                    {isExpanded && (
-                      <tr className="bg-slate-50 border-b border-slate-200 animate-in fade-in slide-in-from-top-1">
-                        <td colSpan={8} className="px-6 py-4 pl-12">
-                          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
-                            <div className="flex items-center justify-between mb-4 pb-4 border-b border-slate-100">
-                              <div>
-                                <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                                  Payment Details <span className="text-slate-400 font-normal">#{pay.id}</span>
-                                </h4>
-                                {pay.reason && <p className="text-xs text-slate-500 mt-1">Note: {pay.reason}</p>}
-                              </div>
-                              <div className="flex gap-6 text-right">
-                                <div>
-                                  <p className="text-[10px] font-bold text-slate-400 uppercase">Total Received</p>
-                                  <p className="text-sm font-bold text-slate-900">{formatCurrency(pay.amount)}</p>
-                                </div>
-                                <div>
-                                  <p className="text-[10px] font-bold text-slate-400 uppercase">Allocated</p>
-                                  <p className="text-sm font-bold text-slate-700">{formatCurrency(pay.amount - pay.unallocated_amount)}</p>
-                                </div>
-                                <div className={`px-3 py-1 rounded-lg ${isCreditRemaining ? 'bg-emerald-50 border border-emerald-100' : 'bg-slate-50'}`}>
-                                  <p className={`text-[10px] font-bold uppercase ${isCreditRemaining ? 'text-emerald-600' : 'text-slate-400'}`}>Unused (Credit)</p>
-                                  <p className={`text-sm font-black ${isCreditRemaining ? 'text-emerald-600' : 'text-slate-300'}`}>{formatCurrency(pay.unallocated_amount)}</p>
-                                </div>
-                              </div>
-                            </div>
-                            <h5 className="text-xs font-bold text-slate-500 mb-2 uppercase">Applied to Invoices</h5>
-                            {loadingRows.has(pay.id) ? (
-                              <div className="text-center py-4 text-slate-400 text-xs">Loading allocations...</div>
-                            ) : (allocationsCache[pay.id] && allocationsCache[pay.id].length > 0) ? (
-                              <table className="w-full text-xs text-left">
-                                <thead className="bg-slate-100 text-slate-500 font-bold border-b border-slate-200">
-                                  <tr>
-                                    <th className="px-3 py-2">Invoice #</th>
-                                    <th className="px-3 py-2">Invoice Date</th>
-                                    <th className="px-3 py-2 text-center text-slate-700">Applied Date</th>
-                                    <th className="px-3 py-2 text-right">Invoice Total</th>
-                                    <th className="px-3 py-2 text-right text-blue-700 bg-blue-50/50">Amount Applied</th>
-                                  </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-50">
-                                  {allocationsCache[pay.id].map((alloc) => {
-                                    const payDate = new Date(pay.payment_date);
-                                    const allocDate = new Date(alloc.created_at);
-                                    const isLaterCredit = payDate.setHours(0,0,0,0) < allocDate.setHours(0,0,0,0);
-                                    return (
-                                      <tr key={alloc.id} className="hover:bg-slate-50">
-                                        <td className="px-3 py-2 font-medium text-slate-700">#{alloc.invoice?.id}</td>
-                                        <td className="px-3 py-2 text-slate-500">{alloc.invoice?.invoice_date}</td>
-                                        <td className="px-3 py-2 text-center">
-                                          <div className="flex items-center justify-center gap-2">
-                                            <span className="text-slate-600 font-medium">{formatDate(alloc.created_at)}</span>
-                                            {isLaterCredit && <span className="px-1.5 py-0.5 rounded text-[9px] bg-purple-100 text-purple-700 font-bold border border-purple-200">CREDIT USED</span>}
-                                          </div>
-                                        </td>
-                                        <td className="px-3 py-2 text-right text-slate-500">{formatCurrency(alloc.invoice?.total_amount)}</td>
-                                        <td className="px-3 py-2 text-right font-bold text-blue-700 bg-blue-50/30">{formatCurrency(alloc.amount)}</td>
-                                      </tr>
-                                    );
-                                  })}
-                                </tbody>
-                              </table>
-                            ) : (
-                              <div className="p-4 text-center bg-slate-50 rounded-lg text-slate-400 text-xs border border-dashed border-slate-200">No invoices have been allocated to this payment yet.</div>
-                            )}
+                            <Link href={`/payment/edit/${pay.id}`}>
+                              <button 
+                                onClick={(e) => e.stopPropagation()}
+                                className="p-2 text-slate-400 hover:bg-slate-100 hover:text-blue-600 rounded-full transition-all"
+                                title="Edit Payment"
+                              >
+                                <Edit className="w-4 h-4" />
+                              </button>
+                            </Link>
+                            
+                            <button 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeletePayment(pay.id);
+                              }}
+                              className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-full transition-all"
+                              title="Delete Payment"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
                           </div>
                         </td>
                       </tr>
-                    )}
-                  </React.Fragment>
-                );
-              })
-            )}
-          </tbody>
-        </table>
+
+                      {/* Detail Row */}
+                      {isExpanded && (
+                        <tr className="bg-slate-50 border-b border-slate-200 animate-in fade-in slide-in-from-top-1">
+                          <td colSpan={8} className="px-6 py-4 pl-12">
+                            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+                              <div className="flex items-center justify-between mb-4 pb-4 border-b border-slate-100">
+                                <div>
+                                  <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                                    Payment Details <span className="text-slate-400 font-normal">#{pay.id}</span>
+                                  </h4>
+                                  {pay.reason && <p className="text-xs text-slate-500 mt-1">Note: {pay.reason}</p>}
+                                </div>
+                                <div className="flex gap-6 text-right">
+                                  <div>
+                                    <p className="text-[10px] font-bold text-slate-400 uppercase">Total Received</p>
+                                    <p className="text-sm font-bold text-slate-900">{formatCurrency(pay.amount)}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-[10px] font-bold text-slate-400 uppercase">Allocated</p>
+                                    <p className="text-sm font-bold text-slate-700">{formatCurrency(pay.amount - pay.unallocated_amount)}</p>
+                                  </div>
+                                  <div className={`px-3 py-1 rounded-lg ${isCreditRemaining ? 'bg-emerald-50 border border-emerald-100' : 'bg-slate-50'}`}>
+                                    <p className={`text-[10px] font-bold uppercase ${isCreditRemaining ? 'text-emerald-600' : 'text-slate-400'}`}>Unused (Credit)</p>
+                                    <p className={`text-sm font-black ${isCreditRemaining ? 'text-emerald-600' : 'text-slate-300'}`}>{formatCurrency(pay.unallocated_amount)}</p>
+                                  </div>
+                                </div>
+                              </div>
+                              <h5 className="text-xs font-bold text-slate-500 mb-2 uppercase">Applied to Invoices</h5>
+                              {loadingRows.has(pay.id) ? (
+                                <div className="text-center py-4 text-slate-400 text-xs">Loading allocations...</div>
+                              ) : (allocationsCache[pay.id] && allocationsCache[pay.id].length > 0) ? (
+                                <table className="w-full text-xs text-left">
+                                  <thead className="bg-slate-100 text-slate-500 font-bold border-b border-slate-200">
+                                    <tr>
+                                      <th className="px-3 py-2">Invoice #</th>
+                                      <th className="px-3 py-2">Invoice Date</th>
+                                      <th className="px-3 py-2 text-center text-slate-700">Applied Date</th>
+                                      <th className="px-3 py-2 text-right">Invoice Total</th>
+                                      <th className="px-3 py-2 text-right text-blue-700 bg-blue-50/50">Amount Applied</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-slate-50">
+                                    {allocationsCache[pay.id].map((alloc) => {
+                                      const payDate = new Date(pay.payment_date);
+                                      const allocDate = new Date(alloc.created_at);
+                                      const isLaterCredit = payDate.setHours(0,0,0,0) < allocDate.setHours(0,0,0,0);
+                                      return (
+                                        <tr key={alloc.id} className="hover:bg-slate-50">
+                                          <td className="px-3 py-2 font-medium text-slate-700">#{alloc.invoice?.id}</td>
+                                          <td className="px-3 py-2 text-slate-500">{alloc.invoice?.invoice_date}</td>
+                                          <td className="px-3 py-2 text-center">
+                                            <div className="flex items-center justify-center gap-2">
+                                              <span className="text-slate-600 font-medium">{formatDate(alloc.created_at)}</span>
+                                              {isLaterCredit && <span className="px-1.5 py-0.5 rounded text-[9px] bg-purple-100 text-purple-700 font-bold border border-purple-200">CREDIT USED</span>}
+                                            </div>
+                                          </td>
+                                          <td className="px-3 py-2 text-right text-slate-500">{formatCurrency(alloc.invoice?.total_amount)}</td>
+                                          <td className="px-3 py-2 text-right font-bold text-blue-700 bg-blue-50/30">{formatCurrency(alloc.amount)}</td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              ) : (
+                                <div className="p-4 text-center bg-slate-50 rounded-lg text-slate-400 text-xs border border-dashed border-slate-200">No invoices have been allocated to this payment yet.</div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+        
+        {/* ✅ 페이지네이션 Footer 컨트롤 */}
+        {!loading && limit !== "all" && totalCount > 0 && (
+          <div className="flex items-center justify-between px-6 py-4 bg-slate-50 border-t border-slate-200">
+            <p className="text-sm text-slate-500">
+              Showing <span className="font-bold text-slate-700">{(currentPage - 1) * (limit as number) + 1}</span> to <span className="font-bold text-slate-700">{Math.min(currentPage * (limit as number), totalCount)}</span> of <span className="font-bold text-slate-700">{totalCount}</span> entries
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 font-medium text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-100 transition-colors"
+              >
+                <ChevronLeft className="w-4 h-4" /> Prev
+              </button>
+              <div className="flex items-center px-4 text-sm font-medium text-slate-700 bg-white border border-slate-200 rounded-lg">
+                Page {currentPage} / {totalPages}
+              </div>
+              <button
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages || totalPages === 0}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 font-medium text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-100 transition-colors"
+              >
+                Next <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

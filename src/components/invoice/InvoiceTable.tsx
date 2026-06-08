@@ -29,6 +29,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
+import { updateInventory } from "@/utils/inventory"; 
+
 // --- [Utility] 반올림 함수 ---
 const roundAmount = (num: number) => {
   return Math.round((num + Number.EPSILON) * 100) / 100;
@@ -555,31 +557,14 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
       const { data: itemsToDelete } = await supabase.from("invoice_items").select("product_id, quantity, unit").eq("invoice_id", id);
       
       if (itemsToDelete && itemsToDelete.length > 0) {
-          const stockUpdates: Record<string, { ctn: number, pack: number }> = {};
-          itemsToDelete.forEach(item => {
-              if (!item.product_id) return;
-              if (!stockUpdates[item.product_id]) stockUpdates[item.product_id] = { ctn: 0, pack: 0 };
-              
-              if (item.unit === "CTN") stockUpdates[item.product_id].ctn += item.quantity;
-              else stockUpdates[item.product_id].pack += item.quantity;
-          });
-
-          const productIds = Object.keys(stockUpdates);
-
-          if (productIds.length > 0) {
-              const { data: products } = await supabase.from("products").select("id, current_stock_level, current_stock_level_pack").in("id", productIds);
-              
-              if (products && products.length > 0) {
-                  const updatePromises = products.map(product => {
-                      const adjustment = stockUpdates[product.id];
-                      return supabase.from("products").update({
-                          current_stock_level: (product.current_stock_level || 0) + adjustment.ctn,
-                          current_stock_level_pack: (product.current_stock_level_pack || 0) + adjustment.pack
-                      }).eq("id", product.id);
-                  });
-                  await Promise.all(updatePromises);
-              }
-          }
+          // 🚀 수동 계산 로직 싹 지우고, 우리가 만든 완벽한 공용 함수 하나만 호출합니다.
+          const mappedItems = itemsToDelete.map((item: any) => ({
+              productId: item.product_id,
+              quantity: item.quantity,
+              unit: item.unit || 'EA'
+          }));
+          // isReturn을 true로 주어 삭제(복구) 처리
+          await updateInventory(supabase, mappedItems, true); 
       }
 
       // 2. 인보이스 아이템 삭제 (에러 발생 시 중단되도록 throw)
@@ -660,31 +645,13 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
         const { data: allItemsToDelete } = await supabase.from("invoice_items").select("product_id, quantity, unit").in("invoice_id", ids);
         
         if (allItemsToDelete && allItemsToDelete.length > 0) {
-            const stockUpdates: Record<string, { ctn: number, pack: number }> = {};
-            allItemsToDelete.forEach(item => {
-                if (!item.product_id) return;
-                if (!stockUpdates[item.product_id]) stockUpdates[item.product_id] = { ctn: 0, pack: 0 };
-                
-                if (item.unit === "CTN") stockUpdates[item.product_id].ctn += item.quantity;
-                else stockUpdates[item.product_id].pack += item.quantity;
-            });
-
-            const productIds = Object.keys(stockUpdates);
-
-            if (productIds.length > 0) {
-                const { data: products } = await supabase.from("products").select("id, current_stock_level, current_stock_level_pack").in("id", productIds);
-                
-                if (products && products.length > 0) {
-                    const updatePromises = products.map(product => {
-                        const adjustment = stockUpdates[product.id];
-                        return supabase.from("products").update({
-                            current_stock_level: (product.current_stock_level || 0) + adjustment.ctn,
-                            current_stock_level_pack: (product.current_stock_level_pack || 0) + adjustment.pack
-                        }).eq("id", product.id);
-                    });
-                    await Promise.all(updatePromises);
-                }
-            }
+            // 🚀 여기서도 공용 함수를 호출하여 롤오버(박스 환산) 로직을 완벽하게 태웁니다.
+            const mappedItems = allItemsToDelete.map((item: any) => ({
+                productId: item.product_id,
+                quantity: item.quantity,
+                unit: item.unit || 'EA'
+            }));
+            await updateInventory(supabase, mappedItems, true);
         }
 
         // 2. 인보이스 아이템 일괄 삭제

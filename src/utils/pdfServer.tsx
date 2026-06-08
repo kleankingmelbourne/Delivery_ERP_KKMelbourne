@@ -1,8 +1,17 @@
 // src/utils/pdfServer.tsx
-import { renderToBuffer } from '@react-pdf/renderer';
+import { renderToBuffer, Font } from '@react-pdf/renderer';
 import { createClient } from '@/utils/supabase/client';
 import StatementDocument, { StatementData, StatementTransaction, StatementAgeing } from '@/components/pdf/StatementDocument';
 import React from 'react';
+import path from 'path'; // 🚀 파일 경로를 찾기 위한 Node.js 기본 모듈
+
+// ==================================================================
+// 🚀 서버 환경 전용 폰트 등록 (Next.js의 public 폴더 경로를 직접 지정)
+// ==================================================================
+Font.register({
+  family: 'NotoSansKR',
+  src: path.join(process.cwd(), 'public', 'font', 'NotoSansKR-Medium.ttf'), 
+});
 
 export const generateStatementBufferForServer = async (
     customerId: string, 

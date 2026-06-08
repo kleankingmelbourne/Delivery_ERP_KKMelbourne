@@ -123,28 +123,33 @@ export const generateStatementBufferForServer = async (
 // ==================================================================
 // 🔥 SERVER-SIDE ONLY: CRON JOB 전용 Invoice 데이터 추출 함수
 // ==================================================================
+// ==================================================================
+// 🔥 SERVER-SIDE ONLY: CRON JOB 전용 Invoice 데이터 추출 함수
+// ==================================================================
 export const getServerInvoiceData = async (invoiceId: string): Promise<any | null> => {
     if (!invoiceId) return null;
     const supabase = createClient();
     
-    const [invoiceRes, settingsRes] = await Promise.all([
-      supabase
-        .from('invoices')
-        .select(`
-          *,
-          customers ( 
-            id, name, company, address, suburb, state, postcode, mobile, email, email_cc,
-            delivery_address, delivery_suburb, delivery_state, delivery_postcode
-          ),
-          invoice_items ( quantity, unit, unit_price, amount, is_gst_included, products ( * ) )
-        `)
-        .eq('id', invoiceId)
-        .single(),
+    // 🚀 1. 인보이스와 아이템만 먼저 안전하게 가져옵니다. (JOIN 에러 원천 차단)
+    const { data: invoice, error: invoiceError } = await supabase
+      .from('invoices')
+      .select(`
+        *,
+        invoice_items ( quantity, unit, unit_price, amount, is_gst_included, products ( * ) )
+      `)
+      .eq('id', invoiceId)
+      .single();
+  
+    if (invoiceError || !invoice) return null;
+
+    // 🚀 2. 알아낸 customer_id로 고객 정보를 '따로' 확실하게 검색합니다.
+    const [customerRes, settingsRes] = await Promise.all([
+      supabase.from('customers').select('*').eq('id', invoice.customer_id).single(),
       supabase.from('company_settings').select('*').limit(1)
     ]);
-  
-    if (invoiceRes.error || !invoiceRes.data) return null;
-    const invoice = invoiceRes.data;
+
+    // 찾은 고객 데이터를 변수에 담습니다.
+    const customer = customerRes.data || {};
     const settingsList = settingsRes.data;
     const settings = settingsList && settingsList.length > 0 ? settingsList[0] : {};
   
@@ -172,7 +177,7 @@ export const getServerInvoiceData = async (invoiceId: string): Promise<any | nul
       const formatAddress = (addr?: string, sub?: string, st?: string, post?: string) => 
         [addr, sub, st, post].filter(Boolean).join(" ");
   
-      const billingAddr = formatAddress(invoice.customers?.address, invoice.customers?.suburb, invoice.customers?.state, invoice.customers?.postcode);
+      const billingAddr = formatAddress(customer.address, customer.suburb, customer.state, customer.postcode);
       const finalDeliveryAddress = formatAddress(invoice.delivery_address, invoice.delivery_suburb, invoice.delivery_state, invoice.delivery_postcode) || billingAddr;
   
       const finalSubtotal = invoice.subtotal !== null && invoice.subtotal !== undefined 
@@ -195,10 +200,10 @@ export const getServerInvoiceData = async (invoiceId: string): Promise<any | nul
         date: invoice.invoice_date,
         dueDate: invoice.due_date || invoice.invoice_date,
         
-        // 🚀 [수정] 무조건 존재하느 고객의 name 컬럼을 1순위 기준 이름으로 설정합니다.
-        customerName: invoice.customers?.name || invoice.customers?.company || "Unknown Customer",
-        customerMobile: invoice.customers?.mobile || "",
-        deliveryName: invoice.customers?.name || "",
+        // 🚀 조인이 아닌, 따로 검색한 고객 데이터에서 직접 꺼내옵니다.
+        customerName: customer.name || customer.company || "Unknown Customer",
+        customerMobile: customer.mobile || "",
+        deliveryName: customer.name || "",
         address: billingAddr,
         deliveryAddress: finalDeliveryAddress,
         memo: invoice.memo || invoice.notes || "", 
@@ -222,15 +227,15 @@ export const getServerInvoiceData = async (invoiceId: string): Promise<any | nul
         isCreditMemo: isCreditMemo,
         logoUrl: `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/company_logo/logo.png`,
         
-        // 🚀 [핵심 추가] 따로 다시 조회하지 않도록 이메일 정보를 데이터에 미리 심어둡니다.
-        customerEmail: invoice.customers?.email || "",
-        customerEmailCc: invoice.customers?.email_cc || ""
+        // 🚀 직접 꺼내온 이메일 (email 컬럼 매칭 완료!)
+        customerEmail: customer.email || "",
+        customerEmailCc: customer.email_cc || ""
       };
     } catch (err) {
       console.error("❌ [PDF Server] Mapping Error:", err);
       return null;
     }
-  };
+};
 
 
 // ==================================================================
@@ -249,9 +254,6 @@ export const generateInvoiceBufferForServer = async (
         const safeName = (data.customerName || "Customer").replace(/[^a-zA-Z0-9가-힣\s]/g, "").trim(); 
         const filename = `${data.invoiceNo}_${data.date}_${safeName}.pdf`;
 
-        // 🗑️ 에러를 유발하던 위험한 Supabase 추가 단일 조회 로직을 완전히 삭제했습니다!
-        // 위에서 조인(JOIN)으로 묶어온 안전한 이메일 데이터를 그대로 전달합니다.
-
         return { 
             buffer, 
             filename,
@@ -261,7 +263,7 @@ export const generateInvoiceBufferForServer = async (
         };
 
     } catch (error) {
-        console.error("❌ Server Invoice PDF Generation Error:", error);
+        console.error("❌ 상세 에러 내용:", error);
         return null;
     }
 };

@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { Resend } from "resend";
-//import { fetchAndGenerateStatementBlob } from "@/utils/downloadPdf";
-import { generateStatementBufferForServer } from "@/utils/downloadPdf";
+import { generateStatementBufferForServer } from "@/utils/pdfServer";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -131,20 +130,14 @@ export async function GET(request: Request) {
         }
 
         // 🚀 3. 백그라운드에서 PDF Blob 생성 (찾아낸 시작일 적용)
-        //const pdfData = await fetchAndGenerateStatementBlob(customer.id, startDateStr, endDateStr, customer.name);
-        //if (!pdfData || !pdfData.blob) {
-        //    throw new Error("Failed to generate PDF.");
-        //}
+        const pdfData = await generateStatementBufferForServer(customer.id, startDateStr, endDateStr, customer.name);
 
         // 🚀 4. Blob을 Resend가 읽을 수 있는 Buffer 형태로 변환
-        //const arrayBuffer = await pdfData.blob.arrayBuffer();
-        //const pdfBuffer = Buffer.from(arrayBuffer);
-        const pdfData = await generateStatementBufferForServer(customer.id, startDateStr, endDateStr, customer.name);
         if (!pdfData || !pdfData.buffer) throw new Error("Failed to generate server PDF.");
         
         // 🚀 변환 없이 바로 Resend에 던져주면 됩니다!
         const pdfBuffer = pdfData.buffer;
-        
+
         // 🚀 5. 이메일 발송 (PDF 첨부 + CC 포함)
         const { data: emailData, error: emailError } = await resend.emails.send({
           from: 'Klean King Accounts <admin@kleankingmelbourne.com.au>', // 실 서비스시 실제 도메인으로 변경 필수

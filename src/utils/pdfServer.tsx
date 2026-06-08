@@ -237,11 +237,14 @@ export const generateInvoiceBufferForServer = async (
     invoiceId: string
 ): Promise<{ buffer: Buffer, filename: string, customerEmail: string, customerEmailCc: string, customerName: string } | null> => {
     try {
-        // 🚀 클라이언트 함수 대신, 방금 위에 만든 서버 전용 함수를 호출합니다!
+        console.log(`[Server] 데이터 조회 시작: ${invoiceId}`);
         const data = await getServerInvoiceData(invoiceId);
         if (!data) throw new Error("Invoice data not found");
 
+        console.log(`[Server] PDF 렌더링 시작: ${data.invoiceNo}`);
+        // 🚀 만약 여기서 에러가 난다면 폰트나 로고 URL 문제일 확률 99%입니다.
         const buffer = await renderToBuffer(<InvoiceDocument data={data} />);
+        console.log(`[Server] PDF 렌더링 완료`);
         
         const safeName = (data.customerName || "Customer").replace(/[^a-zA-Z0-9가-힣\s]/g, "").trim(); 
         const filename = `${data.invoiceNo}_${data.date}_${safeName}.pdf`;
@@ -258,7 +261,8 @@ export const generateInvoiceBufferForServer = async (
         };
 
     } catch (error) {
-        console.error("❌ Server Invoice PDF Generation Error:", error);
+        // 🚀 에러 발생 시 정확한 에러 내용 출력
+        console.error("❌ 상세 에러 내용:", error);
         return null;
     }
 };

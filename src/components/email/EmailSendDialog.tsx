@@ -112,22 +112,20 @@ export default function EmailSendDialog({ open, onOpenChange, data }: EmailSendD
             const content = base64data.split(',')[1];
 
             const res = await fetch('/api/send-email', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
                 to,
-                cc, // 🚀 [추가] CC 데이터를 API로 전송
+                cc,
                 subject,
                 html: message.replace(/\n/g, '<br/>'),
-                attachments: [
-                {
-                    filename: filename,
-                    content: content,
-                },
-                ],
-            }),
+                attachments: [{ filename: filename, content: content }],
+                // 🚀 [추가] 태그를 통해 DB 테이블 ID를 전달
+                tags: [
+                  { name: 'message_id', value: data?.id } 
+                ]
+              }),
             });
-
             const result = await res.json();
 
             if (!res.ok) {

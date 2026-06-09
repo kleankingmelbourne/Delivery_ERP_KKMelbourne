@@ -155,6 +155,35 @@ export const downloadInvoicePdf = async (id: string) => {
 };
 
 
+// export const printInvoicePdf = async (id: string) => {
+//   const result = await fetchAndGenerateBlob([id], 'single');
+  
+//   if (result) {
+//     const url = URL.createObjectURL(result.blob);
+    
+//     // 1. 화면에 보이지 않는 숨겨진 iframe 생성
+//     const iframe = document.createElement('iframe');
+//     iframe.style.display = 'none';
+//     iframe.src = url;
+
+//     // 2. iframe에 PDF 로드가 완료되면 즉시 인쇄창 호출
+//     iframe.onload = () => {
+//       // 미리보기 없이 시스템 인쇄창 띄우기
+//       iframe.contentWindow?.print();
+
+//       // 3. 인쇄창 호출 후 메모리 누수 방지를 위해 찌꺼기 청소
+//       // (인쇄창이 안정적으로 뜰 시간을 벌기 위해 2초 뒤 삭제)
+//       setTimeout(() => {
+//         document.body.removeChild(iframe);
+//         URL.revokeObjectURL(url);
+//       }, 2000);
+//     };
+
+//     // 4. HTML 문서에 iframe을 삽입하여 로드 시작
+//     document.body.appendChild(iframe);
+//   }
+// };
+
 export const printInvoicePdf = async (id: string) => {
   const result = await fetchAndGenerateBlob([id], 'single');
   
@@ -163,26 +192,48 @@ export const printInvoicePdf = async (id: string) => {
     
     // 1. 화면에 보이지 않는 숨겨진 iframe 생성
     const iframe = document.createElement('iframe');
-    iframe.style.display = 'none';
+    // 수정: display: 'none' 대신 화면 밖으로 완전히 밀어내기 (브라우저 호환성)
+    iframe.style.position = 'absolute';
+    iframe.style.top = '-10000px';
+    iframe.style.left = '-10000px';
+    iframe.style.visibility = 'hidden';
     iframe.src = url;
 
     // 2. iframe에 PDF 로드가 완료되면 즉시 인쇄창 호출
     iframe.onload = () => {
-      // 미리보기 없이 시스템 인쇄창 띄우기
-      iframe.contentWindow?.print();
+      try {
+        const win = iframe.contentWindow;
+        if (!win) return;
 
-      // 3. 인쇄창 호출 후 메모리 누수 방지를 위해 찌꺼기 청소
-      // (인쇄창이 안정적으로 뜰 시간을 벌기 위해 2초 뒤 삭제)
-      setTimeout(() => {
-        document.body.removeChild(iframe);
-        URL.revokeObjectURL(url);
-      }, 2000);
+        // 인쇄 전 포커스를 주면 더 안정적으로 동작하는 브라우저들이 있습니다.
+        win.focus();
+        win.print();
+
+        // 3. 메모리 누수 방지 로직 수정 (2초 하드코딩 제거)
+        const cleanUp = () => {
+          if (document.body.contains(iframe)) {
+            document.body.removeChild(iframe);
+            URL.revokeObjectURL(url);
+          }
+        };
+
+        // 사용자가 인쇄창에서 '인쇄' 또는 '취소'를 눌러 창이 닫혔을 때 이벤트 감지
+        win.onafterprint = cleanUp;
+
+        // 혹시라도 onafterprint를 지원하지 않는 PDF 플러그인 환경을 위한 백업 타임아웃
+        // 사용자가 인쇄창을 10분 넘게 켜두지 않는다는 가정하에 넉넉하게 10분(600000ms) 설정
+        setTimeout(cleanUp, 10 * 60 * 1000); 
+
+      } catch (error) {
+        console.error("인쇄 중 오류 발생:", error);
+      }
     };
 
     // 4. HTML 문서에 iframe을 삽입하여 로드 시작
     document.body.appendChild(iframe);
   }
 };
+
 export const downloadBulkPdf = async (ids: string[]) => {
   if (ids.length === 0) return;
   const results = await Promise.all(ids.map(id => getInvoiceData(id)));

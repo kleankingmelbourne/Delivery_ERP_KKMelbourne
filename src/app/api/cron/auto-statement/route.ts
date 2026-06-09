@@ -165,7 +165,10 @@ export async function GET(request: Request) {
               filename: pdfData.filename,
               content: pdfBuffer,
             }
-          ]
+          ],
+          tags: [
+            { name: 'message_id', value: customer.id } 
+          ],
         });
 
         if (emailError) {

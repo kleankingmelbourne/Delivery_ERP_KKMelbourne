@@ -102,7 +102,10 @@ export async function GET(request: Request) {
                     <img src="${supabaseUrl}/storage/v1/object/public/company_logo/logo.png" alt="Logo" style="width: 150px; margin-top: 15px; display: block;" />
                   </div>
                 `,
-                attachments: [{ filename: pdfData.filename, content: pdfData.buffer }]
+                attachments: [{ filename: pdfData.filename, content: pdfData.buffer }],
+                tags: [
+                    { name: 'message_id', value: inv.id } // 인보이스 ID를 태그로 저장
+                ]
             });
 
             console.log(`[Auto Invoice] 5. Resend API 응답 받음!`);

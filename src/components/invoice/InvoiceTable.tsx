@@ -31,6 +31,11 @@ import {
 
 import { updateInventory } from "@/utils/inventory"; 
 
+import { 
+  revertAllocationsFromPaymentSource, 
+  refundAllocationsToPaymentSource 
+} from "@/utils/credit";
+
 // --- [Utility] 반올림 함수 ---
 const roundAmount = (num: number) => {
   return Math.round((num + Number.EPSILON) * 100) / 100;
@@ -530,28 +535,12 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
       // 1. 삭제할 인보이스의 created_who 정보를 조회해옵니다.
       const { data: invData } = await supabase.from("invoices").select("created_who").eq("id", id).single();
 
-      if (id.startsWith("CR-")) {
-          const { data: allocations } = await supabase.from("payment_allocations").select("invoice_id, amount").eq("payment_id", id);
-          if (allocations && allocations.length > 0) {
-              const invoiceIdsToUpdate = allocations.map(a => a.invoice_id);
-              const { data: targetInvs } = await supabase.from("invoices").select("id, total_amount, paid_amount").in("id", invoiceIdsToUpdate);
-              
-              if (targetInvs && targetInvs.length > 0) {
-                  const updates = targetInvs.map(targetInv => {
-                      const alloc = allocations.find(a => a.invoice_id === targetInv.id);
-                      const allocAmount = alloc ? alloc.amount : 0;
-                      const newPaid = Math.max(0, (targetInv.paid_amount || 0) - allocAmount);
-                      let newStatus = "Unpaid";
-                      if (newPaid >= targetInv.total_amount && targetInv.total_amount > 0) newStatus = "Paid";
-                      else if (newPaid > 0) newStatus = "Partial";
-                      
-                      return supabase.from("invoices").update({ paid_amount: newPaid, status: newStatus }).eq("id", targetInv.id);
-                  });
-                  await Promise.all(updates);
-              }
-          }
-          await supabase.from("payment_allocations").delete().eq("payment_id", id);
-          await supabase.from("payments").delete().eq("id", id);
+      // 🌟 공통 유틸리티 적용: CR- (크레딧 메모) 또는 PAY- (결제) 처리
+      if (id.startsWith("CR-") || id.startsWith("PAY-")) {
+          await revertAllocationsFromPaymentSource(supabase, [id]);
+      } else {
+          // 일반 인보이스 삭제 시 사용된 크레딧/결제 환불 처리
+          await refundAllocationsToPaymentSource(supabase, [id]);
       }
 
       const { data: itemsToDelete } = await supabase.from("invoice_items").select("product_id, quantity, unit").eq("invoice_id", id);
@@ -573,7 +562,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
 
       // 3. 커스터머 앱에서 생성된 주문(created_who === 'customer')인 경우
       //    주문 내역(order_items)은 건드리지 않고, 상태(status)만 'cancelled'로 변경
-      // 3. Orders 테이블과의 링크(외래키) 끊기 + 커스터머 주문 취소 처리
+      //    Orders 테이블과의 링크(외래키) 끊기 + 커스터머 주문 취소 처리
       if (invData?.created_who === 'customer') {
           // 커스터머 주문: 상태는 'cancelled'로 바꾸고, 멱살 잡은 링크(invoice_id)는 놓아줍니다(null).
           const { error: orderError } = await supabase.from("orders")
@@ -612,34 +601,17 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
     setLoading(true);
     try {
         const ids = Array.from(selectedIds);
-
-        // 1. 삭제할 인보이스들의 created_who 정보 묶어서 조회
         const { data: invsData } = await supabase.from("invoices").select("id, created_who").in("id", ids);
 
-        const creditIds = ids.filter(id => id.startsWith("CR-"));
-        
-        if (creditIds.length > 0) {
-            const { data: allocations } = await supabase.from("payment_allocations").select("invoice_id, amount, payment_id").in("payment_id", creditIds);
-            if (allocations && allocations.length > 0) {
-                const invoiceIdsToUpdate = allocations.map(a => a.invoice_id);
-                const { data: targetInvs } = await supabase.from("invoices").select("id, total_amount, paid_amount").in("id", invoiceIdsToUpdate);
-                
-                if (targetInvs && targetInvs.length > 0) {
-                    const updates = targetInvs.map(targetInv => {
-                        const allocsForThisInv = allocations.filter(a => a.invoice_id === targetInv.id);
-                        const totalAllocAmount = allocsForThisInv.reduce((sum, a) => sum + a.amount, 0);
-                        const newPaid = Math.max(0, (targetInv.paid_amount || 0) - totalAllocAmount);
-                        let newStatus = "Unpaid";
-                        if (newPaid >= targetInv.total_amount && targetInv.total_amount > 0) newStatus = "Paid";
-                        else if (newPaid > 0) newStatus = "Partial";
-                        
-                        return supabase.from("invoices").update({ paid_amount: newPaid, status: newStatus }).eq("id", targetInv.id);
-                    });
-                    await Promise.all(updates);
-                }
-            }
-            await supabase.from("payment_allocations").delete().in("payment_id", creditIds);
-            await supabase.from("payments").delete().in("id", creditIds);
+        const paymentSourceIds = ids.filter(id => id.startsWith("CR-") || id.startsWith("PAY-"));
+        const standardInvoiceIds = ids.filter(id => !id.startsWith("CR-") && !id.startsWith("PAY-"));
+
+        // 🌟 공통 유틸리티 적용: 배열만 넘겨주면 알아서 일괄 복구 처리
+        if (paymentSourceIds.length > 0) {
+            await revertAllocationsFromPaymentSource(supabase, paymentSourceIds);
+        }
+        if (standardInvoiceIds.length > 0) {
+            await refundAllocationsToPaymentSource(supabase, standardInvoiceIds);
         }
 
         const { data: allItemsToDelete } = await supabase.from("invoice_items").select("product_id, quantity, unit").in("invoice_id", ids);

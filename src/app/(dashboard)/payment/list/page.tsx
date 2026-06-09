@@ -9,6 +9,8 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 
+import { revertAllocationsFromPaymentSource } from "@/utils/credit";
+
 // --- [Utility] 반올림 함수 ---
 const roundAmount = (num: number) => {
   return Math.round((num + Number.EPSILON) * 100) / 100;
@@ -193,53 +195,18 @@ export default function PaymentListPage() {
     setLoading(true);
 
     try {
-      if (!isCreditMemo) {
-        const { data: allocations, error: allocError } = await supabase
-          .from('payment_allocations')
-          .select('id, invoice_id, amount')
-          .eq('payment_id', paymentId);
+      // 🌟 [핵심 변경] 공통 유틸리티 적용
+      // allocations(할당 내역) 삭제, 인보이스 paid_amount 롤백, payments(결제 내역) 삭제를 한 방에 처리!
+      await revertAllocationsFromPaymentSource(supabase, [paymentId]);
 
-        if (allocError) throw allocError;
-
-        if (allocations && allocations.length > 0) {
-          for (const alloc of allocations) {
-            const { data: invoice } = await supabase
-              .from('invoices')
-              .select('id, total_amount, paid_amount')
-              .eq('id', alloc.invoice_id)
-              .single();
-
-            if (invoice) {
-              const newPaidAmount = roundAmount(invoice.paid_amount - alloc.amount);
-              const isFullyPaid = Math.abs(invoice.total_amount - newPaidAmount) < 0.01;
-              const isUnpaid = newPaidAmount < 0.01;
-
-              let newStatus = 'Unpaid';
-              if (isFullyPaid) newStatus = 'Paid';
-              else if (!isUnpaid) newStatus = 'Partial'; 
-
-              await supabase
-                .from('invoices')
-                .update({ 
-                  paid_amount: Math.max(0, newPaidAmount), 
-                  status: newStatus 
-                })
-                .eq('id', invoice.id);
-            }
-          }
-        }
-      }
-
+      // 🌟 크레딧 메모(CR-)인 경우의 추가 처리
       if (isCreditMemo) {
+          // 크레딧 메모는 payments 테이블 외에도 invoices 테이블에 양쪽으로 존재하므로,
+          // 결제 내역이 위에서 지워진 후, 인보이스 쪽에 남은 본체와 아이템을 마저 지워줍니다.
           await supabase.from('invoice_items').delete().eq('invoice_id', paymentId);
           const { error: invDelError } = await supabase.from('invoices').delete().eq('id', paymentId);
           if (invDelError) throw invDelError;
       }
-
-      await supabase.from('payment_allocations').delete().eq('payment_id', paymentId);
-      const { error: deleteError } = await supabase.from('payments').delete().eq('id', paymentId);
-      
-      if (deleteError) throw deleteError;
 
       alert(isCreditMemo ? "Credit Memo와 결제 내역이 모두 삭제되었습니다." : "결제 내역이 성공적으로 취소되었습니다.");
       fetchPayments(); 

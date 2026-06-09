@@ -65,6 +65,7 @@ export async function POST(req: NextRequest) {
       subject: subject,
       html: htmlWithLogo,
       attachments: attachments,
+      tags: body.tags || []
     });
 
     if (data.error) {

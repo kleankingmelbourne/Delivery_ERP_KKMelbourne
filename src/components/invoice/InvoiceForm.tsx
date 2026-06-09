@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { 
   Plus, Trash2, Save, ArrowLeft, User, Calendar, CreditCard, 
   Calculator, FileText, RefreshCw, Lock, Search, ChevronDown, Check,
-  AlertTriangle, Loader2
+  AlertTriangle, Loader2, Printer
 } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -15,7 +15,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useAuth } from "@/components/providers/AuthProvider";
 import { updateInventory, isCtnUnit } from "@/utils/inventory"; //DDANG
-
+import { printInvoicePdf } from "@/utils/downloadPdf"; 
+import { deductCustomerCredit } from "@/utils/credit";
 
 // --- [Utility] ---
 const roundAmount = (num: number) => Math.round((num + Number.EPSILON) * 100) / 100;
@@ -332,6 +333,12 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
   const [customerStats, setCustomerStats] = useState<{ totalOverdue: number; oldestInvoiceDate: string | null; }>({ totalOverdue: 0, oldestInvoiceDate: null });
   
   const [unitMap, setUnitMap] = useState<Record<string, string>>({});
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+
+  const handlePrint = async (id: string) => { 
+    setOpenMenuId(null); 
+    await printInvoicePdf(id); 
+  };
 
   const getTodayLocal = () => {
     const now = new Date();
@@ -352,6 +359,14 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
   const [items, setItems] = useState<InvoiceItem[]>([
     { productId: "", unit: "CTN", quantity: 1, unitCost: 0, basePrice: 0, discountRate: 0, unitPrice: 0, isGstIncluded: true }
   ]);
+
+  // 컴포넌트 내부 상태 추가 (useState 모여있는 곳)
+  const [useCredit, setUseCredit] = useState(false);
+
+  // (옵션) 고객이 바뀌거나 크레딧이 0이 되면 체크박스를 자동으로 해제
+  useEffect(() => {
+    if (availableCredit <= 0) setUseCredit(false);
+  }, [availableCredit, selectedCustomerId]);
 
   // 1. Initial Load 
   useEffect(() => {
@@ -676,6 +691,11 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
   }, 0));
   const grandTotal = roundAmount(subTotal + gstTotal);
 
+  // 사용할 크레딧 (인보이스 금액을 넘지 않도록)
+  const creditUsed = useCredit ? Math.min(availableCredit, Math.max(0, grandTotal)) : 0;
+  // 크레딧 적용 후 최종 결제 금액
+  const finalAmountDue = Math.max(0, grandTotal - creditUsed);
+
   const prevGrandTotalRef = useRef(grandTotal);
   useEffect(() => {
       if (prevGrandTotalRef.current > -0.01 && grandTotal <= -0.01) {
@@ -833,7 +853,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       }
   };
 
-  const handleSave = async (redirectOrNew: boolean) => {
+  const handleSave = async (redirectOrNew: boolean, isPrint: boolean = false) => {
     if (!selectedCustomerId) return alert("Please select a customer.");
     setLoading(true);
     const validItems = items.filter(item => item.productId);
@@ -914,7 +934,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
               invoice_date: invoiceDate, 
               due_date: dueDate, 
               total_amount: grandTotal, 
-              paid_amount: 0, 
+              paid_amount: creditUsed, 
               subtotal: subTotal, 
               gst_total: gstTotal, 
               created_who: currentUserName, 
@@ -951,6 +971,11 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
         supabase.from("customers").update({ note: staffNote }).eq("id", selectedCustomerId)
       ];
 
+      // 🚀 새롭게 추가: 크레딧을 사용하기로 했다면 공통 유틸리티 함수를 병렬 작업에 추가
+      if (useCredit && creditUsed > 0 && !isEditMode) {
+        parallelSaveTasks.push(deductCustomerCredit(supabase, selectedCustomerId, creditUsed));
+      }
+
       if (autoAddProduct && validItems.length > 0) {
         const updatesMap = new Map();
         allowedProducts.forEach(ap => updatesMap.set(ap.product_id, { ctn: ap.discount_ctn, pack: ap.discount_pack }));
@@ -971,7 +996,13 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       const finalResults = await Promise.all(parallelSaveTasks);
       if (finalResults[0] && 'error' in finalResults[0] && finalResults[0].error) throw finalResults[0].error;
 
-      alert(isEditMode ? "Invoice updated successfully!" : "Invoice saved successfully!");
+      //alert(isEditMode ? "Invoice updated successfully!" : "Invoice saved successfully!");
+
+      if (isPrint && targetId) { 
+        handlePrint(targetId);
+        isPrint = false;
+      }
+
       if (isEditMode) router.push("/invoice");
       else { if (redirectOrNew) router.push("/invoice"); else resetForm(); }
 
@@ -1208,18 +1239,62 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
               <div className="flex justify-between text-xl font-black text-slate-900 pt-3 border-t border-dashed border-slate-200">
                 <span>Grand Total</span><span>${grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
               </div>
-              <div className="flex justify-between font-bold pt-3 border-t border-slate-100">
-                <span className="text-slate-500">Customer Credit</span>
-                <span className={availableCredit > 0 ? "text-emerald-600" : "text-slate-400"}>${availableCredit.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+              {/* 💳 새롭게 추가된 크레딧 전용 카드 (Card) */}
+              <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl mt-4 space-y-3 shadow-sm">
+                <div className="flex justify-between items-center font-bold">
+                  <span className="text-slate-600 text-sm">Customer Credit</span>
+                  <span className={availableCredit > 0 ? "text-emerald-600 font-black" : "text-slate-400"}>
+                    ${availableCredit.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  </span>
+                </div>
+                
+                <div className="flex items-center space-x-2 pt-2 border-t border-slate-200">
+                  <Checkbox 
+                    id="use-credit" 
+                    checked={useCredit} 
+                    onCheckedChange={(c) => setUseCredit(!!c)} 
+                    disabled={availableCredit <= 0 || grandTotal <= 0 || isEditMode} // 0원이면 클릭 금지
+                  />
+                  <label 
+                    htmlFor="use-credit" 
+                    className={`text-sm font-bold cursor-pointer ${availableCredit <= 0 || grandTotal <= 0|| isEditMode ? "text-slate-400" : "text-slate-700"}`}
+                  >
+                    Apply Credit
+                  </label>
+                </div>
+                {/* 🚀 사용자 친화적 안내 메시지 추가 (Edit Mode일 때만 보임) */}
+                {isEditMode && (
+                  <span className="text-[10px] text-amber-600 font-medium pl-6">
+                    * Credits Applied only new invoice.
+                  </span>
+                )}
+                {/* 크레딧이 적용되었을 때 차감 내역 및 최종 금액 표시 */}
+                {useCredit && creditUsed > 0 && (
+                  <div className="pt-2 space-y-1">
+                    <div className="flex justify-between items-center text-sm text-emerald-600">
+                      <span>Credit Applied</span>
+                      <span>-${creditUsed.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                    </div>
+                    <div className="flex justify-between text-lg font-black text-blue-700 pt-2 border-t border-blue-100">
+                      <span>Final Amount Due</span>
+                      <span>${finalAmountDue.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                    </div>
+                  </div>
+                )}
               </div>
+              {/* 💳 크레딧 카드 끝 */}
               {grandTotal < 0 && (<div className="text-xs text-red-500 bg-red-50 border border-red-200 p-2 rounded text-center mt-2">⚠ This will create a <strong>CREDIT MEMO</strong></div>)}
             </div>
             <div className="space-y-3 mt-6">
-              <Button onClick={() => handleSave(true)} disabled={loading} className="w-full bg-slate-900 hover:bg-slate-800 h-10 text-sm font-bold shadow-md">
+              <Button onClick={() => handleSave(true)} disabled={loading} className="w-full bg-slate-900 hover:bg-slate-600 h-10 text-sm font-bold shadow-md">
                 {loading ? (isEditMode ? "Updating..." : "Saving...") : <><Save className="w-4 h-4 mr-2" /> {isEditMode ? "Update Invoice" : "Save Invoice"}</>}
               </Button>
-              {!isEditMode && (<Button onClick={() => handleSave(false)} disabled={loading} variant="outline" className="w-full border-slate-300 text-slate-700 h-10 text-sm font-bold hover:bg-slate-50">{loading ? "Saving..." : <><RefreshCw className="w-4 h-4 mr-2" /> Save & New</>}</Button>)}
-              <Link href="/invoice" className="block"><Button variant="ghost" className="w-full text-slate-500 h-10 text-sm">Cancel</Button></Link>
+              {/* 🚀 새롭게 추가되는 Save & Print 버튼 */}
+              <Button onClick={() => handleSave(true, true)} disabled={loading} className="w-full bg-slate-500 hover:bg-slate-600 text-white h-10 text-sm font-bold shadow-md">
+                {loading ? "Processing..." : <><Printer className="w-4 h-4 mr-2" /> Save & Print</>}
+              </Button>
+              {!isEditMode && (<Button onClick={() => handleSave(false)} disabled={loading} variant="outline" className="w-full border-slate-300 text-slate-500 h-10 text-sm font-bold hover:bg-slate-50">{loading ? "Saving..." : <><RefreshCw className="w-4 h-4 mr-2" /> Save & New</>}</Button>)}
+              <Link href="/invoice" className="block"><Button variant="outline" className="w-full border-slate-300 text-slate-500 h-10 text-sm font-bold">Cancel</Button></Link>
             </div>
           </div>
           {selectedCustomerId && customerStats.totalOverdue > 0 && (

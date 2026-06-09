@@ -229,7 +229,7 @@ export default function DeliveryRoutePage() {
             .from("invoices")
             .select(`id, driver_id, delivery_run, delivery_order, is_completed, customers ( name, use_key ), profiles:driver_id ( display_name, address, lat, lng, route_prefs )`)
             .eq("invoice_date", selectedDate)
-            .neq("status", "Paid")
+            //.neq("status", "Paid")
             .is("is_pickup", false) 
             .not("driver_id", "is", null);
 
@@ -317,7 +317,7 @@ export default function DeliveryRoutePage() {
         `)
         .eq("invoice_date", selectedDate)
         .eq("driver_id", driverId)
-        .neq("status", "Paid")
+        //.neq("status", "Paid")
         .is("is_pickup", false) 
         .order("delivery_order", { ascending: true });
 
@@ -349,7 +349,7 @@ export default function DeliveryRoutePage() {
             invoice_items ( quantity, unit, products ( product_name ) )
           `)
           .eq("invoice_date", selectedDate)
-          .neq("status", "Paid")
+          //.neq("status", "Paid")
           .is("is_pickup", false);
 
         if (error) throw error;
@@ -498,7 +498,7 @@ export default function DeliveryRoutePage() {
             .select("id, delivery_run")
             .eq("invoice_date", selectedDate)
             .eq("driver_id", driverId)
-            .neq("status", "Paid")
+            //.neq("status", "Paid")
             .is("is_pickup", false)
             .order("delivery_order", { ascending: true });
 

@@ -27,6 +27,9 @@ Font.register({
   src: path.join(process.cwd(), 'public', 'font', 'NotoSansKR-Medium.ttf'), 
 });
 
+// ==================================================================
+// 🔥 SERVER-SIDE ONLY: CRON JOB 전용 Statement 생성 함수
+// ==================================================================
 export const generateStatementBufferForServer = async (
     customerId: string, 
     startDate: string, 
@@ -34,8 +37,8 @@ export const generateStatementBufferForServer = async (
     customerName: string
 ): Promise<{ buffer: Buffer, filename: string } | null> => {
     try {
-        // ✅ 수정: 관리자 권한 클라이언트 사용
-    const supabase = getAdminSupabase();
+        // 🚀 1. RLS 정책 우회를 위해 반드시 Service Role 클라이언트 사용
+        const supabase = getAdminSupabase(); 
         
         const [
             { data: customer },
@@ -46,6 +49,7 @@ export const generateStatementBufferForServer = async (
             supabase.from("customers").select("*").eq("id", customerId).maybeSingle(),
             supabase.from("invoices").select("*").eq("customer_id", customerId).lte("invoice_date", endDate),
             supabase.from('company_settings').select('*').limit(1),
+            // 🚀 id를 추가로 가져와서 어떤 크레딧인지 식별
             supabase.from('payments').select('id, unallocated_amount, payment_date').eq('customer_id', customerId).gt('unallocated_amount', 0)
         ]);
 
@@ -58,47 +62,77 @@ export const generateStatementBufferForServer = async (
              return true;
         }) || [];
 
+        // 1. 미납 인보이스만 목록에 추가
         openInvoices.forEach(inv => {
-            const isCredit = (typeof inv.id === 'string' && inv.id.startsWith('CR-')) || inv.total_amount < 0 || (inv.status || '').toLowerCase() === 'credit';
+            const isCredit = 
+                (typeof inv.id === 'string' && inv.id.startsWith('CR-')) || 
+                inv.total_amount < 0 || 
+                (inv.status || '').toLowerCase() === 'credit';
+            
+            // 🚀 크레딧은 여기서 무조건 제외 (사용 완료된 크레딧 원천 차단)
             if (isCredit) return; 
+            
             transactions.push({ 
-                id: inv.id, date: inv.invoice_date, type: 'Invoice', reference: inv.id.toUpperCase(), 
-                amount: inv.total_amount, credit: inv.paid_amount || 0, dueDate: inv.due_date, status: inv.status
+                id: inv.id, 
+                date: inv.invoice_date, 
+                type: 'Invoice', 
+                reference: inv.id.toUpperCase(), 
+                amount: inv.total_amount, 
+                credit: inv.paid_amount || 0, 
+                dueDate: inv.due_date,
+                status: inv.status
             });
         });
 
+        // 2. 🚀 잔액이 남아있는 크레딧/초과결제금만 목록에 추가
         creditData?.forEach((credit: any) => {
             const isCrMemo = typeof credit.id === 'string' && credit.id.startsWith('CR-');
             transactions.push({
-                id: credit.id, date: credit.payment_date || endDate, type: isCrMemo ? 'Credit' : 'Payment',
-                reference: credit.id ? credit.id.toUpperCase() : 'CREDIT', amount: 0, credit: credit.unallocated_amount, status: 'Active'
+                id: credit.id,
+                date: credit.payment_date || endDate, 
+                type: isCrMemo ? 'Credit' : 'Payment',
+                reference: credit.id ? credit.id.toUpperCase() : 'CREDIT',
+                amount: 0,
+                credit: credit.unallocated_amount, 
+                status: 'Active'
             });
         });
 
         const ageing: StatementAgeing = { current: 0, days30: 0, days60: 0, days90: 0, over90: 0, total: 0 };
         const today = new Date();
 
+        // 3. 미납 인보이스 금액을 더하기 (+)
         openInvoices.forEach((inv: any) => {
             const isCredit = (typeof inv.id === 'string' && inv.id.startsWith('CR-')) || inv.total_amount < 0;
             if (isCredit) return;
+
             const outstanding = inv.total_amount - (inv.paid_amount || 0);
             if (outstanding !== 0) {
                 const invDate = new Date(inv.invoice_date);
                 const diffTime = Math.abs(today.getTime() - invDate.getTime());
                 const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                if (diffDays <= 30) ageing.current += outstanding; else if (diffDays <= 60) ageing.days30 += outstanding;
-                else if (diffDays <= 90) ageing.days60 += outstanding; else if (diffDays <= 120) ageing.days90 += outstanding; else ageing.over90 += outstanding;
+
+                if (diffDays <= 30) ageing.current += outstanding;
+                else if (diffDays <= 60) ageing.days30 += outstanding;
+                else if (diffDays <= 90) ageing.days60 += outstanding;
+                else if (diffDays <= 120) ageing.days90 += outstanding; 
+                else ageing.over90 += outstanding;
             }
         });
         
+        // 4. 남은 크레딧을 발생한 날짜 구간에서 빼기 (-)
         creditData?.forEach((credit: any) => {
             const unallocated = credit.unallocated_amount || 0;
             if (unallocated > 0 && credit.payment_date) {
                 const payDate = new Date(credit.payment_date);
                 const diffTime = Math.abs(today.getTime() - payDate.getTime());
                 const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                if (diffDays <= 30) ageing.current -= unallocated; else if (diffDays <= 60) ageing.days30 -= unallocated;
-                else if (diffDays <= 90) ageing.days60 -= unallocated; else if (diffDays <= 120) ageing.days90 -= unallocated; else ageing.over90 -= unallocated;
+
+                if (diffDays <= 30) ageing.current -= unallocated;
+                else if (diffDays <= 60) ageing.days30 -= unallocated;
+                else if (diffDays <= 90) ageing.days60 -= unallocated;
+                else if (diffDays <= 120) ageing.days90 -= unallocated; 
+                else ageing.over90 -= unallocated;
             }
         });
 
@@ -106,22 +140,25 @@ export const generateStatementBufferForServer = async (
 
         const settings = settingsList?.[0] || {};
         const formatAddress = (addr?: string, sub?: string, st?: string, post?: string) => [addr, sub, st, post].filter(Boolean).join(", ");
+        
         let customerAddress = formatAddress(customer?.address, customer?.suburb, customer?.state, customer?.postcode);
         if (customer?.mobile) customerAddress += `\nMobile: ${customer.mobile}`;
 
         const statementData: StatementData = {
             customerName, startDate, endDate, openingBalance: 0, ageing: ageing,
+            // 날짜 오름차순 정렬
             transactions: transactions.sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime()),
             customerId: customer?.id, customerAddress: customerAddress,
             companyName: settings.company_name || "KLEAN KING", 
             companyAddress: formatAddress(settings.address_line1, settings.suburb, settings.state, settings.postcode),
             companyEmail: settings.email, companyPhone: settings.phone, bankName: settings.bank_name, bsb: settings.bsb_number, 
             accountNumber: settings.account_number, bank_payid: settings.bank_payid, statementInfo: settings.statement_info,
-            // 🚀 [여기에 꼭 넣어주세요!] Supabase 스토리지의 실제 로고 이미지 주소를 전달합니다.
+            
+            // 🚀 2. 로고 URL은 환경 변수를 직접 참조하여 엑스박스(X)를 방지합니다.
             logoUrl: `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/company_logo/logo.png`
         };
 
-        // 클라이언트 렌더링용이 아닌, 백그라운드용 버퍼 생성
+        // 🚀 3. 클라이언트(Blob)가 아닌 서버 백그라운드용 버퍼(Buffer)로 렌더링합니다!
         const buffer = await renderToBuffer(<StatementDocument data={statementData} />);
         
         return { buffer, filename: `Statement_${customerName}_${endDate}.pdf` };
@@ -132,9 +169,6 @@ export const generateStatementBufferForServer = async (
     }
 };
 
-// ==================================================================
-// 🔥 SERVER-SIDE ONLY: CRON JOB 전용 Invoice 데이터 추출 함수
-// ==================================================================
 // ==================================================================
 // 🔥 SERVER-SIDE ONLY: CRON JOB 전용 Invoice 데이터 추출 함수
 // ==================================================================

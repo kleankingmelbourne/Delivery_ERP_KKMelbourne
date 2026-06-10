@@ -3,6 +3,10 @@ import { createClient } from "@supabase/supabase-js";
 import { Resend } from "resend";
 import { generateInvoiceBufferForServer } from "@/utils/pdfServer";
 
+// 🚀 [핵심 수정 1] Vercel Serverless Function 타임아웃 연장 (최대 실행 시간)
+// Hobby 플랜은 최대 60초, Pro 플랜은 300초까지 가능합니다. PDF 생성 시간을 벌어줍니다.
+export const maxDuration = 100; 
+
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -16,12 +20,12 @@ export async function GET(request: Request) {
 
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
   
-  // 2. 호주 멜버른 시간 기준 "오늘 날짜(YYYY-MM-DD)" 구하기
-  const localDateString = new Date().toLocaleString('en-US', { timeZone: 'Australia/Melbourne' });
-  const todayDateObj = new Date(localDateString);
-  const yyyy = todayDateObj.getFullYear();
-  const mm = String(todayDateObj.getMonth() + 1).padStart(2, '0');
-  const dd = String(todayDateObj.getDate()).padStart(2, '0');
+  // 🚀 [핵심 수정 2] 호주 멜버른 시간 기준 "오늘 날짜(YYYY-MM-DD)" 구하기 (더 안전한 방식)
+  const now = new Date();
+  const options: Intl.DateTimeFormatOptions = { timeZone: 'Australia/Melbourne' };
+  const yyyy = new Intl.DateTimeFormat('en-US', { year: 'numeric', ...options }).format(now);
+  const mm = new Intl.DateTimeFormat('en-US', { month: '2-digit', ...options }).format(now);
+  const dd = new Intl.DateTimeFormat('en-US', { day: '2-digit', ...options }).format(now);
   const todayStr = `${yyyy}-${mm}-${dd}`;
 
   try {
@@ -32,7 +36,7 @@ export async function GET(request: Request) {
 
     const targetCustomerIds = settings.map(s => s.customer_id);
 
-    // 4. 인보이스를 찾을 때 고객 정보(customers)도 한 방에 같이 가져옵니다!
+    // 4. 인보이스와 고객 정보 가져오기
     const { data: todaysInvoices, error: invError } = await supabase
         .from("invoices")
         .select(`
@@ -44,22 +48,21 @@ export async function GET(request: Request) {
         .eq("invoice_date", todayStr);
 
     if (invError) throw invError;
-    if (!todaysInvoices || todaysInvoices.length === 0) return NextResponse.json({ message: "No invoices created today." });
+    if (!todaysInvoices || todaysInvoices.length === 0) {
+        console.log(`[Auto Invoice] 오늘(${todayStr}) 생성된 타겟 인보이스가 없습니다.`);
+        return NextResponse.json({ message: "No invoices created today." });
+    }
 
     const results = [];
 
     // 5. 루프 돌기
     for (const inv of todaysInvoices) {
         
-        // 🚀 [해결] 타입스크립트 에러 방지: customers가 배열로 들어올 경우 첫 번째 데이터를 꺼냅니다.
         const customerData = Array.isArray(inv.customers) ? inv.customers[0] : inv.customers;
-
-        // 🚀 이제 꺼내온 customerData에서 안전하게 값을 가져옵니다.
         const customerName = customerData?.name || customerData?.company || "Unknown Customer";
         const customerEmail = customerData?.email || ""; 
         const customerEmailCc = customerData?.email_cc || "";
 
-        // 이메일이 없으면 PDF를 만들기도 전에 여기서 바로 컷!
         if (!customerEmail) {
             console.log(`[Auto Invoice] ⚠️ 스킵: 이메일 없음. 대상: ${customerName}`);
             results.push({ id: inv.id, status: "skipped_no_email" });
@@ -67,29 +70,25 @@ export async function GET(request: Request) {
         }
 
         try {
-            // PDF 함수로 이름과 이메일을 아예 손에 쥐여주고 보냅니다.
+            console.log(`[Auto Invoice] PDF 생성 시작... (${inv.id})`);
             const pdfData = await generateInvoiceBufferForServer(inv.id, customerName, customerEmail, customerEmailCc);
 
             if (!pdfData) {
+                console.error(`[Auto Invoice] ❌ PDF 생성 실패 (${inv.id})`);
                 results.push({ id: inv.id, status: "failed_pdf" });
                 continue;
             }
 
-            // 🚨 [핵심 디버깅 포인트] CC 배열 안전 처리 (빈 문자열이면 무조건 undefined 처리)
             const ccList = (pdfData.customerEmailCc && pdfData.customerEmailCc.trim() !== "") 
                 ? [pdfData.customerEmailCc.trim()] 
                 : undefined;
 
-            console.log(`[Auto Invoice] 3. Resend 발송 준비 완료. (대상: ${pdfData.customerEmail}, 참조: ${ccList || '없음'})`);
-
-            const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+            console.log(`[Auto Invoice] Resend 발송 준비 완료. (대상: ${pdfData.customerEmail}, 참조: ${ccList || '없음'})`);
             
-            // 🚀 [추가된 부분] 태그용 안전한 인보이스 ID 만들기 (특수문자 싹 제거!)
             const safeInvoiceId = String(inv.id).replace(/[^a-zA-Z0-9_-]/g, "");
 
-            console.log(`[Auto Invoice] 4. Resend API 호출 직전! (이 로그 뒤에 멈추면 Timeout 또는 API 키 에러입니다)`);
             const { data: emailData, error: emailError } = await resend.emails.send({
-                from: 'Klean King Accounts <admin@kleankingmelbourne.com.au>', // 🚨 Resend에 등록된 도메인인지 재확인!
+                from: 'Klean King Accounts <admin@kleankingmelbourne.com.au>', 
                 to: [pdfData.customerEmail],
                 cc: ccList,
                 subject: `Tax Invoice - ${inv.id}`,
@@ -111,8 +110,6 @@ export async function GET(request: Request) {
                 ]
             });
 
-            console.log(`[Auto Invoice] 5. Resend API 응답 받음!`);
-
             if (emailError) {
                 console.error(`[Auto Invoice] ❌ Resend 발송 에러:`, emailError);
                 results.push({ id: inv.id, status: "error", error: emailError.message });
@@ -128,8 +125,6 @@ export async function GET(request: Request) {
     }
     
     console.log(`[Auto Invoice] 전체 루프 종료. 총 처리: ${results.length}건`);
-
-
     return NextResponse.json({ success: true, processed: results.length, details: results });
 
   } catch (err: any) {

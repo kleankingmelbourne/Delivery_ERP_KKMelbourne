@@ -83,6 +83,9 @@ export async function GET(request: Request) {
             console.log(`[Auto Invoice] 3. Resend 발송 준비 완료. (대상: ${pdfData.customerEmail}, 참조: ${ccList || '없음'})`);
 
             const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+            
+            // 🚀 [추가된 부분] 태그용 안전한 인보이스 ID 만들기 (특수문자 싹 제거!)
+            const safeInvoiceId = String(inv.id).replace(/[^a-zA-Z0-9_-]/g, "");
 
             console.log(`[Auto Invoice] 4. Resend API 호출 직전! (이 로그 뒤에 멈추면 Timeout 또는 API 키 에러입니다)`);
             const { data: emailData, error: emailError } = await resend.emails.send({
@@ -104,7 +107,7 @@ export async function GET(request: Request) {
                 `,
                 attachments: [{ filename: pdfData.filename, content: pdfData.buffer }],
                 tags: [
-                    { name: 'message_id', value: inv.id } // 인보이스 ID를 태그로 저장
+                    { name: 'message_id', value: safeInvoiceId }
                 ]
             });
 

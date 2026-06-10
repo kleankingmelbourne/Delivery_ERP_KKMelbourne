@@ -138,6 +138,9 @@ export async function GET(request: Request) {
         // 🚀 변환 없이 바로 Resend에 던져주면 됩니다!
         const pdfBuffer = pdfData.buffer;
 
+        // customer.id를 문자열로 변환한 뒤, 영어/숫자/_/- 만 남깁니다.
+        const safeTagValue = String(customer.id).replace(/[^a-zA-Z0-9_-]/g, "");
+
         // 🚀 5. 이메일 발송 (PDF 첨부 + CC 포함)
         const { data: emailData, error: emailError } = await resend.emails.send({
           from: 'Klean King Accounts <admin@kleankingmelbourne.com.au>', // 실 서비스시 실제 도메인으로 변경 필수
@@ -167,7 +170,7 @@ export async function GET(request: Request) {
             }
           ],
           tags: [
-            { name: 'message_id', value: customer.id } 
+            { name: 'message_id', value: safeTagValue }
           ],
         });
 

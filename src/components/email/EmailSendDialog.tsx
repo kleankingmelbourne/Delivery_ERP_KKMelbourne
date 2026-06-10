@@ -99,42 +99,65 @@ export default function EmailSendDialog({ open, onOpenChange, data }: EmailSendD
   };
 
   const handleSend = async () => {
-    if (!to || !subject || !pdfBlob) return;
-    setSending(true);
+  if (!to || !subject || !pdfBlob || !data) return; 
+  setSending(true);
 
+  // 🚀 [추가할 코드] 안전한 태그 값 만들기
+  let rawTagValue = data.id;
+
+  // statement의 경우 ID가 JSON 문자열이므로, 안전하게 파싱해서 customerId만 빼냅니다.
+  if (data.type === 'statement') {
     try {
-      const reader = new FileReader();
-      reader.readAsDataURL(pdfBlob);
-      
-      reader.onloadend = async () => {
-        try {
-            const base64data = reader.result as string;
-            const content = base64data.split(',')[1];
+      const info = JSON.parse(data.id);
+      rawTagValue = info.customerId;
+    } catch (e) {
+      console.error("JSON 파싱 실패, 원본 유지");
+    }
+  }
 
-            const res = await fetch('/api/send-email', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                to,
-                cc,
-                subject,
-                html: message.replace(/\n/g, '<br/>'),
-                attachments: [{ filename: filename, content: content }],
-                // 🚀 [추가] 태그를 통해 DB 테이블 ID를 전달
-                tags: [
-                  { name: 'message_id', value: data?.id } 
-                ]
-              }),
-            });
-            const result = await res.json();
+  // 핵심! 영어, 숫자, 언더스코어(_), 대시(-) 빼고 다 지워버립니다.
+  const safeTagValue = rawTagValue.replace(/[^a-zA-Z0-9_-]/g, "");
+  // ----------------------------------------------------
 
-            if (!res.ok) {
-                const errorMsg = result.error?.message || JSON.stringify(result.error) || "Failed to send email";
-                throw new Error(errorMsg);
-            }
+  try {
+    const reader = new FileReader();
+    reader.readAsDataURL(pdfBlob);
+    
+    reader.onloadend = async () => { // 👈 지금 여기서 에러가 났던 겁니다!
+      try {
+        const base64data = reader.result as string;
+        const content = base64data.split(',')[1];
 
-            alert("Email sent successfully!");
-            onOpenChange(false);
+        const res = await fetch('/api/send-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            to,
+            cc,
+            subject,
+            html: message.replace(/\n/g, '<br/>'),
+            attachments: [
+              {
+                filename: filename,
+                content: content,
+              },
+            ],
+            // 🚀 [수정할 코드] 원래 data.id 였던 것을 위에서 만든 safeTagValue로 바꿉니다!
+            tags: [
+              { name: 'message_id', value: safeTagValue } 
+            ]
+          }),
+        });
+
+        const result = await res.json();
+
+        if (!res.ok) {
+          const errorMsg = result.error?.message || JSON.stringify(result.error) || "Failed to send email";
+          throw new Error(errorMsg);
+        }
+
+          alert("Email sent successfully!");
+          onOpenChange(false);
         } catch (innerError: any) {
             console.error("Inner Error:", innerError);
             alert("Error sending email: " + innerError.message);

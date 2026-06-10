@@ -32,6 +32,11 @@ function LoginContent() {
   const [resetEmail, setResetEmail] = useState("");
   const [isResetSending, setIsResetSending] = useState(false);
 
+  const [resetStep, setStep] = useState<1 | 2>(1); // 1: 이메일 입력, 2: OTP 및 새 비밀번호 입력
+  const [otp, setOtp] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [isVerifying, setIsVerifying] = useState(false);
+
   // 미들웨어에서 튕겨져 나왔을 경우의 방어 로직
   useEffect(() => {
     const handleUnauthorizedUser = async () => {
@@ -94,22 +99,62 @@ function LoginContent() {
 
     setIsResetSending(true);
 
-    const { error } = await supabase.auth.resetPasswordForEmail(resetEmail, {
-      redirectTo: `${window.location.origin}/auth/callback?next=/update-password`,
-    });
+    // redirectTo 링크 방식 대신 OTP가 발송되도록 파라미터 축소
+    const { error } = await supabase.auth.resetPasswordForEmail(resetEmail);
 
     if (error) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     } else {
       toast({ 
-        title: "Email Sent", 
-        description: "Check your inbox for the password reset link." 
+        title: "OTP Sent", 
+        description: "Please check your email for the 8-digit OTP." 
       });
-      setIsResetOpen(false);
-      setResetEmail("");
+      // 성공하면 2단계(OTP 입력 화면)로 이동
+      setStep(2); 
     }
 
     setIsResetSending(false);
+  };
+
+  const handleVerifyAndUpdatePassword = async () => {
+    if (otp.length !== 8 || !newPassword) {
+      toast({ title: "Error", description: "Please enter a valid 8-digit OTP and a new password.", variant: "destructive" });
+      return;
+    }
+
+    setIsVerifying(true);
+
+    // 1. OTP 번호가 맞는지 검증 (type은 반드시 'recovery'여야 합니다)
+    const { error: verifyError } = await supabase.auth.verifyOtp({
+      email: resetEmail,
+      token: otp,
+      type: "recovery",
+    });
+
+    if (verifyError) {
+      toast({ title: "Verification Failed", description: verifyError.message, variant: "destructive" });
+      setIsVerifying(false);
+      return;
+    }
+
+    // 2. 검증에 성공하면 즉시 비밀번호 업데이트
+    const { error: updateError } = await supabase.auth.updateUser({
+      password: newPassword
+    });
+
+    if (updateError) {
+      toast({ title: "Update Failed", description: updateError.message, variant: "destructive" });
+    } else {
+      toast({ title: "Success", description: "Password has been successfully reset!" });
+      // 모든 것을 초기화하고 팝업 닫기
+      setIsResetOpen(false);
+      setStep(1);
+      setOtp("");
+      setNewPassword("");
+      setResetEmail("");
+    }
+    
+    setIsVerifying(false);
   };
 
   return (
@@ -193,33 +238,76 @@ function LoginContent() {
         </CardContent>
       </Card>
 
-      <Dialog open={isResetOpen} onOpenChange={setIsResetOpen}>
+      <Dialog 
+        open={isResetOpen} 
+        onOpenChange={(open) => {
+          setIsResetOpen(open);
+          if (!open) setStep(1); // 창 닫을 때 1단계로 초기화
+        }}
+      >
         <DialogContent className="sm:max-w-[400px]">
           <DialogHeader>
             <DialogTitle>Reset Password</DialogTitle>
             <DialogDescription>
-              Enter your email address and we'll send you a link to reset your password.
+              {resetStep === 1 
+                ? "Enter your email address to receive an 8-digit OTP."
+                : "Enter the 8-digit OTP sent to your email and your new password."}
             </DialogDescription>
           </DialogHeader>
           
           <div className="grid gap-4 py-4">
-            <div className="grid gap-2">
-              <Label htmlFor="reset-email">Email</Label>
-              <Input 
-                id="reset-email" 
-                type="email" 
-                placeholder="name@example.com" 
-                value={resetEmail}
-                onChange={(e) => setResetEmail(e.target.value)}
-              />
-            </div>
+            {resetStep === 1 ? (
+              // [1단계] 이메일 입력 화면
+              <div className="grid gap-2">
+                <Label htmlFor="reset-email">Email</Label>
+                <Input 
+                  id="reset-email" 
+                  type="email" 
+                  placeholder="name@example.com" 
+                  value={resetEmail}
+                  onChange={(e) => setResetEmail(e.target.value)}
+                />
+              </div>
+            ) : (
+              // [2단계] OTP 및 새 비밀번호 입력 화면
+              <>
+                <div className="grid gap-2">
+                  <Label htmlFor="otp">8-Digit OTP</Label>
+                  <Input 
+                    id="otp" 
+                    type="text" 
+                    maxLength={8}
+                    placeholder="12345678" 
+                    value={otp}
+                    onChange={(e) => setOtp(e.target.value)}
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="new-password">New Password</Label>
+                  <Input 
+                    id="new-password" 
+                    type="password" 
+                    placeholder="Enter new password" 
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                  />
+                </div>
+              </>
+            )}
           </div>
           
           <DialogFooter>
             <Button variant="outline" onClick={() => setIsResetOpen(false)}>Cancel</Button>
-            <Button onClick={handleSendResetEmail} disabled={isResetSending} className="bg-slate-900">
-              {isResetSending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Send Reset Link"}
-            </Button>
+            
+            {resetStep === 1 ? (
+              <Button onClick={handleSendResetEmail} disabled={isResetSending} className="bg-slate-900">
+                {isResetSending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Send OTP"}
+              </Button>
+            ) : (
+              <Button onClick={handleVerifyAndUpdatePassword} disabled={isVerifying} className="bg-slate-900">
+                {isVerifying ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Update Password"}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

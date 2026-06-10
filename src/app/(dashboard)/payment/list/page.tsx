@@ -48,6 +48,8 @@ export default function PaymentListPage() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedMethod, setSelectedMethod] = useState("");
+  // ✅ 수정: 결제 수단 옵션들을 유지하기 위한 state 추가
+  const [methodOptions, setMethodOptions] = useState<string[]>([]);
 
   // ✅ 페이지네이션 관련 상태 추가
   const [limit, setLimit] = useState<number | "all">(20); // 기본값 20개
@@ -92,6 +94,14 @@ export default function PaymentListPage() {
       fetchPayments();
     }
   }, [startDate, endDate, limit, currentPage, selectedMethod, debouncedSearch]);
+
+  // ✅ 수정: 전체 데이터를 불러왔을 때(메서드 필터가 없을 때)만 결제 수단 고유 목록을 저장합니다.
+  useEffect(() => {
+    if (!selectedMethod && payments.length > 0) {
+      const methods = Array.from(new Set(payments.map(p => p.category))).filter(Boolean).sort();
+      setMethodOptions(methods);
+    }
+  }, [payments, selectedMethod]);
 
   const fetchPayments = async () => {
     setLoading(true);
@@ -219,7 +229,8 @@ export default function PaymentListPage() {
     }
   };
 
-  const uniqueMethods = Array.from(new Set(payments.map(p => p.category))).filter(Boolean).sort();
+  // ✅ 수정: 기존 실시간 계산 구문 제거 (대신 useEffect와 methodOptions state 사용)
+  // const uniqueMethods = Array.from(new Set(payments.map(p => p.category))).filter(Boolean).sort();
 
   // ✅ 서버 사이드 검색을 적용했으므로, 클라이언트 필터는 Customer Name 보조용으로만 사용
   const filteredPayments = payments.filter(p => {
@@ -319,7 +330,8 @@ export default function PaymentListPage() {
              className="w-full pl-9 pr-4 py-2 text-sm border border-slate-200 rounded-lg outline-none focus:border-slate-400 bg-white appearance-none cursor-pointer text-slate-700 font-medium"
            >
              <option value="">All Methods</option>
-             {uniqueMethods.map(method => (
+             {/* ✅ 수정: uniqueMethods 대신 고정 상태인 methodOptions 맵핑 */}
+             {methodOptions.map(method => (
                <option key={method} value={method}>{method}</option>
              ))}
            </select>

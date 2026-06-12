@@ -783,10 +783,12 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
   const handleCreditMemoCreation = async (redirect: boolean) => {
     try {
-        const { data: lastCr } = await supabase.from('invoices').select('id').ilike('id', 'CR-%').order('id', { ascending: false }).limit(1).single();
-        let nextId = "CR-00001";
-        if (lastCr?.id) { const match = lastCr.id.match(/CR-(\d+)/); if (match && match[1]) nextId = `CR-${String(parseInt(match[1]) + 1).padStart(5, '0')}`; }
-        
+        // 안전하게 DB에서 번호표 뽑아오기
+        const { data: nextId, error: rpcError } = await supabase.rpc('get_next_invoice_id', { p_prefix: 'CR' });
+    
+        if (rpcError || !nextId) {
+          throw new Error("Failed to generate Credit Memo ID: " + (rpcError?.message || "Unknown error"));
+        }
         const customerName = customers.find(c => c.id === selectedCustomerId)?.name || "Unknown Customer";
         
         // 🚀 [수정] 새 크레딧 메모 생성 시 due_date를 null로 저장합니다!
@@ -925,6 +927,13 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
               }
           }
       } else {
+          // 🚀 [수정 포인트] 신규 생성(Insert) 시: 먼저 인보이스 번호를 발급받습니다.
+          const { data: newInvoiceId, error: rpcError } = await supabase.rpc('get_next_invoice_id', { p_prefix: 'IV' });
+          
+          if (rpcError || !newInvoiceId) {
+            throw new Error("Failed to generate Invoice ID: " + (rpcError?.message || "Unknown error"));
+          }
+          
           // 🚀 [수정 포인트 2] 신규 생성(Insert) 시: 총 금액이 0원이면 Paid, 아니면 Unpaid
           const initialStatus = grandTotal === 0 ? "Paid" : "Unpaid";
 

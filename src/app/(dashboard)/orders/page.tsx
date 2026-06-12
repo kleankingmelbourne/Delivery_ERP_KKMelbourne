@@ -76,6 +76,19 @@ export default function AdminOrderTable() {
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
+  const totalPages = pageSize === "all" ? 1 : Math.ceil(totalCount / (parseInt(pageSize) || 10));
+
+  const handlePageSizeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setPageSize(e.target.value);
+    setCurrentPage(1); 
+  };
+
+  const handlePageChange = (newPage: number) => {
+    if (newPage >= 1 && newPage <= totalPages) {
+      setCurrentPage(newPage);
+    }
+  };
+
   useEffect(() => {
     setSelectedIds(new Set());
   }, [activeTab, debouncedSearch, startDate, endDate]);
@@ -112,7 +125,7 @@ export default function AdminOrderTable() {
       id, customer_id, created_at, order_date, requested_date, total_amount, status, order_memo, invoice_id, is_pickup,
       customers ( company, name, in_charge_delivery )
     `, { count: 'exact' })
-    .neq("status", "draft"); // 🚀 여기서 draft 상태인 오더를 원천 차단합니다!
+    .neq("status", "draft");
 
     if (activeTab === "PENDING") query = query.eq("status", "pending");
     else if (activeTab === "INVOICED") query = query.eq("status", "invoiced");
@@ -179,7 +192,7 @@ export default function AdminOrderTable() {
         const finalInvoiceTotal = roundAmount(orderSubtotal + gstTotal); 
 
         const dueDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-        const currentAdminName = user?.user_metadata?.full_name || user?.email || "Admin";
+        const currentAdminName = user?.user_metadata?.display_name || user?.email || "Admin";
 
         const invoiceData = {
             id: newInvId,
@@ -218,11 +231,11 @@ export default function AdminOrderTable() {
         await supabase.from("orders").update({ status: 'invoiced', invoice_id: newInvId }).eq('id', order.id);
 
         const inventoryItems = items.map(item => ({
-          productId: item.product_id, // OrderItem은 product_id를 씁니다.
+          productId: item.product_id,
           quantity: item.quantity,
           unit: item.unit
         }));
-        await updateInventory(supabase, inventoryItems, false); // false = 재고 차감
+        await updateInventory(supabase, inventoryItems, false);
 
         alert(`✅ Invoice ${newInvId} created (Subtotal: ${formatCurrency(orderSubtotal)} + GST: ${formatCurrency(gstTotal)})`);
         fetchOrders(); 
@@ -242,11 +255,9 @@ export default function AdminOrderTable() {
       const idsArray = Array.from(selectedIds);
       const targetOrders = orders.filter(o => idsArray.includes(o.id));
 
-      // 1. 선택된 모든 주문의 아이템 가져오기
       const { data: allItems } = await supabase.from("order_items").select("*").in("order_id", idsArray);
       if (!allItems || allItems.length === 0) throw new Error("선택한 주문들에 상품 내역이 없습니다.");
 
-      // 2. 주문들을 customer_id 기준으로 그룹화하기
       const groupedOrders = targetOrders.reduce((acc, order) => {
         if (!acc[order.customer_id]) {
           acc[order.customer_id] = [];
@@ -255,7 +266,6 @@ export default function AdminOrderTable() {
         return acc;
       }, {} as Record<string, Order[]>);
 
-      // 3. 새 인보이스 ID 시작 번호 채번 (가장 최근 번호 가져오기)
       const { data: lastInv } = await supabase.from("invoices").select("id").order("id", { ascending: false }).limit(1);
       let currentInvNum = 1001;
       if (lastInv && lastInv.length > 0) {
@@ -266,18 +276,16 @@ export default function AdminOrderTable() {
       const newInvoices: any[] = [];
       const newInvoiceItems: any[] = [];
       const orderUpdates: any[] = [];
-      const currentAdminName = user?.user_metadata?.full_name || user?.email || "Admin";
+      const currentAdminName = user?.user_metadata?.display_name || user?.email || "Admin";
 
-      // 4. 고객 그룹별로 순회하며 인보이스 생성 준비
       for (const customerId in groupedOrders) {
         const customerOrders = groupedOrders[customerId];
-        const newInvId = `IV-${currentInvNum}`; // 현재 채번된 ID 할당
-        currentInvNum++; // 다음 고객을 위해 번호 1 증가
+        const newInvId = `IV-${currentInvNum}`;
+        currentInvNum++;
 
         let combinedSubtotal = 0;
         let combinedMemos: string[] = [];
 
-        // 해당 고객의 주문들 금액 합산 및 메모 병합
         customerOrders.forEach(order => {
             combinedSubtotal += order.total_amount;
             if (order.order_memo) {
@@ -292,7 +300,6 @@ export default function AdminOrderTable() {
         const firstOrder = customerOrders[0];
         const dueDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
-        // 단일 인보이스 객체 생성 (이 고객을 위한)
         newInvoices.push({
             id: newInvId,
             customer_id: customerId,
@@ -308,27 +315,22 @@ export default function AdminOrderTable() {
             updated_who: currentAdminName,
             driver_id: firstOrder.customers?.in_charge_delivery || null,
             memo: mergedMemo,
-            is_pickup: customerOrders.some(o => o.is_pickup) // 하나라도 픽업이면 true
+            is_pickup: customerOrders.some(o => o.is_pickup)
         });
 
-        // 5. 🚀 이 고객의 주문들에 속한 아이템들 필터링 및 중복 합산(Merge)
         const customerOrderIds = customerOrders.map(o => o.id);
         const groupItems = allItems.filter((item: any) => customerOrderIds.includes(item.order_id));
 
         const mergedItemsMap = new Map();
 
         groupItems.forEach((item: any) => {
-            // 중복을 판별할 고유 키 생성 (상품ID + 단위 + 단가)
-            // 단가가 다를 경우 수량을 합치면 회계 계산이 어긋나므로 단가까지 키에 포함하여 안전하게 분리
             const mergeKey = `${item.product_id || item.description}_${item.unit}_${item.unit_price}`;
 
             if (mergedItemsMap.has(mergeKey)) {
-                // 이미 추가된 동일 상품이 있다면 수량과 총액만 누적
                 const existingItem = mergedItemsMap.get(mergeKey);
                 existingItem.quantity += item.quantity;
                 existingItem.amount = roundAmount(existingItem.quantity * existingItem.unit_price);
             } else {
-                // 처음 나오는 상품이면 Map에 신규 등록
                 mergedItemsMap.set(mergeKey, {
                     invoice_id: newInvId,
                     product_id: item.product_id,
@@ -343,12 +345,10 @@ export default function AdminOrderTable() {
             }
         });
 
-        // 병합 완료된 아이템들을 최종 등록 배열에 추가
         mergedItemsMap.forEach(mergedItem => {
             newInvoiceItems.push(mergedItem);
         });
 
-        // 6. 이 고객의 원본 주문들 상태 업데이트 준비
         customerOrders.forEach(order => {
             orderUpdates.push(
                 supabase.from("orders").update({ status: 'invoiced', invoice_id: newInvId }).eq('id', order.id)
@@ -356,7 +356,6 @@ export default function AdminOrderTable() {
         });
       }
 
-      // 7. Supabase DB 일괄 처리 (Insert & Update)
       if (newInvoices.length > 0) {
         const { error: invError } = await supabase.from("invoices").insert(newInvoices);
         if (invError) throw invError;
@@ -369,13 +368,12 @@ export default function AdminOrderTable() {
 
       await Promise.all(orderUpdates);
 
-      // 🚀 [추가된 부분] 일괄 변환 완료 직후 전체 아이템에 대해 재고 차감 실행
       const bulkInventoryItems = newInvoiceItems.map(item => ({
           productId: item.product_id,
           quantity: item.quantity,
           unit: item.unit
       }));
-      await updateInventory(supabase, bulkInventoryItems, false); // false = 재고 차감
+      await updateInventory(supabase, bulkInventoryItems, false);
       
       alert(`✅ 성공적으로 총 ${newInvoices.length}개의 인보이스가 생성되었습니다.`);
       setSelectedIds(new Set());
@@ -473,18 +471,36 @@ export default function AdminOrderTable() {
           ))}
       </div>
 
-      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col lg:flex-row items-center gap-4">
-        <div className="flex flex-col gap-1">
-          <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Req. Date Range</label>
-          <div className="flex items-center gap-2 bg-slate-50 p-1.5 rounded-lg border border-slate-200">
-            <input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} className="pl-2 bg-transparent text-sm w-32 font-medium outline-none"/>
-            <span className="text-slate-400">-</span>
-            <input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)} className="pl-2 bg-transparent text-sm w-32 font-medium outline-none"/>
+      {/* 🚀 [추가/수정된 부분] 상단 검색 및 필터 영역에 드롭다운 추가, 우측 정렬 반영 */}
+      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+        <div className="flex flex-col lg:flex-row lg:items-end gap-4 w-full">
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Req. Date Range</label>
+            <div className="flex items-center gap-2 bg-slate-50 p-1.5 rounded-lg border border-slate-200">
+              <input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} className="pl-2 bg-transparent text-sm w-32 font-medium outline-none"/>
+              <span className="text-slate-400">-</span>
+              <input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)} className="pl-2 bg-transparent text-sm w-32 font-medium outline-none"/>
+            </div>
+          </div>
+          <div className="relative flex-1 w-full max-w-sm">
+            <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400"/>
+            <input type="text" value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} placeholder="Search Name, Order ID..." className="w-full pl-10 pr-4 py-2 text-sm font-medium border border-slate-200 rounded-lg outline-none focus:border-indigo-500 transition-colors"/>
           </div>
         </div>
-        <div className="relative flex-1 w-full max-w-sm mt-5">
-          <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400"/>
-          <input type="text" value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} placeholder="Search Name, Order ID..." className="w-full pl-10 pr-4 py-2 text-sm font-medium border border-slate-200 rounded-lg outline-none focus:border-indigo-500 transition-colors"/>
+
+        <div className="flex items-center gap-2 shrink-0">
+          <label htmlFor="pageSize" className="text-xs font-black text-slate-400 uppercase">Rows</label>
+          <select
+            id="pageSize"
+            value={pageSize}
+            onChange={handlePageSizeChange}
+            className="border border-slate-200 rounded-lg py-1.5 px-3 text-sm font-bold text-slate-700 outline-none focus:border-indigo-500 bg-slate-50 hover:bg-slate-100 cursor-pointer transition-colors"
+          >
+            <option value="10">10</option>
+            <option value="20">20</option>
+            <option value="50">50</option>
+            <option value="all">ALL ({totalCount})</option>
+          </select>
         </div>
       </div>
 
@@ -641,6 +657,32 @@ export default function AdminOrderTable() {
           </tbody>
         </table>
       </div>
+
+      {/* 🚀 [추가/수정된 부분] 하단에는 페이지 이동 컨트롤만 우측 정렬로 남김 */}
+      {orders.length > 0 && (
+        <div className="flex items-center justify-end bg-white p-4 border border-slate-200 rounded-xl shadow-sm gap-4">
+          <span className="text-sm font-medium text-slate-500">
+            Page <span className="font-bold text-slate-700">{currentPage}</span> of <span className="font-bold text-slate-700">{totalPages === 0 ? 1 : totalPages}</span>
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => handlePageChange(currentPage - 1)}
+              disabled={currentPage === 1}
+              className="p-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed transition-colors"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => handlePageChange(currentPage + 1)}
+              disabled={currentPage === totalPages || totalPages === 0}
+              className="p-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed transition-colors"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+      
     </div>
   );
 }

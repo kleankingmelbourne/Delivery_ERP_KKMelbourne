@@ -5,7 +5,7 @@ import { generateInvoiceBufferForServer } from "@/utils/pdfServer";
 
 // 🚀 [핵심 수정 1] Vercel Serverless Function 타임아웃 연장 (최대 실행 시간)
 // Hobby 플랜은 최대 60초, Pro 플랜은 300초까지 가능합니다. PDF 생성 시간을 벌어줍니다.
-export const maxDuration = 100; 
+export const maxDuration = 120; 
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;

@@ -49,7 +49,6 @@ export async function GET(request: Request) {
 
     if (invError) throw invError;
     if (!todaysInvoices || todaysInvoices.length === 0) {
-        console.log(`[Auto Invoice] 오늘(${todayStr}) 생성된 타겟 인보이스가 없습니다.`);
         return NextResponse.json({ message: "No invoices created today." });
     }
 
@@ -70,11 +69,13 @@ export async function GET(request: Request) {
         }
 
         try {
-            console.log(`[Auto Invoice] PDF 생성 시작... (${inv.id})`);
             const pdfData = await generateInvoiceBufferForServer(inv.id, customerName, customerEmail, customerEmailCc);
 
+            // 문서 ID가 CR-로 시작하는지 체크하여 문서 타입 지정
+            const isCredit = String(inv.id).toUpperCase().startsWith("CR-");
+            const documentType = isCredit ? "Credit Note" : "Tax Invoice";
+
             if (!pdfData) {
-                console.error(`[Auto Invoice] ❌ PDF 생성 실패 (${inv.id})`);
                 results.push({ id: inv.id, status: "failed_pdf" });
                 continue;
             }
@@ -83,15 +84,14 @@ export async function GET(request: Request) {
                 ? [pdfData.customerEmailCc.trim()] 
                 : undefined;
 
-            console.log(`[Auto Invoice] Resend 발송 준비 완료. (대상: ${pdfData.customerEmail}, 참조: ${ccList || '없음'})`);
-            
             const safeInvoiceId = String(inv.id).replace(/[^a-zA-Z0-9_-]/g, "");
 
             const { data: emailData, error: emailError } = await resend.emails.send({
                 from: 'Klean King Accounts <admin@kleankingmelbourne.com.au>', 
                 to: [pdfData.customerEmail],
                 cc: ccList,
-                subject: `Tax Invoice - ${inv.id}`,
+                //메일 제목을 문서 타입에 맞게 변경
+                subject: `${documentType} - ${inv.id}`,
                 html: `
                   <div style="font-family: sans-serif; color: #333;">
                     <h2>Tax Invoice ${inv.id}</h2>
@@ -111,20 +111,16 @@ export async function GET(request: Request) {
             });
 
             if (emailError) {
-                console.error(`[Auto Invoice] ❌ Resend 발송 에러:`, emailError);
                 results.push({ id: inv.id, status: "error", error: emailError.message });
             } else {
-                console.log(`[Auto Invoice] ✅ 메일 발송 성공! 메일 ID:`, emailData?.id);
                 results.push({ id: inv.id, status: "sent" });
             }
 
         } catch (sendErr: any) {
-            console.error(`[Auto Invoice] 🚨 치명적 예외 발생 (${inv.id}):`, sendErr);
             results.push({ id: inv.id, status: "fatal_error", error: sendErr.message });
         }
     }
     
-    console.log(`[Auto Invoice] 전체 루프 종료. 총 처리: ${results.length}건`);
     return NextResponse.json({ success: true, processed: results.length, details: results });
 
   } catch (err: any) {

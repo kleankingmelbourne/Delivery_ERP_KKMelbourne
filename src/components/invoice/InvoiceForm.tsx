@@ -21,13 +21,6 @@ import { deductCustomerCredit } from "@/utils/credit";
 // --- [Utility] ---
 const roundAmount = (num: number) => Math.round((num + Number.EPSILON) * 100) / 100;
 
-//DDANG 🚀 단위가 박스(CTN/Carton/Box)인지 정확히 판별하는 도우미 함수
-//const isCtnUnit = (unitStr: string | undefined | null) => {
-//    if (!unitStr) return false;
-//    const s = unitStr.toLowerCase();
-//    return s.includes('ctn') || s.includes('carton') || s.includes('box');
-//};
-
 // --- [Utility] Debounce Hook ---
 function useDebounce<T>(value: T, delay: number): T {
   const [debouncedValue, setDebouncedValue] = useState(value);
@@ -315,6 +308,9 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
   const router = useRouter();
   const isEditMode = !!invoiceId; 
 
+  // 중복 저장 및 더블클릭을 원천 차단하는 Ref 락(Lock)
+  const isSavingRef = useRef(false);
+
   // --- State ---
   const [loading, setLoading] = useState(true);
   
@@ -353,6 +349,9 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
   const [dueDate, setDueDate] = useState("");
   const [memo, setMemo] = useState("");
   const [staffNote, setStaffNote] = useState("");
+  
+  // 크레딧 발행 날짜와 금액을 함께 관리하는 State
+  const [creditItems, setCreditItems] = useState<{ unallocated_amount: number; payment_date: string }[]>([]);
   const [availableCredit, setAvailableCredit] = useState(0); 
   
   const [originalItems, setOriginalItems] = useState<InvoiceItem[]>([]);
@@ -360,10 +359,8 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     { productId: "", unit: "CTN", quantity: 1, unitCost: 0, basePrice: 0, discountRate: 0, unitPrice: 0, isGstIncluded: true }
   ]);
 
-  // 컴포넌트 내부 상태 추가 (useState 모여있는 곳)
   const [useCredit, setUseCredit] = useState(false);
 
-  // (옵션) 고객이 바뀌거나 크레딧이 0이 되면 체크박스를 자동으로 해제
   useEffect(() => {
     if (availableCredit <= 0) setUseCredit(false);
   }, [availableCredit, selectedCustomerId]);
@@ -440,18 +437,18 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     initData();
   }, [invoiceId, isEditMode, router, today, productUnits]);
 
-  // 🌟 최적화 추가: 고객의 결제 조건(Due Date Term)을 저장할 상태값 하나 추가
   const [customerDueTerm, setCustomerDueTerm] = useState<string | null>(null);
 
-  // 2-1. 고객이 변경될 때만 딱 1번 실행되는 진짜 통신 (최적화 완료)
+  // 2-1. 고객이 변경될 때만 딱 1번 실행되는 통신
   useEffect(() => {
     if (!selectedCustomerId) {
         setAllowedProducts([]); 
         setStaffNote(""); 
+        setCreditItems([]); 
         setAvailableCredit(0); 
         setCurrentDriverId(null); 
         setCustomerStats({ totalOverdue: 0, oldestInvoiceDate: null }); 
-        setCustomerDueTerm(null); // 추가
+        setCustomerDueTerm(null); 
         if (!isEditMode) setAllProducts([]); 
         return;
     }
@@ -459,14 +456,14 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     const loadCustomerDetail = async () => {
       const [customerRes, paymentsRes, unpaidRes] = await Promise.all([
           supabase.from("customers").select(`due_date, note, in_charge_delivery, customer_products ( id, product_id, custom_price_ctn, custom_price_pack, products ( *, product_units ( unit_name ) ) )`).eq("id", selectedCustomerId).single(),
-          supabase.from('payments').select('unallocated_amount').eq('customer_id', selectedCustomerId).gt('unallocated_amount', 0),
+          supabase.from('payments').select('unallocated_amount, payment_date').eq('customer_id', selectedCustomerId).gt('unallocated_amount', 0),
           supabase.from("invoices").select("due_date, total_amount, paid_amount").eq("customer_id", selectedCustomerId).neq("status", "Paid")
       ]);
 
       const customerData = customerRes.data;
       if (customerData) {
           setStaffNote(customerData.note || ""); 
-          setCustomerDueTerm(customerData.due_date); // 결제 조건만 저장해둠
+          setCustomerDueTerm(customerData.due_date); 
           
           if (!currentDriverId) setCurrentDriverId(customerData.in_charge_delivery || null); 
 
@@ -492,8 +489,13 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       }
 
       if (paymentsRes.data) {
-        setAvailableCredit(roundAmount(paymentsRes.data.reduce((sum, p) => sum + p.unallocated_amount, 0)));
-      } else setAvailableCredit(0);
+        const sortedPayments = [...paymentsRes.data].sort((a, b) => new Date(a.payment_date).getTime() - new Date(b.payment_date).getTime());
+        setCreditItems(sortedPayments);
+        setAvailableCredit(roundAmount(sortedPayments.reduce((sum, p) => sum + p.unallocated_amount, 0)));
+      } else {
+        setCreditItems([]);
+        setAvailableCredit(0);
+      }
 
       if (unpaidRes.data) {
         const todayStr = new Date().toISOString().split('T')[0];
@@ -505,11 +507,9 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     };
     
     loadCustomerDetail();
-    // 🚀 의존성 배열에서 invoiceDate, currentDriverId 제거! 오직 고객 변경시에만 통신!
   }, [selectedCustomerId, isEditMode, supabase]); 
 
 
-  // 2-2. 날짜가 바뀌거나 고객이 바뀌면 화면의 텍스트(Due Date)만 재계산하는 로직 (DB 통신 없음!)
   useEffect(() => {
       if (!isEditMode && selectedCustomerId) {
           calculateDueDate(invoiceDate, customerDueTerm);
@@ -691,10 +691,44 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
   }, 0));
   const grandTotal = roundAmount(subTotal + gstTotal);
 
-  // 사용할 크레딧 (인보이스 금액을 넘지 않도록)
   const creditUsed = useCredit ? Math.min(availableCredit, Math.max(0, grandTotal)) : 0;
-  // 크레딧 적용 후 최종 결제 금액
   const finalAmountDue = Math.max(0, grandTotal - creditUsed);
+
+  // ✅ [새로 추가된 부분] 체크박스를 누르는 순간 혹은 금액 변경 시 실시간으로 메모장 본문을 연동하는 효과(Effect)
+  useEffect(() => {
+    setMemo(prev => {
+      // 1. 기존 메모에 남아있는 구형 '[크레딧 사용 내역]' 블록을 정규식으로 완벽히 찾아 제거합니다. (순수 유저 입력값만 추출)
+      const cleanMemo = prev ? prev.replace(/\n*\s*\[Credit Applied History\][\s\S]*/g, "").trim() : "";
+
+      // 크레딧을 꺼두었거나 사용할 금액이 없다면 깨끗해진 원래 메모만 반환하고 탈출
+      if (!useCredit || creditUsed <= 0 || isEditMode) {
+        return cleanMemo;
+      }
+
+      // 2. 선입선출 기반 크레딧 차감 가이드라인 텍스트 실시간 빌드
+      let remainingToDeduct = creditUsed;
+      const memoLines: string[] = [];
+
+      for (const cr of creditItems) {
+        if (remainingToDeduct <= 0) break;
+        
+        const deductFromThis = Math.min(cr.unallocated_amount, remainingToDeduct);
+        if (deductFromThis > 0) {
+          const [year, month, day] = cr.payment_date.split('-');
+          memoLines.push(`-$${deductFromThis.toFixed(2)} deducted from credit memo issued on ${day}/${month}/${year}`);
+          remainingToDeduct -= deductFromThis;
+        }
+      }
+
+      if (memoLines.length > 0) {
+        const autoCreditMemoText = `[Credit Applied History]\n${memoLines.join('\n')}`;
+        // 원래 메모 뒤에 두 줄 개행 후 차감 내역 자동 첨부
+        return cleanMemo ? `${cleanMemo}\n\n${autoCreditMemoText}` : autoCreditMemoText;
+      }
+
+      return cleanMemo;
+    });
+  }, [useCredit, creditUsed, creditItems, isEditMode]); // 관련 요소가 변할 때마다 실시간 작동
 
   const prevGrandTotalRef = useRef(grandTotal);
   useEffect(() => {
@@ -783,7 +817,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
   const handleCreditMemoCreation = async (redirect: boolean) => {
     try {
-        // 안전하게 DB에서 번호표 뽑아오기
         const { data: nextId, error: rpcError } = await supabase.rpc('get_next_invoice_id', { p_prefix: 'CR' });
     
         if (rpcError || !nextId) {
@@ -791,13 +824,12 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
         }
         const customerName = customers.find(c => c.id === selectedCustomerId)?.name || "Unknown Customer";
         
-        // 🚀 [수정] 새 크레딧 메모 생성 시 due_date를 null로 저장합니다!
         const { error: invError } = await supabase.from("invoices").insert({
           id: nextId, 
           customer_id: selectedCustomerId, 
           invoice_to: customerName, 
           invoice_date: invoiceDate, 
-          due_date: null, // <-- 수정됨
+          due_date: null, 
           total_amount: grandTotal, 
           subtotal: subTotal, 
           gst_total: gstTotal, 
@@ -830,7 +862,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
               };
           });
           parallelTasks.push(supabase.from("invoice_items").insert(itemsData));
-          await updateInventory(supabase, validItems, true);  //DDANG 수정
+          await updateInventory(supabase, validItems, true);  
         }
 
         const creditAmount = Math.abs(grandTotal); 
@@ -852,18 +884,32 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
           alert("Error: " + e.message); 
       } finally { 
           setLoading(false); 
+          isSavingRef.current = false; 
       }
   };
 
   const handleSave = async (redirectOrNew: boolean, isPrint: boolean = false) => {
+    if (isSavingRef.current) return;
+
     if (!selectedCustomerId) return alert("Please select a customer.");
+    
+    isSavingRef.current = true; 
     setLoading(true);
     const validItems = items.filter(item => item.productId);
     
-    if (grandTotal < 0 && !isEditMode) { await handleCreditMemoCreation(redirectOrNew); return; }
+    if (grandTotal < 0 && !isEditMode) { 
+        await handleCreditMemoCreation(redirectOrNew); 
+        return; 
+    }
+    
     if (grandTotal >= 0) {
         const insufficientItems = await checkStockAvailability(validItems);
-        if (insufficientItems.length > 0) { alert(`Stock Insufficient for the following items:\n- ${insufficientItems.join('\n- ')}\n\nCannot save/update invoice.`); setLoading(false); return; }
+        if (insufficientItems.length > 0) { 
+            alert(`Stock Insufficient for the following items:\n- ${insufficientItems.join('\n- ')}\n\nCannot save/update invoice.`); 
+            setLoading(false); 
+            isSavingRef.current = false; 
+            return; 
+        }
     }
 
     try {
@@ -887,7 +933,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
               is_pickup: isPickup 
           };
 
-          // 🚀 [수정 포인트 1] 수정(Edit) 시: 총 금액이 정확히 0원이면 강제로 Paid 처리
           if (grandTotal === 0) {
               updatePayload.status = "Paid";
               updatePayload.paid_amount = 0;
@@ -927,17 +972,16 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
               }
           }
       } else {
-          // 🚀 [수정 포인트] 신규 생성(Insert) 시: 먼저 인보이스 번호를 발급받습니다.
           const { data: newInvoiceId, error: rpcError } = await supabase.rpc('get_next_invoice_id', { p_prefix: 'IV' });
           
           if (rpcError || !newInvoiceId) {
             throw new Error("Failed to generate Invoice ID: " + (rpcError?.message || "Unknown error"));
           }
           
-          // 🚀 [수정 포인트 2] 신규 생성(Insert) 시: 총 금액이 0원이면 Paid, 아니면 Unpaid
           const initialStatus = grandTotal === 0 ? "Paid" : "Unpaid";
 
           const { data: inv, error: err1 } = await supabase.from("invoices").insert({ 
+              id: newInvoiceId, 
               customer_id: selectedCustomerId, 
               invoice_to: customerName, 
               invoice_date: invoiceDate, 
@@ -948,8 +992,8 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
               gst_total: gstTotal, 
               created_who: currentUserName, 
               updated_who: currentUserName, 
-              status: initialStatus, // <-- 수정된 변수 적용
-              memo: memo, 
+              status: initialStatus, 
+              memo: memo, // 🚀 [수정된 부분] 렌더링 시 실시간으로 완성되어 있는 memo를 그대로 저장합니다.
               driver_id: currentDriverId, 
               is_pickup: isPickup 
           }).select().single();
@@ -980,7 +1024,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
         supabase.from("customers").update({ note: staffNote }).eq("id", selectedCustomerId)
       ];
 
-      // 🚀 새롭게 추가: 크레딧을 사용하기로 했다면 공통 유틸리티 함수를 병렬 작업에 추가
       if (useCredit && creditUsed > 0 && !isEditMode) {
         parallelSaveTasks.push(deductCustomerCredit(supabase, selectedCustomerId, creditUsed));
       }
@@ -1005,8 +1048,6 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       const finalResults = await Promise.all(parallelSaveTasks);
       if (finalResults[0] && 'error' in finalResults[0] && finalResults[0].error) throw finalResults[0].error;
 
-      //alert(isEditMode ? "Invoice updated successfully!" : "Invoice saved successfully!");
-
       if (isPrint && targetId) { 
         handlePrint(targetId);
         isPrint = false;
@@ -1020,6 +1061,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
         alert("Error: " + e.message); 
     } finally { 
         setLoading(false); 
+        isSavingRef.current = false; 
     }
   };
 
@@ -1029,6 +1071,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     setShowAllProducts(false); setAutoAddProduct(false); setAvailableCredit(0); setCurrentDriverId(null); 
     setIsPickup(false); setCustomerStats({ totalOverdue: 0, oldestInvoiceDate: null });
     setAllProducts([]); 
+    setCreditItems([]); 
   };
 
   useEffect(() => {
@@ -1036,7 +1079,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault(); 
         
-        if (!loading) {
+        if (!loading && !isSavingRef.current) {
           if (isEditMode) {
             handleSave(true);
           } else {
@@ -1230,6 +1273,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
             </div>
             <div className="space-y-6">
                 <div className="space-y-2"><label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2"><FileText className="w-3.5 h-3.5" /> Invoice Memo</label>
+                  {/* 🚀 [참고] 사용자가 직접 메모를 타이핑 수정할 수 있도록 기존 핸들러 구조는 온전히 보존됩니다. */}
                   <Textarea placeholder="Visible on invoice..." className="resize-none h-[80px] bg-slate-50" value={memo || ""} onChange={(e) => setMemo(e.target.value)} />
                 </div>
                 <div className="bg-amber-50 p-4 rounded-lg border border-amber-200 shadow-sm space-y-2"><div className="flex items-center justify-between"><h3 className="font-bold text-amber-900 text-xs uppercase flex items-center gap-2"><Lock className="w-3 h-3"/> Staff Note</h3><span className="text-[10px] text-amber-700 font-medium px-2 py-0.5 bg-amber-100 rounded-full">Auto-updates Customer Profile</span></div>
@@ -1248,7 +1292,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
               <div className="flex justify-between text-xl font-black text-slate-900 pt-3 border-t border-dashed border-slate-200">
                 <span>Grand Total</span><span>${grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
               </div>
-              {/* 💳 새롭게 추가된 크레딧 전용 카드 (Card) */}
+              
               <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl mt-4 space-y-3 shadow-sm">
                 <div className="flex justify-between items-center font-bold">
                   <span className="text-slate-600 text-sm">Customer Credit</span>
@@ -1257,12 +1301,23 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                   </span>
                 </div>
                 
+                {availableCredit > 0 && creditItems.length > 0 && (
+                  <div className="text-[11px] text-slate-500 bg-white p-2 rounded border border-slate-200 max-h-[80px] overflow-y-auto space-y-1">
+                    {creditItems.map((cr, idx) => (
+                      <div key={idx} className="flex justify-between">
+                        <span>• {cr.payment_date}</span>
+                        <span className="font-semibold">${cr.unallocated_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                
                 <div className="flex items-center space-x-2 pt-2 border-t border-slate-200">
                   <Checkbox 
                     id="use-credit" 
                     checked={useCredit} 
                     onCheckedChange={(c) => setUseCredit(!!c)} 
-                    disabled={availableCredit <= 0 || grandTotal <= 0 || isEditMode} // 0원이면 클릭 금지
+                    disabled={availableCredit <= 0 || grandTotal <= 0 || isEditMode} 
                   />
                   <label 
                     htmlFor="use-credit" 
@@ -1271,13 +1326,13 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                     Apply Credit
                   </label>
                 </div>
-                {/* 🚀 사용자 친화적 안내 메시지 추가 (Edit Mode일 때만 보임) */}
+                
                 {isEditMode && (
                   <span className="text-[10px] text-amber-600 font-medium pl-6">
                     * Credits Applied only new invoice.
                   </span>
                 )}
-                {/* 크레딧이 적용되었을 때 차감 내역 및 최종 금액 표시 */}
+                
                 {useCredit && creditUsed > 0 && (
                   <div className="pt-2 space-y-1">
                     <div className="flex justify-between items-center text-sm text-emerald-600">
@@ -1291,14 +1346,13 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
                   </div>
                 )}
               </div>
-              {/* 💳 크레딧 카드 끝 */}
+              
               {grandTotal < 0 && (<div className="text-xs text-red-500 bg-red-50 border border-red-200 p-2 rounded text-center mt-2">⚠ This will create a <strong>CREDIT MEMO</strong></div>)}
             </div>
             <div className="space-y-3 mt-6">
               <Button onClick={() => handleSave(true)} disabled={loading} className="w-full bg-slate-900 hover:bg-slate-600 h-10 text-sm font-bold shadow-md">
                 {loading ? (isEditMode ? "Updating..." : "Saving...") : <><Save className="w-4 h-4 mr-2" /> {isEditMode ? "Update Invoice" : "Save Invoice"}</>}
               </Button>
-              {/* 🚀 새롭게 추가되는 Save & Print 버튼 */}
               <Button onClick={() => handleSave(true, true)} disabled={loading} className="w-full bg-slate-500 hover:bg-slate-600 text-white h-10 text-sm font-bold shadow-md">
                 {loading ? "Processing..." : <><Printer className="w-4 h-4 mr-2" /> Save & Print</>}
               </Button>

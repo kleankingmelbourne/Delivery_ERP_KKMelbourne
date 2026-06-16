@@ -491,9 +491,11 @@ export default function PaymentListPage() {
                                   </thead>
                                   <tbody className="divide-y divide-slate-50">
                                     {allocationsCache[pay.id].map((alloc) => {
-                                      const payDate = new Date(pay.payment_date);
-                                      const allocDate = new Date(alloc.created_at);
-                                      const isLaterCredit = payDate.setHours(0,0,0,0) < allocDate.setHours(0,0,0,0);
+                                      // 🚀 [버그 수정] Date 원본 객체를 변조하지 않도록 새로운 Date 객체로 감쌉니다.
+                                      const payDate = new Date(new Date(pay.payment_date).setHours(0,0,0,0));
+                                      const allocDate = new Date(new Date(alloc.created_at).setHours(0,0,0,0));
+                                      const isLaterCredit = payDate < allocDate;
+                                      
                                       return (
                                         <tr key={alloc.id} className="hover:bg-slate-50">
                                           <td className="px-3 py-2 font-medium text-slate-700">#{alloc.invoice?.id}</td>
@@ -501,7 +503,7 @@ export default function PaymentListPage() {
                                           <td className="px-3 py-2 text-center">
                                             <div className="flex items-center justify-center gap-2">
                                               <span className="text-slate-600 font-medium">{formatDate(alloc.created_at)}</span>
-                                              {isLaterCredit && <span className="px-1.5 py-0.5 rounded text-[9px] bg-purple-100 text-purple-700 font-bold border border-purple-200">CREDIT USED</span>}
+                                              {isLaterCredit && <span className="px-1.5 py-0.5 rounded text-[9px] bg-purple-100 text-purple-700 font-bold border border-purple-200">USED</span>}
                                             </div>
                                           </td>
                                           <td className="px-3 py-2 text-right text-slate-500">{formatCurrency(alloc.invoice?.total_amount)}</td>

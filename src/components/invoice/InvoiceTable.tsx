@@ -129,6 +129,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
 
   const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(new Set());
   const [detailsCache, setDetailsCache] = useState<Record<string, InvoiceItem[]>>({});
+  const [allocationsCache, setAllocationsCache] = useState<Record<string, any[]>>({});
   const [loadingRows, setLoadingRows] = useState<Set<string>>(new Set());
 
   const isInitialMount = useRef(true);
@@ -412,16 +413,26 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
       if (!detailsCache[invoiceId] || !isDetailsLoaded) {
         setLoadingRows(prev => new Set(prev).add(invoiceId));
 
-        const [itemsRes, detailsRes] = await Promise.all([
+        // 🚀 [추가/수정] 기존 items, invoices 조회 외에 allocations (결제내역) 도 병렬로 함께 가져옵니다.
+        // 참고: 사용중인 DB 테이블 구조에 따라 `allocations` 테이블명 및 select 구문을 수정하셔야 합니다.
+        const [itemsRes, detailsRes, allocRes] = await Promise.all([
           supabase.from("invoice_items").select("*, products(buy_price, total_pack_ctn)").eq("invoice_id", invoiceId),
           supabase.from("invoices")
             .select("subtotal, gst_total, memo, created_who, updated_who")
             .eq("id", invoiceId)
-            .single()
+            .single(),
+          supabase.from("payment_allocations") // <- 실제 결제 내역을 저장하는 테이블 이름에 맞게 수정
+            .select("*")               // 필요하다면 결제의 총 금액을 가져오기 위한 join을 추가하세요 (예: `*, payments:source_id(amount)`)
+            .eq("invoice_id", invoiceId)
         ]);
 
         if (!itemsRes.error && itemsRes.data) {
             setDetailsCache(prev => ({ ...prev, [invoiceId]: itemsRes.data }));
+        }
+
+        // 상태 캐시 업데이트: 결제 내역
+        if (!allocRes.error && allocRes.data) {
+            setAllocationsCache(prev => ({ ...prev, [invoiceId]: allocRes.data }));
         }
 
         if (!detailsRes.error && detailsRes.data) {
@@ -475,20 +486,32 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
           
           if (missingIds.length > 0) {
               setLoadingRows(new Set(missingIds)); 
-              const { data: items, error } = await supabase
-                  .from("invoice_items")
-                  .select("*, products(buy_price, total_pack_ctn)")
-                  .in("invoice_id", missingIds);
+              // 🚀 [추가] Detail Show All 버튼 클릭 시에도 allocations 내역을 가져옵니다.
+              const [itemsRes, allocRes] = await Promise.all([
+                  supabase.from("invoice_items").select("*, products(buy_price, total_pack_ctn)").in("invoice_id", missingIds),
+                  supabase.from("payment_allocations").select("*").in("invoice_id", missingIds)
+              ]);
 
-              if (!error && items) {
+              if (!itemsRes.error && itemsRes.data) {
                   const newCache = { ...detailsCache };
-                  items.forEach((item: any) => {
+                  itemsRes.data.forEach((item: any) => {
                       if (!newCache[item.invoice_id]) newCache[item.invoice_id] = [];
                       newCache[item.invoice_id].push(item);
                   });
                   missingIds.forEach(id => { if (!newCache[id]) newCache[id] = []; });
                   setDetailsCache(newCache);
               }
+
+              if (!allocRes.error && allocRes.data) {
+                  const newAllocCache = { ...allocationsCache };
+                  allocRes.data.forEach((alloc: any) => {
+                      if (!newAllocCache[alloc.invoice_id]) newAllocCache[alloc.invoice_id] = [];
+                      newAllocCache[alloc.invoice_id].push(alloc);
+                  });
+                  missingIds.forEach(id => { if (!newAllocCache[id]) newAllocCache[id] = []; });
+                  setAllocationsCache(newAllocCache);
+              }
+
               setLoadingRows(new Set()); 
           }
           setExpandedRowIds(newExpanded);
@@ -1028,52 +1051,89 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
                                 </div>
                               </div>
                               {loadingRows.has(inv.id) ? ( <div className="text-center py-4 text-slate-400 text-sm">Loading items...</div> ) : (
-                                <table className="w-full text-xs text-left">
-                                  <thead className="bg-slate-100 text-slate-500 font-bold border-b border-slate-200">
-                                    <tr>
-                                      <th className="px-3 py-2">Product Name</th>
-                                      <th className="px-3 py-2 text-center">Unit</th>
-                                      <th className="px-3 py-2 text-center">Qty</th>
-                                      <th className="px-3 py-2 text-right text-orange-600">Cost (Unit)</th>
-                                      <th className="px-3 py-2 text-right">Base Price</th>
-                                      <th className="px-3 py-2 text-right">Net Price (Unit)</th>
-                                      <th className="px-3 py-2 text-right text-red-500">Disc %</th>
-                                      <th className="px-3 py-2 text-right">Total Price</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody className="divide-y divide-slate-50">
-                                    {(detailsCache[inv.id] || []).map((item, idx) => {
-                                      const unitMatch = item.description.match(/\((CTN|PACK)\)$/);
-                                      const unit = item.unit || (unitMatch ? unitMatch[1] : "EA");
-                                      const cleanName = item.description.replace(/\((CTN|PACK)\)$/, '').trim();
-                                      const qty = item.quantity;
-                                      const basePrice = item.base_price || item.unit_price; 
-                                      const netPrice = item.unit_price;
-                                      const finalTotal = item.amount || (netPrice * qty);
-                                      const discountRate = item.discount || 0;
+                                <>
+                                  <table className="w-full text-xs text-left">
+                                    <thead className="bg-slate-100 text-slate-500 font-bold border-b border-slate-200">
+                                      <tr>
+                                        <th className="px-3 py-2">Product Name</th>
+                                        <th className="px-3 py-2 text-center">Unit</th>
+                                        <th className="px-3 py-2 text-center">Qty</th>
+                                        <th className="px-3 py-2 text-right text-orange-600">Cost (Unit)</th>
+                                        <th className="px-3 py-2 text-right">Base Price</th>
+                                        <th className="px-3 py-2 text-right">Net Price (Unit)</th>
+                                        <th className="px-3 py-2 text-right text-red-500">Disc %</th>
+                                        <th className="px-3 py-2 text-right">Total Price</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-50">
+                                      {(detailsCache[inv.id] || []).map((item, idx) => {
+                                        const unitMatch = item.description.match(/\((CTN|PACK)\)$/);
+                                        const unit = item.unit || (unitMatch ? unitMatch[1] : "EA");
+                                        const cleanName = item.description.replace(/\((CTN|PACK)\)$/, '').trim();
+                                        const qty = item.quantity;
+                                        const basePrice = item.base_price || item.unit_price; 
+                                        const netPrice = item.unit_price;
+                                        const finalTotal = item.amount || (netPrice * qty);
+                                        const discountRate = item.discount || 0;
 
-                                      let unitCost = item.products?.buy_price || 0;
-                                      const upperUnit = unit.toUpperCase();
-                                      if (!upperUnit.includes("CTN") && !upperUnit.includes("CARTON") && !upperUnit.includes("BOX")) {
-                                        const packsPerCtn = Math.max(1, item.products?.total_pack_ctn || 1);
-                                        unitCost = unitCost / packsPerCtn;
-                                      }
+                                        let unitCost = item.products?.buy_price || 0;
+                                        const upperUnit = unit.toUpperCase();
+                                        if (!upperUnit.includes("CTN") && !upperUnit.includes("CARTON") && !upperUnit.includes("BOX")) {
+                                          const packsPerCtn = Math.max(1, item.products?.total_pack_ctn || 1);
+                                          unitCost = unitCost / packsPerCtn;
+                                        }
 
-                                      return (
-                                        <tr key={idx} className="hover:bg-slate-50">
-                                          <td className="px-3 py-2 font-medium text-slate-700">{cleanName}</td>
-                                          <td className="px-3 py-2 text-center text-slate-400">{unit}</td>
-                                          <td className="px-3 py-2 text-center font-bold text-slate-700">{qty}</td>
-                                          <td className="px-3 py-2 text-right font-medium text-orange-600">{formatCurrency(unitCost)}</td>
-                                          <td className="px-3 py-2 text-right text-slate-500">{formatCurrency(basePrice)}</td>
-                                          <td className="px-3 py-2 text-right font-medium text-slate-700">{formatCurrency(netPrice)}</td>
-                                          <td className="px-3 py-2 text-right text-red-400">{discountRate > 0 ? `${discountRate}%` : "-"}</td>
-                                          <td className="px-3 py-2 text-right font-bold text-slate-900">{formatCurrency(finalTotal)}</td>
-                                        </tr>
-                                      );
-                                    })}
-                                  </tbody>
-                                </table>
+                                        return (
+                                          <tr key={idx} className="hover:bg-slate-50">
+                                            <td className="px-3 py-2 font-medium text-slate-700">{cleanName}</td>
+                                            <td className="px-3 py-2 text-center text-slate-400">{unit}</td>
+                                            <td className="px-3 py-2 text-center font-bold text-slate-700">{qty}</td>
+                                            <td className="px-3 py-2 text-right font-medium text-orange-600">{formatCurrency(unitCost)}</td>
+                                            <td className="px-3 py-2 text-right text-slate-500">{formatCurrency(basePrice)}</td>
+                                            <td className="px-3 py-2 text-right font-medium text-slate-700">{formatCurrency(netPrice)}</td>
+                                            <td className="px-3 py-2 text-right text-red-400">{discountRate > 0 ? `${discountRate}%` : "-"}</td>
+                                            <td className="px-3 py-2 text-right font-bold text-slate-900">{formatCurrency(finalTotal)}</td>
+                                          </tr>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+
+                                  {/* 🚀 [추가] Payment History 렌더링 (Partial 이나 Paid 인 경우만 노출) */}
+                                  {(inv.status === "Partial" || inv.status === "Paid") && allocationsCache[inv.id] && allocationsCache[inv.id].length > 0 && (
+                                    <div className="mt-4 pt-4 border-t border-slate-200">
+                                      <h5 className="text-xs font-bold text-slate-800 mb-2 flex items-center gap-1">
+                                        <CreditCard className="w-3.5 h-3.5 text-emerald-600"/> Payment / Credit History
+                                      </h5>
+                                      <div className="overflow-x-auto rounded-lg border border-slate-200">
+                                        <table className="w-full text-xs text-left">
+                                          <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200">
+                                            <tr>
+                                              <th className="px-3 py-2">Date</th>
+                                              <th className="px-3 py-2">Source</th>
+                                              <th className="px-3 py-2 text-right text-emerald-600">Applied</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody className="divide-y divide-slate-50">
+                                            {allocationsCache[inv.id].map((alloc: any, idx: number) => (
+                                              <tr key={idx} className="hover:bg-slate-50">
+                                                <td className="px-3 py-2 text-slate-600">
+                                                  {alloc.created_at ? new Date(alloc.created_at).toLocaleDateString() : '-'}
+                                                </td>
+                                                <td className="px-3 py-2 font-medium text-slate-700">
+                                                  {alloc.source_id || alloc.payment_id || '-'}
+                                                </td>
+                                                <td className="px-3 py-2 text-right font-bold text-emerald-700">
+                                                  {formatCurrency(alloc.amount)}
+                                                </td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    </div>
+                                  )}
+                                </>
                               )}
                             </div>
                           </td>

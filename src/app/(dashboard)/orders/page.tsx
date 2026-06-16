@@ -157,7 +157,7 @@ export default function AdminOrderTable() {
     const from = (currentPage - 1) * limit;
     const to = from + limit - 1;
     
-    query = query.order("requested_date", { ascending: false }).order("id", { ascending: false }).range(from, to);
+    query = query.order("created_at", { ascending: false }).order("id", { ascending: false }).range(from, to);
     
     const { data, count, error } = await query;
     if (!error && data) {

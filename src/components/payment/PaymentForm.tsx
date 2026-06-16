@@ -207,6 +207,9 @@ function PaymentFormInner({ paymentId }: { paymentId?: string }) {
   const [autoAllocate, setAutoAllocate] = useState(false); 
   const [exactInvoiceAmount, setExactInvoiceAmount] = useState(false);
 
+  // 🚀 [추가] 연속 클릭을 완벽하게 차단할 동기식 자물쇠
+  const isSaving = useRef(false);
+
   useEffect(() => {
     const initData = async () => {
       setLoading(true);
@@ -387,6 +390,9 @@ function PaymentFormInner({ paymentId }: { paymentId?: string }) {
   };
 
   const handleSave = async (shouldRedirect: boolean = true) => {
+    // 🚀 [방어 1] 이미 저장 중(자물쇠 잠김)이라면 버튼을 아무리 눌러도 즉시 튕겨냄
+    if (isSaving.current) return;
+
     if (!selectedCustomerId) return alert("Select a customer.");
     
     const currentNumericAmount = Number(amount) || 0;
@@ -394,47 +400,57 @@ function PaymentFormInner({ paymentId }: { paymentId?: string }) {
     const currentTotalFunds = roundAmount(currentNumericAmount + currentCreditUsed);
     const currentTotalAllocated = Object.values(allocations).reduce((sum, val) => sum + val, 0);
 
-    if (currentTotalFunds <= 0) {
-       return alert("결제할 총 금액이 '0'입니다. 금액을 입력하거나 크레딧을 확인해주세요.");
-    }
-
+    if (currentTotalFunds <= 0) return alert("결제할 총 금액이 '0'입니다. 금액을 입력하거나 크레딧을 확인해주세요.");
     if (currentNumericAmount === 0 && roundAmount(currentTotalAllocated) === 0) {
-        return alert("적용할 인보이스가 선택되지 않았습니다. 크레딧을 사용하려면 인보이스 'Payment' 칸에 금액을 입력해주세요.");
+        return alert("적용할 인보이스가 선택되지 않았습니다.");
     }
-
     if (roundAmount(currentTotalAllocated) > currentTotalFunds) {
       return alert(`Error: You allocated $${currentTotalAllocated}, but only have $${currentTotalFunds} available.`);
     }
 
+    // 🚀 [방어 2] 유효성 검사를 무사히 통과했으면 자물쇠를 잠급니다.
+    isSaving.current = true;
     setLoading(true);
 
     try {
       let finalPaymentId = paymentId;
 
+      // --- [Edit 모드 롤백 로직] ---
       if (isEditMode && paymentId) {
-          const { data: oldAllocations } = await supabase.from('payment_allocations').select('*').eq('payment_id', paymentId);
+          const { data: oldAllocations, error: oldAllocErr } = await supabase.from('payment_allocations').select('*').eq('payment_id', paymentId);
+          if (oldAllocErr) throw oldAllocErr;
+
           if (oldAllocations && oldAllocations.length > 0) {
               for (const old of oldAllocations) {
-                  const { data: inv } = await supabase.from('invoices').select('id, paid_amount, total_amount').eq('id', old.invoice_id).single();
+                  const { data: inv, error: invFetchErr } = await supabase.from('invoices').select('id, paid_amount, total_amount').eq('id', old.invoice_id).single();
+                  if (invFetchErr) throw invFetchErr;
+
                   if (inv) {
                       const rollbackPaid = roundAmount(inv.paid_amount - old.amount);
                       let newStatus = 'Unpaid';
                       if (rollbackPaid >= inv.total_amount) newStatus = 'Paid';
                       else if (rollbackPaid > 0) newStatus = 'Partial';
-                      await supabase.from('invoices').update({ paid_amount: Math.max(0, rollbackPaid), status: newStatus }).eq('id', inv.id);
+                      
+                      const { error: invRbErr } = await supabase.from('invoices').update({ paid_amount: Math.max(0, rollbackPaid), status: newStatus }).eq('id', inv.id);
+                      if (invRbErr) throw invRbErr;
                   }
               }
           }
-          await supabase.from('payment_allocations').delete().eq('payment_id', paymentId);
           
-          await supabase.from('payments').update({
+          const { error: deleteErr } = await supabase.from('payment_allocations').delete().eq('payment_id', paymentId);
+          if (deleteErr) throw new Error("기존 할당 내역을 지우는데 실패했습니다: " + deleteErr.message);
+          
+          const { error: payUpdateErr } = await supabase.from('payments').update({
               payment_date: paymentDate,
               amount: currentNumericAmount,
               unallocated_amount: currentNumericAmount,
               category: method,
               reason: reason
           }).eq('id', paymentId);
+          if (payUpdateErr) throw payUpdateErr;
+
       } else {
+          // --- [새 결제 생성 로직] ---
           if (currentNumericAmount > 0) {
               const { data: pay, error: payError } = await supabase.from('payments').insert({
                 customer_id: selectedCustomerId,
@@ -451,21 +467,25 @@ function PaymentFormInner({ paymentId }: { paymentId?: string }) {
 
       let fundingSources: { id: string, balance: number }[] = [];
 
+      // 🌟 [순서 교정 1순위] 새로 입력받은 현금을 무조건 제일 먼저 지갑에 넣습니다!
+      if (finalPaymentId && currentNumericAmount > 0) {
+        fundingSources.push({ id: finalPaymentId, balance: currentNumericAmount });
+      }
+
+      // 🌟 [순서 교정 2순위] 현금으로 결제하고도 모자랄 때를 대비해, 기존 크레딧을 그 뒤에 줄 세웁니다!
       if (useCredit && availableCredit > 0 && !isEditMode) {
-        const { data: oldPayments } = await supabase
+        const { data: oldPayments, error: oldPayErr } = await supabase
           .from('payments')
           .select('id, unallocated_amount')
           .eq('customer_id', selectedCustomerId)
           .gt('unallocated_amount', 0)
           .order('payment_date', { ascending: true });
         
+        if (oldPayErr) throw oldPayErr;
+
         if (oldPayments) {
           fundingSources.push(...oldPayments.map(p => ({ id: p.id, balance: p.unallocated_amount })));
         }
-      }
-
-      if (finalPaymentId && currentNumericAmount > 0) {
-        fundingSources.push({ id: finalPaymentId, balance: currentNumericAmount });
       }
 
       const invoicesToPay = Object.entries(allocations).filter(([_, amt]) => amt > 0);
@@ -481,23 +501,26 @@ function PaymentFormInner({ paymentId }: { paymentId?: string }) {
           const roundedTake = roundAmount(take);
 
           if (roundedTake > 0) {
-            await supabase.from('payment_allocations').insert({
+            const { error: allocInsertErr } = await supabase.from('payment_allocations').insert({
               payment_id: fund.id,
               invoice_id: invoiceId,
               amount: roundedTake
             });
+            if (allocInsertErr) throw new Error("결제 할당 중 오류가 발생했습니다: " + allocInsertErr.message);
 
             fund.balance = roundAmount(fund.balance - roundedTake);
-            await supabase.from('payments').update({
+            const { error: fundUpdateErr } = await supabase.from('payments').update({
               unallocated_amount: fund.balance
             }).eq('id', fund.id);
+            if (fundUpdateErr) throw fundUpdateErr;
 
             amtToCover = roundAmount(amtToCover - roundedTake);
           }
         }
 
-        // --- 🚀 [추가] 인보이스 업데이트 & 사진 삭제 로직 ---
-        const { data: currentInv } = await supabase.from('invoices').select('id, total_amount, paid_amount, proof_url').eq('id', invoiceId).single();
+        const { data: currentInv, error: invFetchErr } = await supabase.from('invoices').select('id, total_amount, paid_amount, proof_url').eq('id', invoiceId).single();
+        if (invFetchErr) throw invFetchErr;
+
         if (currentInv) {
           const newPaid = roundAmount(currentInv.paid_amount + allocatedAmt);
           const isFullyPaid = Math.abs(currentInv.total_amount - newPaid) < 0.01;
@@ -508,29 +531,21 @@ function PaymentFormInner({ paymentId }: { paymentId?: string }) {
             status: newStatus
           };
 
-          // 완납 상태가 되고 기존에 사진(proof_url)이 있다면 삭제 처리
           if (isFullyPaid && currentInv.proof_url) {
               try {
-                  // URL에서 파일명만 추출 (예: https://.../delivery-proofs/filename.jpg -> filename.jpg)
                   const urlParts = currentInv.proof_url.split('/');
                   const fileName = urlParts[urlParts.length - 1];
-                  
                   if (fileName) {
                       const { error: removeError } = await supabase.storage.from('delivery-proofs').remove([fileName]);
-                      if (removeError) {
-                          console.warn(`⚠️ Failed to delete proof photo for invoice ${invoiceId}:`, removeError.message);
-                      } else {
-                          // 삭제 성공 시 DB에서도 url을 지워줌
-                          updatePayload.proof_url = null;
-                      }
+                      if (!removeError) updatePayload.proof_url = null;
                   }
               } catch (delError) {
-                  console.error(`⚠️ Error parsing/deleting proof url for ${invoiceId}:`, delError);
+                  console.error(`⚠️ Error parsing/deleting proof url`, delError);
               }
           }
 
-          // 최종 인보이스 업데이트
-          await supabase.from('invoices').update(updatePayload).eq('id', invoiceId);
+          const { error: finalInvErr } = await supabase.from('invoices').update(updatePayload).eq('id', invoiceId);
+          if (finalInvErr) throw finalInvErr;
         }
       }
 
@@ -551,9 +566,11 @@ function PaymentFormInner({ paymentId }: { paymentId?: string }) {
 
     } catch (e: any) {
       console.error(e);
-      alert("Error: " + e.message);
+      alert("Error: " + e.message); 
     } finally {
+      // 🚀 [방어 3] 무조건 자물쇠 해제
       setLoading(false);
+      isSaving.current = false; 
     }
   };
 

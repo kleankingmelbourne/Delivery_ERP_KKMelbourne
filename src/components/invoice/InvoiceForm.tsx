@@ -351,7 +351,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
   const [staffNote, setStaffNote] = useState("");
   
   // 크레딧 발행 날짜와 금액을 함께 관리하는 State
-  const [creditItems, setCreditItems] = useState<{ unallocated_amount: number; payment_date: string }[]>([]);
+  const [creditItems, setCreditItems] = useState<{ id: string; unallocated_amount: number; payment_date: string }[]>([]);
   const [availableCredit, setAvailableCredit] = useState(0); 
   
   const [originalItems, setOriginalItems] = useState<InvoiceItem[]>([]);
@@ -456,7 +456,7 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     const loadCustomerDetail = async () => {
       const [customerRes, paymentsRes, unpaidRes] = await Promise.all([
           supabase.from("customers").select(`due_date, note, in_charge_delivery, customer_products ( id, product_id, custom_price_ctn, custom_price_pack, products ( *, product_units ( unit_name ) ) )`).eq("id", selectedCustomerId).single(),
-          supabase.from('payments').select('unallocated_amount, payment_date').eq('customer_id', selectedCustomerId).gt('unallocated_amount', 0),
+          supabase.from('payments').select('id, unallocated_amount, payment_date').eq('customer_id', selectedCustomerId).gt('unallocated_amount', 0),
           supabase.from("invoices").select("due_date, total_amount, paid_amount").eq("customer_id", selectedCustomerId).neq("status", "Paid")
       ]);
 
@@ -978,7 +978,13 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
             throw new Error("Failed to generate Invoice ID: " + (rpcError?.message || "Unknown error"));
           }
           
-          const initialStatus = grandTotal === 0 ? "Paid" : "Unpaid";
+          let initialStatus = "Unpaid";
+
+          if (grandTotal <= 0 || creditUsed >= grandTotal) {
+              initialStatus = "Paid"; // 전액 크레딧 결제 완료 (또는 총액이 0)
+          } else if (creditUsed > 0) {
+              initialStatus = "Partial"; // 일부 금액만 크레딧으로 결제
+          }
 
           const { data: inv, error: err1 } = await supabase.from("invoices").insert({ 
               id: newInvoiceId, 
@@ -992,12 +998,12 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
               gst_total: gstTotal, 
               created_who: currentUserName, 
               updated_who: currentUserName, 
-              status: initialStatus, 
-              memo: memo, // 🚀 [수정된 부분] 렌더링 시 실시간으로 완성되어 있는 memo를 그대로 저장합니다.
+              status: initialStatus, // 2. 위에서 계산된 정확한 상태값 적용
+              memo: memo, 
               driver_id: currentDriverId, 
               is_pickup: isPickup 
           }).select().single();
-          
+
           if (err1 || !inv) throw err1 || new Error("Invoice creation failed");
           targetId = inv.id;
       }
@@ -1025,7 +1031,31 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
       ];
 
       if (useCredit && creditUsed > 0 && !isEditMode) {
+        // 기존 크레딧 차감 함수 호출
         parallelSaveTasks.push(deductCustomerCredit(supabase, selectedCustomerId, creditUsed));
+
+        // --- 추가된 allocation 기록 로직 ---
+        let remainingToAllocate = creditUsed;
+        const allocations = [];
+
+        for (const cr of creditItems) {
+          if (remainingToAllocate <= 0) break;
+          
+          const allocateAmount = Math.min(cr.unallocated_amount, remainingToAllocate);
+          if (allocateAmount > 0) {
+            allocations.push({
+              payment_id: cr.id,
+              invoice_id: targetId,
+              amount: allocateAmount,
+              // created_at 등 DB 필수 컬럼이 있다면 추가
+            });
+            remainingToAllocate -= allocateAmount;
+          }
+        }
+
+        if (allocations.length > 0) {
+          parallelSaveTasks.push(supabase.from('payment_allocations').insert(allocations));
+        }
       }
 
       if (autoAddProduct && validItems.length > 0) {

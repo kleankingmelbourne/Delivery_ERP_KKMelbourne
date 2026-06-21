@@ -193,6 +193,42 @@ export default function PaymentListPage() {
     }
   };
 
+  // const handleDeletePayment = async (paymentId: string) => {
+  //   const isCreditMemo = paymentId.startsWith('CR-');
+    
+  //   const confirmMsg = isCreditMemo 
+  //     ? "⚠️ 이 결제를 삭제하면 연결된 [Credit Memo 인보이스]와 [아이템]이 모두 함께 삭제됩니다. 계속하시겠습니까?"
+  //     : "⚠️ 이 결제 내역을 삭제하시겠습니까?\n(인보이스와 아이템은 안전하게 보존되며, 결제 상태만 미납으로 변경됩니다.)";
+
+  //   if (!confirm(confirmMsg)) return;
+
+  //   setLoading(true);
+
+  //   try {
+  //     // 🌟 [핵심 변경] 공통 유틸리티 적용
+  //     // allocations(할당 내역) 삭제, 인보이스 paid_amount 롤백, payments(결제 내역) 삭제를 한 방에 처리!
+  //     await revertAllocationsFromPaymentSource(supabase, [paymentId]);
+
+  //     // 🌟 크레딧 메모(CR-)인 경우의 추가 처리
+  //     if (isCreditMemo) {
+  //         // 크레딧 메모는 payments 테이블 외에도 invoices 테이블에 양쪽으로 존재하므로,
+  //         // 결제 내역이 위에서 지워진 후, 인보이스 쪽에 남은 본체와 아이템을 마저 지워줍니다.
+  //         await supabase.from('invoice_items').delete().eq('invoice_id', paymentId);
+  //         const { error: invDelError } = await supabase.from('invoices').delete().eq('id', paymentId);
+  //         if (invDelError) throw invDelError;
+  //     }
+
+  //     alert(isCreditMemo ? "Credit Memo와 결제 내역이 모두 삭제되었습니다." : "결제 내역이 성공적으로 취소되었습니다.");
+  //     fetchPayments(); 
+
+  //   } catch (error: any) {
+  //     console.error("Delete Error:", error);
+  //     alert("삭제 중 오류가 발생했습니다: " + error.message);
+  //   } finally {
+  //     setLoading(false);
+  //   }
+  // };
+
   const handleDeletePayment = async (paymentId: string) => {
     const isCreditMemo = paymentId.startsWith('CR-');
     
@@ -205,18 +241,13 @@ export default function PaymentListPage() {
     setLoading(true);
 
     try {
-      // 🌟 [핵심 변경] 공통 유틸리티 적용
-      // allocations(할당 내역) 삭제, 인보이스 paid_amount 롤백, payments(결제 내역) 삭제를 한 방에 처리!
-      await revertAllocationsFromPaymentSource(supabase, [paymentId]);
+      // 🚀 고속 트랜잭션 RPC 함수 단 하나만 호출!
+      // 내부적으로 알아서 할당 취소, 인보이스 잔액 차감, 상태 재계산, 본체 삭제가 0.1초만에 일어납니다.
+      const { error } = await supabase.rpc('delete_invoice_completely', { 
+          p_id: paymentId 
+      });
 
-      // 🌟 크레딧 메모(CR-)인 경우의 추가 처리
-      if (isCreditMemo) {
-          // 크레딧 메모는 payments 테이블 외에도 invoices 테이블에 양쪽으로 존재하므로,
-          // 결제 내역이 위에서 지워진 후, 인보이스 쪽에 남은 본체와 아이템을 마저 지워줍니다.
-          await supabase.from('invoice_items').delete().eq('invoice_id', paymentId);
-          const { error: invDelError } = await supabase.from('invoices').delete().eq('id', paymentId);
-          if (invDelError) throw invDelError;
-      }
+      if (error) throw error;
 
       alert(isCreditMemo ? "Credit Memo와 결제 내역이 모두 삭제되었습니다." : "결제 내역이 성공적으로 취소되었습니다.");
       fetchPayments(); 
@@ -228,7 +259,7 @@ export default function PaymentListPage() {
       setLoading(false);
     }
   };
-
+  
   // ✅ 수정: 기존 실시간 계산 구문 제거 (대신 useEffect와 methodOptions state 사용)
   // const uniqueMethods = Array.from(new Set(payments.map(p => p.category))).filter(Boolean).sort();
 

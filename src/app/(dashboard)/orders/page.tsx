@@ -556,13 +556,26 @@ export default function AdminOrderTable() {
                     </td>
 
                     <td className="px-2 py-4">
-                      <div className="flex flex-col gap-1">
+                      {/* items-start 추가하여 왼쪽 정렬 유지 */}
+                      <div className="flex flex-col gap-1 items-start">
                         <span className="font-black text-slate-700">#{order.id}</span>
-                        {order.is_pickup && (
-                          <span className="text-[9px] font-black text-white bg-indigo-500 px-2 py-0.5 rounded flex items-center justify-center gap-1 w-fit">
-                            <Package className="w-2.5 h-2.5" /> PICK UP
-                          </span>
-                        )}
+                        
+                        {/* 뱃지들을 가로로 나열하기 위해 flex-wrap 적용된 컨테이너 추가 */}
+                        <div className="flex flex-wrap gap-1">
+                          {/* 기존 PICK UP 뱃지 */}
+                          {order.is_pickup && (
+                            <span className="text-[9px] font-black text-white bg-indigo-500 px-2 py-0.5 rounded flex items-center justify-center gap-1 w-fit">
+                              <Package className="w-2.5 h-2.5" /> PICK UP
+                            </span>
+                          )}
+                          
+                          {/* 🚀 새로 추가된 MEMO 뱃지 로직 */}
+                          {order.order_memo && order.order_memo.trim() !== "" && (
+                            <span className="text-[9px] font-black text-amber-800 bg-amber-100 border border-amber-200 px-2 py-0.5 rounded flex items-center justify-center gap-1 w-fit">
+                              <FileStack className="w-2.5 h-2.5" /> MEMO
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </td>
                     

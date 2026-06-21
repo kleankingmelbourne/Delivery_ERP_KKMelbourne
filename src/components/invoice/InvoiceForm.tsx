@@ -349,7 +349,9 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
   const [dueDate, setDueDate] = useState("");
   const [memo, setMemo] = useState("");
   const [staffNote, setStaffNote] = useState("");
-  
+  // ✅ 1. 기결제 금액을 관리할 State 추가
+  const [receivedAmount, setReceivedAmount] = useState(0);
+
   // 크레딧 발행 날짜와 금액을 함께 관리하는 State
   const [creditItems, setCreditItems] = useState<{ id: string; unallocated_amount: number; payment_date: string }[]>([]);
   const [availableCredit, setAvailableCredit] = useState(0); 
@@ -395,6 +397,9 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
           setMemo(inv.memo || "");
           setIsPickup(inv.is_pickup || false);
           setCurrentDriverId(inv.driver_id || null);
+
+          // ✅ 2. DB에 저장된 결제 완료 금액(paid_amount)을 상태에 저장
+          setReceivedAmount(inv.paid_amount || 0);
 
           const initialProducts = inv.invoice_items.map((item: any) => item.products).filter(Boolean);
           const mappedProducts = initialProducts.map((p: any) => ({ ...p, unit_name: p.product_units?.unit_name || "CTN" }));
@@ -696,12 +701,15 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
 
   // ✅ [새로 추가된 부분] 체크박스를 누르는 순간 혹은 금액 변경 시 실시간으로 메모장 본문을 연동하는 효과(Effect)
   useEffect(() => {
+    // 💡 Edit 모드일 때는 DB에서 불러온 원본 메모를 절대 건드리지 않고 빠져나갑니다.
+    if (isEditMode) return;
+
     setMemo(prev => {
-      // 1. 기존 메모에 남아있는 구형 '[크레딧 사용 내역]' 블록을 정규식으로 완벽히 찾아 제거합니다. (순수 유저 입력값만 추출)
+      // 1. 기존 메모에 남아있는 구형 '[크레딧 사용 내역]' 블록을 정규식으로 완벽히 찾아 제거합니다.
       const cleanMemo = prev ? prev.replace(/\n*\s*\[Credit Applied History\][\s\S]*/g, "").trim() : "";
 
-      // 크레딧을 꺼두었거나 사용할 금액이 없다면 깨끗해진 원래 메모만 반환하고 탈출
-      if (!useCredit || creditUsed <= 0 || isEditMode) {
+      // 크레딧을 꺼두었거나 사용할 금액이 없으면 깨끗해진 원래 메모만 반환하고 탈출
+      if (!useCredit || creditUsed <= 0) {
         return cleanMemo;
       }
 
@@ -933,15 +941,27 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
               is_pickup: isPickup 
           };
 
-          if (grandTotal === 0) {
-              updatePayload.status = "Paid";
-              updatePayload.paid_amount = 0;
-          }
-
+          // ✅ [수정된 부분] 상태(Status) 동적 재계산 로직
           if (isCreditMemo) {
               updatePayload.paid_amount = grandTotal;
+              updatePayload.status = "Credit";
+          } else {
+              if (grandTotal === 0) {
+                  // 인보이스 총액이 0이 된 경우
+                  updatePayload.status = "Paid";
+                  updatePayload.paid_amount = 0;
+              } else if (receivedAmount >= grandTotal) {
+                  // 기존 결제 금액이 변경된 총액과 같거나 더 큰 경우 (전액 결제 유지)
+                  updatePayload.status = "Paid";
+              } else if (receivedAmount > 0 && receivedAmount < grandTotal) {
+                  // 기존 결제 금액이 있지만, 변경된 총액보다 적은 경우 (일부 결제)
+                  updatePayload.status = "Partial";
+              } else {
+                  // 결제된 금액이 전혀 없는 경우
+                  updatePayload.status = "Unpaid";
+              }
           }
-
+          
           const [ , invUpdateRes, invDelRes ] = await Promise.all([
               originalItems.length > 0 ? updateInventory(supabase, originalItems, true) : Promise.resolve(),
               supabase.from("invoices").update(updatePayload).eq("id", targetId),
@@ -1102,6 +1122,8 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
     setIsPickup(false); setCustomerStats({ totalOverdue: 0, oldestInvoiceDate: null });
     setAllProducts([]); 
     setCreditItems([]); 
+    // ✅ 4. 리셋 시 결제 금액도 초기화
+    setReceivedAmount(0);
   };
 
   useEffect(() => {
@@ -1319,10 +1341,23 @@ export default function InvoiceForm({ invoiceId }: InvoiceFormProps) {
             <div className="space-y-3 pt-2 border-t border-slate-100">
               <div className="flex justify-between text-sm text-slate-600"><span>Subtotal</span><span>${subTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span></div>
               <div className="flex justify-between text-sm text-slate-600"><span>GST (10%)</span><span>${gstTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span></div>
+              {/* ✅ 3-1. 기결제 금액 표시 (Edit 모드이고 결제된 금액이 있을 때만) */}
+              {isEditMode && (
+                <div className="flex justify-between text-sm text-emerald-600 font-medium">
+                  <span>Received</span>
+                  <span>-${receivedAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                </div>
+              )}
               <div className="flex justify-between text-xl font-black text-slate-900 pt-3 border-t border-dashed border-slate-200">
                 <span>Grand Total</span><span>${grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
               </div>
-              
+              {/* ✅ 3-2. 최종 남은 금액 표시 (Edit 모드일 때만) */}
+              {isEditMode && (
+                <div className="flex justify-between text-lg font-black text-blue-700 pt-2 border-t border-blue-100 mt-2">
+                  <span>Final Amount</span>
+                  <span>${(grandTotal - receivedAmount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                </div>
+              )}
               <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl mt-4 space-y-3 shadow-sm">
                 <div className="flex justify-between items-center font-bold">
                   <span className="text-slate-600 text-sm">Customer Credit</span>

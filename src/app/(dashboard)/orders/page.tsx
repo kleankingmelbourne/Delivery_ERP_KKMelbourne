@@ -394,6 +394,27 @@ export default function AdminOrderTable() {
     setLoading(false);
   };
 
+  // 💡 새롭게 추가할 날짜 업데이트 함수
+  const handleUpdateRequestedDate = async (orderId: string, newDate: string) => {
+    if (!newDate) return;
+
+    // 1. UI 즉각 반영 (낙관적 업데이트)
+    setOrders((prev) => 
+      prev.map((o) => (o.id === orderId ? { ...o, requested_date: newDate } : o))
+    );
+
+    // 2. Supabase DB 업데이트
+    const { error } = await supabase
+      .from('orders')
+      .update({ requested_date: newDate })
+      .eq('id', orderId);
+
+    if (error) {
+      alert(`날짜 업데이트에 실패했습니다: ${error.message}`);
+      fetchOrders(); // 실패 시 원래 데이터로 복구
+    }
+  };
+
   const toggleRow = async (orderId: string) => {
     const newExpanded = new Set(expandedRowIds);
     if (newExpanded.has(orderId)) {
@@ -602,7 +623,18 @@ export default function AdminOrderTable() {
                       </div>
                     </td>
 
-                    <td className="px-4 py-4 text-indigo-700 font-black">{order.requested_date}</td>
+                    <td className="px-4 py-4 text-indigo-700 font-black">
+                      {order.status === 'pending' ? (
+                        <input
+                          type="date"
+                          value={order.requested_date || ''}
+                          onChange={(e) => handleUpdateRequestedDate(order.id, e.target.value)}
+                          className="bg-transparent border-b-2 border-indigo-200 hover:border-indigo-400 focus:border-indigo-600 outline-none py-1 cursor-pointer transition-colors"
+                        />
+                      ) : (
+                        <span>{order.requested_date}</span>
+                      )}
+                    </td>
                     <td className="px-4 py-4 text-right font-black text-slate-900">{formatCurrency(order.total_amount)}</td>
                     <td className="px-4 py-4">{renderStatus(order.status)}</td>
                     <td className="px-6 py-4 text-center">

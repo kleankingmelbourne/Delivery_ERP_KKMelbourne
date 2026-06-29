@@ -101,6 +101,7 @@ interface DetailRow {
   amount: number;
   cost: number;
   profit: number;
+  invoiceCount: number;
 }
 
 interface GroupedData {
@@ -110,11 +111,10 @@ interface GroupedData {
   totalSales: number;
   totalCost: number;
   totalProfit: number;
+  invoiceCount: number;
   details: DetailRow[];
-  detailsMap: Map<string, DetailRow>;
 }
 
-// Sort Configuration Interface
 interface SortConfig {
   key: string;
   direction: "asc" | "desc";
@@ -141,7 +141,7 @@ export default function SalesReportPage() {
   const [hasSearched, setHasSearched] = useState(false);
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
 
-  // Sort States (Main & Detail)
+  // Sort States
   const [mainSortConfig, setMainSortConfig] = useState<SortConfig>({ key: "name", direction: "asc" });
   const [detailSortConfig, setDetailSortConfig] = useState<SortConfig>({ key: "subName", direction: "asc" });
 
@@ -182,7 +182,7 @@ export default function SalesReportPage() {
     }));
   };
 
-  // 3. Generate Report
+  // 3. Generate Report (🚀 RPC 호출 방식으로 변경됨)
   const handleGenerateReport = async () => {
     if (!startDate || !endDate) return alert("Please select a date range.");
 
@@ -193,110 +193,60 @@ export default function SalesReportPage() {
     setExpandedRows({});
 
     try {
-      let query = supabase
-        .from("invoice_items")
-        .select(`
-          quantity, amount, product_id, description, unit,
-          invoices!inner ( id, invoice_date, customer_id, customers ( name ) ),
-          products ( id, product_name, buy_price, total_pack_ctn ) 
-        `)
-        .gte("invoices.invoice_date", startDate)
-        .lte("invoices.invoice_date", endDate);
+      // Supabase RPC 호출로 데이터 집계 연산을 일임합니다.
+      const { data, error } = await supabase.rpc("get_sales_report", {
+        p_group_by: groupBy,
+        p_start_date: startDate,
+        p_end_date: endDate,
+        p_product_id: selectedProductId || null,
+        p_customer_id: selectedCustomerId || null
+      });
 
-      if (selectedProductId) query = query.eq("product_id", selectedProductId);
-      if (selectedCustomerId) query = query.eq("invoices.customer_id", selectedCustomerId);
-
-      const { data, error } = await query;
       if (error) throw error;
 
       let totalSales = 0, totalCost = 0, totalQty = 0, finalTotalProfit = 0;
-      const groupMap = new Map<string, GroupedData>();
 
-      if (data) {
-        data.forEach((item: any) => {
-          const itemQty = Number(item.quantity) || 0;
-          const itemAmount = Number(item.amount) || 0; // 순수 매출(Subtotal)
-          const invoiceUnit = item.unit || "-"; 
-          
-          let unitCost = Number(item.products?.buy_price) || 0;
-          const upperUnit = invoiceUnit.toUpperCase();
-          if (!upperUnit.includes("CTN") && !upperUnit.includes("CARTON") && !upperUnit.includes("BOX")) {
-            const packsPerCtn = Math.max(1, Number(item.products?.total_pack_ctn) || 1); 
-            unitCost = unitCost / packsPerCtn;
-          }
+      // DB에서 완벽하게 빌드업되어 온 Row 데이터들을 프론트엔드 상태에 맞게 매핑합니다.
+      const finalGroupList = (data || []).map((row: any) => {
+        const rowSales = Number(row.total_sales) || 0;
+        const rowCost = Number(row.total_cost) || 0;
+        const rowQty = Number(row.total_qty) || 0;
+        const rowProfit = Number(row.total_profit) || 0;
 
-          const itemCost = unitCost * itemQty;
-          
-          // 🚀 [수정] Net Sales(itemAmount)가 0 이하면 수익(Profit)을 강제로 0으로 세팅합니다.
-          const itemProfit = itemAmount <= 0 ? 0 : itemAmount - itemCost;
+        totalSales += rowSales;
+        totalCost += rowCost;
+        totalQty += rowQty;
+        finalTotalProfit += rowProfit;
 
-          totalSales += itemAmount;
-          totalCost += itemCost;
-          totalQty += itemQty;
-          finalTotalProfit += itemProfit;
-
-          const isByItem = groupBy === "item";
-          
-          const groupKey = isByItem 
-            ? `${item.products?.id || "unknown-prod"}_${invoiceUnit}`
-            : (item.invoices?.customer_id || "unknown-cust");
-          
-          const groupName = isByItem 
-            ? `${item.products?.product_name || item.description || "Unknown Product"} (${invoiceUnit})`
-            : (item.invoices?.customers?.name || "Unknown Customer");
-
-          if (!groupMap.has(groupKey)) {
-            groupMap.set(groupKey, {
-              id: groupKey, name: groupName,
-              totalQty: 0, totalSales: 0, totalCost: 0, totalProfit: 0,
-              details: [], detailsMap: new Map()
-            });
-          }
-
-          const group = groupMap.get(groupKey)!;
-          group.totalQty += itemQty;
-          group.totalSales += itemAmount;
-          group.totalCost += itemCost;
-          group.totalProfit += itemProfit;
-          
-          const subKey = isByItem 
-            ? (item.invoices?.customer_id || "unknown-cust")
-            : `${item.products?.id || "unknown-prod"}_${invoiceUnit}`;
-            
-          const subName = isByItem 
-            ? (item.invoices?.customers?.name || "Unknown Customer")
-            : (item.products?.product_name || item.description);
-            
-          const date = item.invoices?.invoice_date;
-
-          if (!group.detailsMap.has(subKey)) {
-            group.detailsMap.set(subKey, {
-              subKey, subName, unit: invoiceUnit, lastDate: date,
-              qty: 0, amount: 0, cost: 0, profit: 0
-            });
-          }
-
-          const detail = group.detailsMap.get(subKey)!;
-          detail.qty += itemQty;
-          detail.amount += itemAmount;
-          detail.cost += itemCost;
-          detail.profit += itemProfit;
-          if (date > detail.lastDate) detail.lastDate = date; 
-        });
-      }
-
-      const finalGroupList = Array.from(groupMap.values()).map(group => {
-        group.details = Array.from(group.detailsMap.values());
-        return group;
+        return {
+          id: row.id,
+          name: row.name,
+          totalQty: rowQty,
+          totalSales: rowSales,
+          totalCost: rowCost,
+          totalProfit: rowProfit,
+          invoiceCount: Number(row.invoice_count) || 0,
+          details: (row.details || []).map((d: any) => ({
+            subKey: d.subKey,
+            subName: d.subName,
+            unit: d.unit,
+            lastDate: d.lastDate,
+            qty: Number(d.qty) || 0,
+            amount: Number(d.amount) || 0,
+            cost: Number(d.cost) || 0,
+            profit: Number(d.profit) || 0,
+            invoiceCount: Number(d.invoiceCount) || 0
+          }))
+        };
       });
 
       setSummary({
         totalNetSales: totalSales,
         totalGrossSales: totalSales * 1.1, 
         totalCost: totalCost,
-        totalProfit: finalTotalProfit, // 보정된 전체 Profit 합계 사용
+        totalProfit: finalTotalProfit,
         totalQty: totalQty,
-        itemCount: data?.length || 0
+        itemCount: finalGroupList.length
       });
       
       setGroupedList(finalGroupList);
@@ -320,8 +270,10 @@ export default function SalesReportPage() {
         const row: any = {
           "Group Type": groupBy === "item" ? "Product" : "Customer",
           "Group Name": group.name, 
+          "Group Invoices": group.invoiceCount, 
           "Detail Type": groupBy === "item" ? "Customer" : "Product",
           "Detail Name": detail.subName, 
+          "Detail Invoices": detail.invoiceCount, 
           "Unit": detail.unit,
           "Last Date": detail.lastDate,
           "Quantity": detail.qty,
@@ -338,7 +290,7 @@ export default function SalesReportPage() {
     const worksheet = XLSX.utils.aoa_to_sheet([
       ["Sales Report"], 
       ["Period:", startDate, "~", endDate],
-      [] // A3 공백
+      []
     ]);
 
     XLSX.utils.sheet_add_json(worksheet, rows, { origin: "A3", skipHeader: false });
@@ -347,8 +299,8 @@ export default function SalesReportPage() {
     XLSX.utils.book_append_sheet(workbook, worksheet, "Sales Data");
 
     const wscols = [
-      { wch: 10 }, { wch: 40 }, { wch: 10 }, { wch: 40 }, { wch: 8 },
-      { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 10 }
+      { wch: 10 }, { wch: 35 }, { wch: 15 }, { wch: 10 }, { wch: 35 }, { wch: 15 }, 
+      { wch: 8 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 10 }
     ];
     worksheet["!cols"] = wscols;
 
@@ -532,6 +484,7 @@ export default function SalesReportPage() {
                   <tr>
                     <th className="px-4 py-3 w-[40px]"></th>
                     <SortableHeader label={groupBy === 'item' ? "Product Name" : "Customer Name"} sortKey="name" currentSort={mainSortConfig} onSort={handleMainSort} />
+                    <SortableHeader label="Invoices" sortKey="invoiceCount" align="right" currentSort={mainSortConfig} onSort={handleMainSort} />
                     <SortableHeader label="Total Qty" sortKey="totalQty" align="right" currentSort={mainSortConfig} onSort={handleMainSort} />
                     <SortableHeader label="Net Sales" sortKey="totalSales" align="right" currentSort={mainSortConfig} onSort={handleMainSort} />
                     <SortableHeader label="Cost" sortKey="totalCost" align="right" currentSort={mainSortConfig} onSort={handleMainSort} />
@@ -571,6 +524,7 @@ export default function SalesReportPage() {
                             {isExpanded ? <ChevronUp className="w-4 h-4 text-slate-400"/> : <ChevronDown className="w-4 h-4 text-slate-400"/>}
                           </td>
                           <td className="px-4 py-3 font-bold text-slate-800">{group.name}</td>
+                          <td className="px-4 py-3 text-right font-medium text-slate-600">{group.invoiceCount.toLocaleString()}</td>
                           <td className="px-4 py-3 text-right font-medium">{group.totalQty.toLocaleString()}</td>
                           <td className="px-4 py-3 text-right font-bold text-slate-900">${group.totalSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                           <td className="px-4 py-3 text-right text-slate-500 text-xs">${group.totalCost.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
@@ -580,7 +534,7 @@ export default function SalesReportPage() {
 
                         {isExpanded && (
                           <tr className="bg-slate-50/30 animate-in fade-in slide-in-from-top-1">
-                            <td colSpan={7} className="p-0 border-b border-slate-200">
+                            <td colSpan={8} className="p-0 border-b border-slate-200">
                               <div className="px-4 py-3 pl-12">
                                 <table className="w-full text-xs text-left">
                                   {/* [Detail Table Header] */}
@@ -589,6 +543,7 @@ export default function SalesReportPage() {
                                       <SortableHeader label={groupBy === 'item' ? "Customer" : "Product"} sortKey="subName" currentSort={detailSortConfig} onSort={handleDetailSort} />
                                       <SortableHeader label="Unit" sortKey="unit" align="left" currentSort={detailSortConfig} onSort={handleDetailSort} className="w-20" />
                                       <SortableHeader label="Last Date" sortKey="lastDate" currentSort={detailSortConfig} onSort={handleDetailSort} />
+                                      <SortableHeader label="Invoices" sortKey="invoiceCount" align="right" currentSort={detailSortConfig} onSort={handleDetailSort} />
                                       <SortableHeader label="Qty" sortKey="qty" align="right" currentSort={detailSortConfig} onSort={handleDetailSort} />
                                       <SortableHeader label="Net Sales" sortKey="amount" align="right" currentSort={detailSortConfig} onSort={handleDetailSort} />
                                       <SortableHeader label="Profit" sortKey="profit" align="right" currentSort={detailSortConfig} onSort={handleDetailSort} />
@@ -600,6 +555,7 @@ export default function SalesReportPage() {
                                         <td className="py-2 font-medium text-slate-800">{detail.subName}</td>
                                         <td className="py-2 text-slate-500 font-medium">{detail.unit}</td>
                                         <td className="py-2">{detail.lastDate}</td>
+                                        <td className="py-2 text-right">{detail.invoiceCount}</td>
                                         <td className="py-2 text-right">{detail.qty}</td>
                                         <td className="py-2 text-right font-bold">${detail.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                                         <td className="py-2 text-right text-emerald-600">${detail.profit.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>

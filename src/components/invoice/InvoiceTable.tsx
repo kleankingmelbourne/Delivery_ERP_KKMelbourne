@@ -482,16 +482,23 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
       } else {
           const allIds = invoices.map(inv => inv.id);
           const newExpanded = new Set(allIds);
-          const missingIds = allIds.filter(id => !detailsCache[id]);
+          // invoices 목록 중에서 memo나 created_who 정보가 없는 애들만 찾기
+          const missingIds = allIds.filter(id => {
+              const inv = invoices.find(i => i.id === id);
+              return !detailsCache[id] || (inv && inv.memo === undefined); 
+          });
           
           if (missingIds.length > 0) {
               setLoadingRows(new Set(missingIds)); 
-              // 🚀 [추가] Detail Show All 버튼 클릭 시에도 allocations 내역을 가져옵니다.
-              const [itemsRes, allocRes] = await Promise.all([
+              
+              // 🚀 [수정] invoices 테이블에서도 memo, created_who, updated_who를 같이 가져옵니다!
+              const [itemsRes, allocRes, detailsRes] = await Promise.all([
                   supabase.from("invoice_items").select("*, products(buy_price, total_pack_ctn)").in("invoice_id", missingIds),
-                  supabase.from("payment_allocations").select("*").in("invoice_id", missingIds)
+                  supabase.from("payment_allocations").select("*").in("invoice_id", missingIds),
+                  supabase.from("invoices").select("id, subtotal, gst_total, memo, created_who, updated_who").in("id", missingIds)
               ]);
 
+              // 1. Items 캐시 업데이트
               if (!itemsRes.error && itemsRes.data) {
                   const newCache = { ...detailsCache };
                   itemsRes.data.forEach((item: any) => {
@@ -502,6 +509,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
                   setDetailsCache(newCache);
               }
 
+              // 2. Allocations 캐시 업데이트
               if (!allocRes.error && allocRes.data) {
                   const newAllocCache = { ...allocationsCache };
                   allocRes.data.forEach((alloc: any) => {
@@ -510,6 +518,17 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
                   });
                   missingIds.forEach(id => { if (!newAllocCache[id]) newAllocCache[id] = []; });
                   setAllocationsCache(newAllocCache);
+              }
+
+              // 3. 🚀 [추가] Invoices 상태 업데이트 (memo, created_who 등)
+              if (!detailsRes.error && detailsRes.data) {
+                  setInvoices(prev => prev.map(inv => {
+                      const additionalData = detailsRes.data.find((d: any) => d.id === inv.id);
+                      if (additionalData) {
+                          return { ...inv, ...additionalData };
+                      }
+                      return inv;
+                  }));
               }
 
               setLoadingRows(new Set()); 

@@ -241,7 +241,7 @@ export default function QuotationForm({ quotationId }: QuotationFormProps) {
       if (isEditMode) {
         const [custRes, prodRes, quoteRes] = await Promise.all([
           supabase.from("customers").select("id, name, note"),
-          supabase.from("products").select("id, product_name, vendor_product_id, sell_price_ctn, sell_price_pack, buy_price, product_units(unit_name)"),
+          supabase.from("products").select("id, product_name, vendor_product_id, sell_price_ctn, sell_price_pack, buy_price, product_units(unit_name)").eq("is_active", true),
           supabase.from("quotations").select("*, quotation_items(*)").eq("id", quotationId).single()
         ]);
 
@@ -290,7 +290,7 @@ export default function QuotationForm({ quotationId }: QuotationFormProps) {
       } else {
         const [custRes, prodRes] = await Promise.all([
           supabase.from("customers").select("id, name, note"),
-          supabase.from("products").select("id, product_name, vendor_product_id, sell_price_ctn, sell_price_pack, buy_price, product_units(unit_name)")
+          supabase.from("products").select("id, product_name, vendor_product_id, sell_price_ctn, sell_price_pack, buy_price, product_units(unit_name)").eq("is_active", true)
         ]);
 
         if (custRes.data) setCustomers(custRes.data);

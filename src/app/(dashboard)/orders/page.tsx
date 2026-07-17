@@ -614,10 +614,21 @@ export default function AdminOrderTable() {
                     
                     <td className="px-4 py-4 text-slate-500 text-xs">
                       <div className="flex flex-col">
-                        <span className="font-bold text-slate-700">{order.order_date}</span>
-                        {order.created_at && (
+                        {/* 1. 날짜 렌더링 (호주 포맷: DD/MM/YYYY) */}
+                        <span className="font-bold text-slate-700">
+                          {order.order_date 
+                            ? new Date(order.order_date).toLocaleDateString('en-AU') 
+                            : '-'}
+                        </span>
+                        
+                        {/* 2. 시간 렌더링 (오전/오후 버그 픽스 적용) */}
+                        {order.order_date && (
                           <span className="text-[10px] text-slate-400 font-medium">
-                            {new Date(order.created_at).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' })}
+                            {new Date(order.order_date).toLocaleTimeString('en-AU', { 
+                              hour: '2-digit', 
+                              minute: '2-digit',
+                              hour12: true // 🚀 오전/오후 명확히 구분
+                            })}
                           </span>
                         )}
                       </div>

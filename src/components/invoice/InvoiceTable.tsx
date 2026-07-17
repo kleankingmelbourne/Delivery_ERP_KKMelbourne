@@ -858,7 +858,7 @@ export default function InvoiceTable({ filterStatus, title }: InvoiceTableProps)
             <input type="date" value={endDate} onChange={e=>handleDateChange('end', e.target.value)} className="pl-2 bg-transparent text-sm w-32"/>
             <button onClick={handleClearDates}><X className="w-4 h-4"/></button>
           </div>
-          <div className="relative flex-1 w-full max-w-sm">
+          <div className="relative flex-1 w-full md:max-w-sm">
             <Search className="absolute left-3 top-2 w-4 h-4 text-slate-400"/>
             <input type="text" value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} placeholder="Search name, ID or exact amount..." className="w-full pl-10 pr-4 py-2 text-sm border border-slate-200 rounded-lg"/>
           </div>

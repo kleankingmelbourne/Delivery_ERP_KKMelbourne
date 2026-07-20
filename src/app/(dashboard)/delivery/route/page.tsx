@@ -1209,31 +1209,36 @@ export default function DeliveryRoutePage() {
                         <td className="px-3 py-3 font-bold text-slate-500 text-center border-r border-slate-200/60">{item.unit}</td>
                         {/* 각 드라이버별 수량(말풍선 포함) */}
                         {productSummaryData.activeDrivers.map(driver => (
-                          <td 
-                              key={driver} 
-                              className={cn(
-                                  "relative group px-3 py-3 text-center border-r border-slate-200/60 font-bold transition-all", 
-                                  item.drivers[driver] ? "text-slate-900 bg-emerald-50/30 hover:bg-emerald-200 cursor-pointer" : "text-slate-300"
-                              )}
-                          >
-                            {item.drivers[driver] || "-"}
-                            
-                            {/* 말풍선(Tooltip) 로직 */}
-                            {item.drivers[driver] > 0 && item.customers?.[driver] && (
-                                <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 hidden group-hover:flex flex-col w-max max-w-[280px] min-w-[160px] bg-slate-800 text-white text-xs rounded-xl p-3 z-[250] shadow-2xl">
-                                    <div className="flex flex-col gap-2 max-h-[220px] overflow-y-auto custom-scrollbar pr-1">
-                                        {Object.entries(item.customers[driver]).map(([cName, cQty]) => (
-                                            <div key={cName} className="flex justify-between items-start gap-4 text-left">
-                                                <span className="truncate flex-1 font-medium">{cName}</span>
-                                                <span className="font-mono text-emerald-400 font-bold shrink-0">{String(cQty)}</span>
-                                            </div>
-                                        ))}
+                            <td 
+                                key={driver} 
+                                // 🚀 1. 모바일 Safari 버그 해결: onClick이 있어야 터치 시 hover를 인식합니다.
+                                onClick={() => {}} 
+                                // 🚀 2. 포커스(Focus) 가능 요소로 만들어 터치 유지력을 높입니다.
+                                tabIndex={item.drivers[driver] ? 0 : undefined}
+                                className={cn(
+                                    "relative group px-3 py-3 text-center border-r border-slate-200/60 font-bold transition-all outline-none", 
+                                    item.drivers[driver] ? "text-slate-900 bg-emerald-50/30 hover:bg-emerald-200 focus:bg-emerald-200 cursor-pointer" : "text-slate-300"
+                                )}
+                            >
+                                {item.drivers[driver] || "-"}
+                                
+                                {/* 말풍선(Tooltip) 로직 */}
+                                {item.drivers[driver] > 0 && item.customers?.[driver] && (
+                                    // 🚀 3. group-focus:flex 를 추가하여 터치(포커스) 되었을 때도 말풍선이 강제로 열리게 합니다.
+                                    <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 hidden group-hover:flex group-focus:flex flex-col w-max max-w-[280px] min-w-[160px] bg-slate-800 text-white text-xs rounded-xl p-3 z-[250] shadow-2xl">
+                                        <div className="flex flex-col gap-2 max-h-[220px] overflow-y-auto custom-scrollbar pr-1">
+                                            {Object.entries(item.customers[driver]).map(([cName, cQty]) => (
+                                                <div key={cName} className="flex justify-between items-start gap-4 text-left">
+                                                    <span className="truncate flex-1 font-medium">{cName}</span>
+                                                    <span className="font-mono text-emerald-400 font-bold shrink-0">{String(cQty)}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                        {/* 말풍선 꼬리 */}
+                                        <div className="absolute -top-1.5 left-1/2 -translate-x-1/2 w-3.5 h-3.5 bg-slate-800 rotate-45"></div>
                                     </div>
-                                    {/* 말풍선 꼬리 */}
-                                    <div className="absolute -top-1.5 left-1/2 -translate-x-1/2 w-3.5 h-3.5 bg-slate-800 rotate-45"></div>
-                                </div>
-                            )}
-                          </td>
+                                )}
+                            </td>
                         ))}
                         <td className="px-4 py-3 font-black text-indigo-700 text-center bg-indigo-50/50 text-base border-l border-indigo-100">
                           {item.total}

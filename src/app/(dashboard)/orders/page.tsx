@@ -6,8 +6,10 @@ import {
   Search, MoreHorizontal, Trash2, Edit, CheckCircle,
   ChevronLeft, ChevronRight, X, ChevronDown, ChevronUp,
   AlertCircle, Package, Calculator, Receipt, FileStack,
-  FileDown, ArrowRightCircle, CheckSquare, Clock, XCircle, ExternalLink
+  FileDown, ArrowRightCircle, CheckSquare, Clock, XCircle, ExternalLink,
+  Wallet
 } from "lucide-react";
+import { deductCustomerCredit } from "@/utils/credit"; // 👈 크레딧 차감 함수 추가
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/components/providers/AuthProvider"; 
@@ -37,7 +39,12 @@ interface Order {
   order_memo?: string;
   invoice_id?: string;
   is_pickup?: boolean; 
-  customers?: { company: string; name: string; in_charge_delivery?: string } | null;
+  customers?: { 
+    company: string; 
+    name: string; 
+    in_charge_delivery?: string;
+    payments?: { unallocated_amount: number }[]; // 👈 payments 정보 추가
+   } | null;
   [key: string]: any;
 }
 
@@ -123,7 +130,7 @@ export default function AdminOrderTable() {
   const buildQuery = useCallback((customerIds: string[]) => {
     let query = supabase.from("orders").select(`
       id, customer_id, created_at, order_date, requested_date, total_amount, status, order_memo, invoice_id, is_pickup,
-      customers ( company, name, in_charge_delivery )
+      customers ( company, name, in_charge_delivery, payments ( unallocated_amount ) )
     `, { count: 'exact' })
     .neq("status", "draft");
 
@@ -146,6 +153,197 @@ export default function AdminOrderTable() {
     }
     return query;
   }, [supabase, startDate, endDate, activeTab, debouncedSearch]);
+
+  // 🚀 크레딧을 적용하여 인보이스로 일괄 변환하는 함수
+  const handleApplyCreditAndInvoice = async () => {
+    if (selectedIds.size === 0) return;
+    if (!confirm(`선택한 ${selectedIds.size}개의 주문에 사용 가능한 크레딧을 우선 적용하고 인보이스로 변환하시겠습니까?`)) return;
+    setLoading(true);
+
+    try {
+      const idsArray = Array.from(selectedIds);
+      const targetOrders = orders.filter(o => idsArray.includes(o.id));
+
+      const { data: allItems } = await supabase.from("order_items").select("*").in("order_id", idsArray);
+      if (!allItems || allItems.length === 0) throw new Error("선택한 주문들에 상품 내역이 없습니다.");
+
+      // 고객별로 주문 그룹화
+      const groupedOrders = targetOrders.reduce((acc, order) => {
+        if (!acc[order.customer_id]) acc[order.customer_id] = [];
+        acc[order.customer_id].push(order);
+        return acc;
+      }, {} as Record<string, Order[]>);
+
+      const { data: lastInv } = await supabase.from("invoices").select("id").order("id", { ascending: false }).limit(1);
+      let currentInvNum = 1001;
+      if (lastInv && lastInv.length > 0) {
+        const lastNum = parseInt(lastInv[0].id.replace(/[^0-9]/g, ""));
+        if (!isNaN(lastNum)) currentInvNum = lastNum + 1;
+      }
+
+      const currentAdminName = user?.user_metadata?.display_name || user?.email || "Admin";
+
+      // 🌟 각 고객별로 순차적으로 처리하여 크레딧 중복 차감 및 꼬임을 방지합니다.
+      for (const customerId in groupedOrders) {
+        const customerOrders = groupedOrders[customerId];
+        const newInvId = `IV-${currentInvNum}`;
+        currentInvNum++;
+
+        // 1. 해당 고객의 사용 가능한 크레딧 불러오기
+        const { data: paymentsData } = await supabase
+          .from('payments')
+          .select('id, unallocated_amount, payment_date')
+          .eq('customer_id', customerId)
+          .gt('unallocated_amount', 0)
+          .order('payment_date', { ascending: true });
+          
+        const creditItems = paymentsData || [];
+        const availableCredit = roundAmount(creditItems.reduce((sum, p) => sum + p.unallocated_amount, 0));
+
+        // 2. 주문 총액 및 메모 합산
+        let combinedSubtotal = 0;
+        let combinedMemos: string[] = [];
+        customerOrders.forEach(order => {
+          combinedSubtotal += order.total_amount;
+          if (order.order_memo) combinedMemos.push(`[Order #${order.id}]: ${order.order_memo}`);
+        });
+
+        const gstTotal = roundAmount(combinedSubtotal * 0.1);
+        const finalInvoiceTotal = roundAmount(combinedSubtotal + gstTotal);
+
+        // 3. 크레딧 적용 계산
+        const creditUsed = Math.min(availableCredit, finalInvoiceTotal);
+        
+        let initialStatus = "Unpaid";
+        if (finalInvoiceTotal <= 0 || creditUsed >= finalInvoiceTotal) initialStatus = "Paid";
+        else if (creditUsed > 0) initialStatus = "Partial";
+
+        let finalMemo = combinedMemos.join("\n");
+
+        // 메모장에 크레딧 차감 내역 자동 첨부 (InvoiceForm과 100% 동일한 로직)
+        if (creditUsed > 0) {
+          let remainingToDeduct = creditUsed;
+          const memoLines = [];
+          for (const cr of creditItems) {
+            if (remainingToDeduct <= 0) break;
+            const deduct = Math.min(cr.unallocated_amount, remainingToDeduct);
+            if (deduct > 0) {
+              const [y, m, d] = cr.payment_date.split('-');
+              memoLines.push(`-$${deduct.toFixed(2)} deducted from credit memo issued on ${d}/${m}/${y}`);
+              remainingToDeduct -= deduct;
+            }
+          }
+          if (memoLines.length > 0) {
+            const creditText = `[Credit Applied History]\n${memoLines.join('\n')}`;
+            finalMemo = finalMemo ? `${finalMemo}\n\n${creditText}` : creditText;
+          }
+        }
+
+        const firstOrder = customerOrders[0];
+        const dueDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+        // 4. 인보이스 본체 생성
+        const invoiceData = {
+          id: newInvId,
+          customer_id: customerId,
+          invoice_to: firstOrder.customers?.name || 'Unknown',
+          invoice_date: firstOrder.requested_date,
+          due_date: dueDate,
+          total_amount: finalInvoiceTotal,
+          paid_amount: creditUsed,
+          subtotal: combinedSubtotal,
+          gst_total: gstTotal,
+          status: initialStatus,
+          created_who: 'customer',
+          updated_who: currentAdminName,
+          driver_id: firstOrder.customers?.in_charge_delivery || null,
+          memo: finalMemo,
+          is_pickup: customerOrders.some(o => o.is_pickup)
+        };
+        const { error: invErr } = await supabase.from("invoices").insert([invoiceData]);
+        if (invErr) throw invErr;
+
+        // 5. 인보이스 아이템 생성 및 그룹화
+        const customerOrderIds = customerOrders.map(o => o.id);
+        const groupItems = allItems.filter((item: any) => customerOrderIds.includes(item.order_id));
+        const mergedItemsMap = new Map();
+
+        groupItems.forEach((item: any) => {
+          const mergeKey = `${item.product_id || item.description}_${item.unit}_${item.unit_price}`;
+          if (mergedItemsMap.has(mergeKey)) {
+            const existingItem = mergedItemsMap.get(mergeKey);
+            existingItem.quantity += item.quantity;
+            existingItem.amount = roundAmount(existingItem.quantity * existingItem.unit_price);
+          } else {
+            mergedItemsMap.set(mergeKey, {
+              invoice_id: newInvId,
+              product_id: item.product_id,
+              description: item.description,
+              quantity: item.quantity,
+              unit: item.unit,
+              unit_price: item.unit_price,
+              base_price: item.base_price,
+              discount: item.discount,
+              amount: roundAmount(item.quantity * item.unit_price),
+              is_gst_included: true
+            });
+          }
+        });
+
+        const newInvoiceItems = Array.from(mergedItemsMap.values());
+        if (newInvoiceItems.length > 0) {
+          const { error: itemErr } = await supabase.from("invoice_items").insert(newInvoiceItems);
+          if (itemErr) throw itemErr;
+
+          // 재고 차감 (Inventory Update)
+          const bulkInventoryItems = newInvoiceItems.map(item => ({
+            productId: item.product_id,
+            quantity: item.quantity,
+            unit: item.unit
+          }));
+          await updateInventory(supabase, bulkInventoryItems, false);
+        }
+
+        // 6. Orders 상태 업데이트
+        const { error: ordErr } = await supabase.from("orders")
+          .update({ status: 'invoiced', invoice_id: newInvId })
+          .in('id', customerOrderIds);
+        if (ordErr) throw ordErr;
+
+        // 7. 🌟 크레딧 실제 차감 (payments 및 payment_allocations 업데이트)
+        if (creditUsed > 0) {
+          await deductCustomerCredit(supabase, customerId, creditUsed);
+          
+          let remainingToAllocate = creditUsed;
+          const allocations = [];
+          for (const cr of creditItems) {
+            if (remainingToAllocate <= 0) break;
+            const allocateAmount = Math.min(cr.unallocated_amount, remainingToAllocate);
+            if (allocateAmount > 0) {
+              allocations.push({
+                payment_id: cr.id,
+                invoice_id: newInvId,
+                amount: allocateAmount,
+              });
+              remainingToAllocate -= allocateAmount;
+            }
+          }
+          if (allocations.length > 0) {
+            await supabase.from('payment_allocations').insert(allocations);
+          }
+        }
+      }
+      
+      alert(`✅ 크레딧 자동 적용 및 인보이스 생성이 완료되었습니다.`);
+      setSelectedIds(new Set());
+      fetchOrders();
+
+    } catch (error: any) {
+      alert(`변환 실패: ${error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const fetchOrders = useCallback(async () => {
     if (!startDate || !endDate) return;
@@ -475,12 +673,22 @@ export default function AdminOrderTable() {
             <CheckSquare className="w-5 h-5 text-emerald-600" />
             <span className="text-sm font-bold text-emerald-800">{selectedIds.size} Selected</span>
           </div>
-          <button 
-            onClick={handleBulkConvertToInvoice} 
-            className="px-5 py-2 bg-emerald-600 text-white text-xs font-bold rounded-lg border border-emerald-700 hover:bg-emerald-700 flex items-center gap-2 transition-colors shadow-sm"
-          >
-            <ArrowRightCircle className="w-4 h-4" /> Convert to Invoices
-          </button>
+
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <button 
+              onClick={handleApplyCreditAndInvoice} 
+              className="flex-1 sm:flex-none px-5 py-2.5 bg-blue-600 text-white text-xs font-bold rounded-lg border border-blue-700 hover:bg-blue-700 flex items-center justify-center gap-2 transition-colors shadow-sm"
+            >
+              <Wallet className="w-4 h-4" /> Apply Credit & Convert
+            </button>
+
+            <button 
+              onClick={handleBulkConvertToInvoice} 
+              className="flex-1 sm:flex-none px-5 py-2.5 bg-emerald-600 text-white text-xs font-bold rounded-lg border border-emerald-700 hover:bg-emerald-700 flex items-center justify-center gap-2 transition-colors shadow-sm"
+            >
+              <ArrowRightCircle className="w-4 h-4" /> Convert to Invoices
+            </button>
+          </div>
         </div>
       )}
 
@@ -610,8 +818,24 @@ export default function AdminOrderTable() {
                       ) : <span className="text-slate-300 text-xs">-</span>}
                     </td>
 
-                    <td className="px-4 py-4 font-bold text-slate-900">{order.customers?.name || "Unknown"}</td>
-                    
+                    {/* <td className="px-4 py-4 font-bold text-slate-900">{order.customers?.name || "Unknown"}</td> 부분을 아래 코드로 교체하세요. */}
+                    <td className="px-4 py-4 font-bold text-slate-900">
+                      <div className="flex items-center gap-1.5">
+                        {(() => {
+                          const availableCredit = order.customers?.payments
+                            ?.filter((p: any) => p.unallocated_amount > 0)
+                            .reduce((sum: number, p: any) => sum + p.unallocated_amount, 0) || 0;
+                          
+                          return availableCredit > 0 ? (
+                            <span title={`Available Credit: ${formatCurrency(availableCredit)}`} className="flex-shrink-0">
+                              <Wallet className="w-4 h-4 text-red-500" />
+                            </span>
+                          ) : null;
+                        })()}
+                        <span className="truncate">{order.customers?.name || "Unknown"}</span>
+                      </div>
+                    </td>
+
                     <td className="px-4 py-4 text-slate-500 text-xs">
                       <div className="flex flex-col">
                         {/* 1. 날짜 렌더링 (호주 포맷: DD/MM/YYYY) */}

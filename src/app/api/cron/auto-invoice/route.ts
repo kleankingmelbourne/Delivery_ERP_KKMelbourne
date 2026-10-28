@@ -45,7 +45,8 @@ export async function GET(request: Request) {
             customers ( name, company, email, email_cc ) 
         `)
         .in("customer_id", targetCustomerIds)
-        .eq("invoice_date", todayStr);
+        .eq("invoice_date", todayStr)
+        .not("id", "ilike", "CR-%"); // 🚀 (CR-로 시작하는 ID 제외)
 
     if (invError) throw invError;
     if (!todaysInvoices || todaysInvoices.length === 0) {

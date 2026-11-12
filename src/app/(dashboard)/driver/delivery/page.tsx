@@ -1346,50 +1346,74 @@ export default function DriverDashboardPage() {
                       ) : invoiceItems.length > 0 ? (
                           <div className="space-y-2">
                               {invoiceItems.map((item, idx: number) => {
-                                  const itemName = item.item_name || item.product_name || item.description || `Item`;
-                                  const itemQty = item.quantity || item.qty || 1;
-                                  const isChecked = checkedItems[item.id || idx]; 
-                                  
-                                  return (
-                                      <div 
-                                          key={item.id || idx} 
-                                          onClick={() => toggleItemCheck(item.id || idx)} 
-                                          className={cn(
-                                              "bg-white p-4 rounded-xl border flex items-center justify-between gap-3 shadow-sm transition-all cursor-pointer active:scale-[0.98]",
-                                              isChecked ? "border-rose-200 bg-rose-50/30" : "border-slate-200"
-                                          )}
-                                      >
-                                          <div className="flex items-start gap-3 overflow-hidden">
-                                              <div className={cn(
-                                                  "w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0",
-                                                  isChecked ? "bg-rose-100 text-rose-500" : "bg-slate-100 text-slate-500"
-                                              )}>
-                                                  {idx + 1}
-                                              </div>
-                                              
-                                              <span className={cn(
-                                                  "font-bold text-[15px] leading-tight flex-1",
-                                                  isChecked ? "text-slate-400 line-through decoration-rose-400 decoration-2" : "text-slate-700"
-                                              )}>
-                                                  {itemName}
-                                              </span>
-                                          </div>
-                                          
-                                          <div className="flex items-center gap-3 shrink-0">
-                                              <div className={cn(
-                                                  "px-3 py-1.5 rounded-lg border",
-                                                  isChecked ? "bg-white border-rose-200" : "bg-slate-50 border-slate-100"
-                                              )}>
-                                                  <span className={cn(
-                                                      "font-black",
-                                                      isChecked ? "text-slate-400 line-through" : "text-slate-800"
-                                                  )}>x {itemQty}</span>
-                                              </div>
-                                              {isChecked && <Check className="w-5 h-5 text-rose-500" />}
-                                          </div>
-                                      </div>
-                                  );
-                              })}
+    const itemName = item.item_name || item.product_name || item.description || `Item`;
+    const itemQty = item.quantity || item.qty || 1;
+    const isChecked = checkedItems[item.id || idx]; 
+
+    // 1. CTN과 PACK을 구분하는 로직 추가
+    const nameLower = itemName.toLowerCase();
+    const isCtn = nameLower.includes('ctn') || nameLower.includes('carton');
+    const isPack = nameLower.includes('pack') || nameLower.includes('pkt');
+    
+    return (
+        <div 
+            key={item.id || idx} 
+            onClick={() => toggleItemCheck(item.id || idx)} 
+            className={cn(
+                "p-4 rounded-xl border flex items-center justify-between gap-3 shadow-sm transition-all cursor-pointer active:scale-[0.98]",
+                // 2. 단위에 따라 박스 배경색/테두리 변경
+                isChecked ? "border-rose-200 bg-rose-50/30 opacity-70 grayscale" : // 체크 시 살짝 투명하고 흑백 처리
+                isCtn ? "bg-blue-50 border-blue-200" :                 // CTN일 때 배경 (파란색)
+                isPack ? "bg-amber-50 border-amber-200" :              // PACK일 때 배경 (노란색)
+                "bg-white border-slate-200"                            // 기본 색상
+            )}
+        >
+            <div className="flex items-start gap-3 overflow-hidden">
+                <div className={cn(
+                    "w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0 transition-colors",
+                    // 3. 앞쪽 번호(순번) 동그라미 색상 변경
+                    isChecked ? "bg-rose-100 text-rose-500" : 
+                    isCtn ? "bg-blue-100 text-blue-600" :
+                    isPack ? "bg-amber-100 text-amber-600" :
+                    "bg-slate-100 text-slate-500"
+                )}>
+                    {idx + 1}
+                </div>
+                
+                <span className={cn(
+                    "font-bold text-[15px] leading-tight flex-1 transition-colors",
+                    // 4. 상품명 글자 색상 변경
+                    isChecked ? "text-slate-400 line-through decoration-rose-400 decoration-2" : 
+                    isCtn ? "text-blue-900" : 
+                    isPack ? "text-amber-900" : 
+                    "text-slate-700"
+                )}>
+                    {itemName}
+                </span>
+            </div>
+            
+            <div className="flex items-center gap-3 shrink-0">
+                <div className={cn(
+                    "px-3 py-1.5 rounded-lg border transition-colors",
+                    // 5. 수량(x 개수) 박스 색상 변경
+                    isChecked ? "bg-white border-rose-200" : 
+                    isCtn ? "bg-blue-100 border-blue-200" :
+                    isPack ? "bg-amber-100 border-amber-200" :
+                    "bg-slate-50 border-slate-100"
+                )}>
+                    <span className={cn(
+                        "font-black",
+                        isChecked ? "text-slate-400 line-through" : 
+                        isCtn ? "text-blue-800" :
+                        isPack ? "text-amber-800" :
+                        "text-slate-800"
+                    )}>x {itemQty}</span>
+                </div>
+                {isChecked && <Check className="w-5 h-5 text-rose-500" />}
+            </div>
+        </div>
+    );
+})}
                           </div>
                       ) : (
                           <div className="flex flex-col items-center justify-center py-20 text-slate-400 gap-3">
